@@ -1,0 +1,63 @@
+# =========================================================
+# HistoAnnotator - files that must NOT be committed
+# =========================================================
+
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+
+# Certificates / signing keys
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# Local backups and patches
+*.bak
+*.bak-*
+*.backup*
+*.before-*
+*backup-v*
+*.zip
+
+# Runtime / research data
+/images/
+/annotations/
+/cache/
+/caches/
+/offline/
+/downloads/
+
+# Large pathology image formats
+*.tif
+*.tiff
+*.svs
+*.ndpi
+*.mrxs
+*.isyntax
+*.ome.tif
+*.ome.tiff
+*.zarr
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Node / Capacitor / Android
+node_modules/
+android-app/www/
+android-app/android/.gradle/
+android-app/android/**/build/

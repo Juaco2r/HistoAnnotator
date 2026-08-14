@@ -1,0 +1,36 @@
+services:
+  histoannotator:
+    build: .
+    container_name: histoannotator
+    restart: unless-stopped
+    environment:
+      IMAGE_ROOT: /data/images
+      ANNOTATION_ROOT: /data/annotations
+      TILE_CACHE_ROOT: /data/cache
+      PREPARED_ROOT: /data/prepared
+      UPLOAD_ROOT: /data/uploads
+      APP_TITLE: HistoAnnotator
+      MAX_SCAN_FILES: ${MAX_SCAN_FILES:-5000}
+      PREPARE_THRESHOLD_MB: ${PREPARE_THRESHOLD_MB:-128}
+      TILE_SIZE: ${TILE_SIZE:-512}
+      TILE_JPEG_QUALITY: ${TILE_JPEG_QUALITY:-90}
+      UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-8}
+      MAX_UPLOAD_GB: ${MAX_UPLOAD_GB:-50}
+    volumes:
+      - ${IMAGE_ROOT}:/data/images
+      - ${ANNOTATION_ROOT:-/srv/histoannotator/annotations}:/data/annotations
+      - ${TILE_CACHE_ROOT:-/srv/histoannotator/cache}:/data/cache
+      - ${PREPARED_ROOT:-/srv/histoannotator/prepared}:/data/prepared
+      - ${UPLOAD_ROOT:-/srv/histoannotator/uploads}:/data/uploads
+    ports:
+      - "127.0.0.1:8020:8000"
+    networks:
+      cytomine:
+        ipv4_address: 172.16.238.21
+        aliases:
+          - histoannotator
+
+networks:
+  cytomine:
+    external: true
+    name: cytomine_host_network

@@ -1,0 +1,10 @@
+{
+  "name": "HistoAnnotator",
+  "short_name": "HistoAnnotator",
+  "start_url": "../",
+  "scope": "../",
+  "display": "standalone",
+  "background_color": "#0d1320",
+  "theme_color": "#172033",
+  "description": "Offline-first WSI annotation app with QuPath-compatible GeoJSON, persistent local annotations, offline image packages, and automatic synchronization."
+}

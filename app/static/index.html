@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#172033">
+  <title>HistoAnnotator</title>
+  <link rel="manifest" href="./static/manifest.webmanifest">
+  <link rel="stylesheet" href="./static/styles.css?v=0.8.2">
+  <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <label class="drawing-profile-picker" title="Drawing workflow">
+      <span>Mode</span>
+      <select id="drawingProfileSelect" aria-label="Drawing workflow">
+        <option value="default">Default</option>
+        <option value="pathologist">Pathologist</option>
+      </select>
+    </label>
+    <div class="brand">HistoAnnotator <span class="badge">v0.8.2</span></div>
+    <label class="image-picker">
+      <span>Image</span>
+      <select id="imageSelect" aria-label="Select image">
+        <option value="">Loading…</option>
+      </select>
+    </label>
+    <button id="refreshButton" type="button" title="Refresh image list" aria-label="Refresh image list">↻</button>
+
+    <div class="file-menu">
+      <button id="fileMenuButton" type="button" aria-expanded="false" aria-controls="fileMenuPanel">☰ File</button>
+      <div id="fileMenuPanel" class="file-menu-panel" hidden>
+        <label class="menu-item file-input-label">
+          <span>⤒ Upload image</span>
+          <input id="uploadInput" type="file" accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.svs,.ndpi,.scn,.mrxs,.vms,.vmu,.bif">
+        </label>
+        <button id="downloadOriginalButton" class="menu-item" type="button" disabled>⇩ Download original</button>
+        <button id="downloadOfflineButton" class="menu-item" type="button" disabled>⬇ Download for offline</button>
+        <button id="offlineFilesButton" class="menu-item" type="button">Offline files</button>
+        <button id="syncNowButton" class="menu-item" type="button">↻ Sync now</button>
+        <div class="menu-separator"></div>
+        <button id="importGeoJsonButton" class="menu-item" type="button" disabled>Import GeoJSON</button>
+        <input id="importInput" class="visually-hidden" type="file" accept=".geojson,application/geo+json,application/json">
+        <button id="exportButton" class="menu-item" type="button" disabled>Export QuPath GeoJSON</button>
+        <button id="saveButton" class="menu-item" type="button" disabled>Save now</button>
+        <div class="menu-separator"></div>
+        <label class="menu-field">
+          <span>Image type</span>
+          <select id="imageTypeSelect">
+            <option value="he">Brightfield H&amp;E</option>
+            <option value="hdab">Brightfield H-DAB</option>
+            <option value="fluorescence">Fluorescence / RGB channels</option>
+            <option value="rgb">RGB / Other</option>
+          </select>
+        </label>
+        <button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
+        <div class="menu-separator"></div>
+        <button id="imageInfoButton" class="menu-item" type="button" disabled>Image information</button>
+      </div>
+    </div>
+    <button id="eyeButton" class="top-icon-button active" type="button" title="Hide annotations" aria-label="Toggle annotations">👁</button>
+    <div class="display-menu">
+      <button id="displayButton" class="top-icon-button" type="button" title="Display settings" aria-expanded="false" aria-controls="displayPanel">☀</button>
+      <div id="displayPanel" class="display-panel" hidden>
+        <label for="brightnessSlider">Brightness <output id="brightnessValue">100%</output></label>
+        <input id="brightnessSlider" type="range" min="40" max="200" step="5" value="100">
+        <div id="stainChannelControls" class="channel-controls"></div>
+        <p id="displayHint" class="display-hint">Image display only. Annotations and original pixels are unchanged.</p>
+      </div>
+    </div>
+
+  </header>
+
+  <main id="workspace" class="workspace">
+    <aside class="toolbar" aria-label="Annotation tools">
+      <button class="tool active" data-mode="navigate" type="button">Move</button>
+      <button class="tool" data-mode="freehand" type="button">Freehand</button>
+      <button class="tool" data-mode="brush" type="button">Brush</button>
+      <div id="brushControls" class="brush-controls" hidden>
+        <label for="brushSize">Diameter</label>
+        <input id="brushSize" type="range" min="12" max="100" step="2" value="42">
+        <output id="brushSizeValue" for="brushSize">42 px</output>
+      </div>
+      <button class="tool" data-mode="wand" type="button">Wand</button>
+      <div id="wandControls" class="wand-controls" hidden>
+        <label for="wandTolerance">Similarity</label>
+        <input id="wandTolerance" type="range" min="6" max="100" step="2" value="38">
+        <output id="wandToleranceValue" for="wandTolerance">38</output>
+        <label for="wandRadius">Search area</label>
+        <input id="wandRadius" type="range" min="70" max="260" step="10" value="150">
+        <output id="wandRadiusValue" for="wandRadius">150 px</output>
+        <label for="wandMetric">Compare</label>
+        <select id="wandMetric">
+          <option value="color">Visible color</option>
+          <option value="brightness">Brightness</option>
+        </select>
+      </div>
+      <button class="tool" data-mode="polygon" type="button">Polygon</button>
+      <button class="tool" data-mode="rectangle" type="button">Rectangle</button>
+      <button class="tool" data-mode="circle" type="button">Circle</button>
+      <div id="circleControls" class="circle-controls" hidden>
+        <label for="circleMethod">Construction</label>
+        <select id="circleMethod">
+          <option value="center-radius">Center → radius</option>
+          <option value="edge-edge">Edge → opposite edge</option>
+        </select>
+        <label for="circleWidthScale">Width <output id="circleWidthValue">100%</output></label>
+        <input id="circleWidthScale" type="range" min="40" max="220" step="5" value="100">
+        <label for="circleHeightScale">Height <output id="circleHeightValue">100%</output></label>
+        <input id="circleHeightScale" type="range" min="40" max="220" step="5" value="100">
+      </div>
+      <button class="tool" data-mode="select" type="button">Select</button>
+      <div id="editOperationControls" class="edit-operation-controls" hidden>
+        <span class="edit-operation-label">Draw result</span>
+        <div class="segmented-control" role="group" aria-label="How the new area should be applied">
+          <button type="button" data-edit-operation="new" class="active">New</button>
+          <button type="button" data-edit-operation="add">Add</button>
+          <button type="button" data-edit-operation="subtract">Subtract</button>
+        </div>
+        <small id="editOperationHint">Create a separate annotation</small>
+      </div>
+      <button id="undoButton" type="button" disabled>Undo</button>
+      <button id="redoButton" type="button" disabled>Redo</button>
+    </aside>
+
+    <section class="viewer-shell">
+      <div id="viewer"></div>
+      <canvas id="annotationCanvas" aria-label="Annotation layer"></canvas>
+      <div id="emptyMessage" class="empty-message">Select an image</div>
+      <div id="inputGuide" class="input-guide" aria-label="Input controls">
+        <span>☝️ Fingers: pan and zoom</span>
+        <span>✍️ Stylus: annotate</span>
+      </div>
+      <div id="polygonActions" class="context-actions" hidden>
+        <button id="finishPolygon" type="button" disabled>✓ Finish</button>
+        <button id="cancelPolygon" type="button">× Cancel</button>
+      </div>
+      <div id="pathologistActions" class="context-actions pathologist-actions" hidden>
+        <button id="finishPathologistContour" type="button">✓ Complete annotation</button>
+        <button id="addPathologistHole" type="button">○ Inner contour</button>
+        <button id="cancelPathologistContour" type="button">× Cancel</button>
+      </div>
+      <div id="circleActions" class="context-actions circle-actions" hidden>
+        <span id="circleInstruction">Tap the center</span>
+        <button id="finishCircle" type="button" disabled>✓ Finish</button>
+        <button id="cancelCircle" type="button">× Cancel</button>
+      </div>
+      <div id="selectionActions" class="context-actions selection-actions" hidden>
+        <strong id="selectionCount">0 selected</strong>
+        <button id="deleteSelection" class="danger-action" type="button">Delete</button>
+        <button id="mergeSelection" type="button" hidden>Merge</button>
+        <button id="intersectSelection" type="button" hidden>Intersect</button>
+        <button id="subtractSelection" type="button" hidden>Subtract</button>
+        <button id="clearSelection" type="button">Clear</button>
+      </div>
+      <div id="viewerDiagnostics" class="viewer-diagnostics" aria-live="polite"></div>
+      <div id="status" class="status-toast" aria-live="polite" hidden></div>
+    </section>
+
+    <aside id="classPanel" class="sidepanel">
+      <section class="annotation-file-section">
+        <label for="annotationFileSelect">Annotation file</label>
+        <div class="annotation-file-row">
+          <select id="annotationFileSelect" aria-label="Annotation file" disabled>
+            <option value="Default">Default</option>
+          </select>
+          <button id="newAnnotationFileButton" class="small-button" type="button" title="Create a separate annotation file" disabled>+</button>
+        </div>
+      </section>
+      <section class="class-section">
+        <div class="section-heading">
+          <div class="heading-copy">
+            <h2>Classes</h2>
+            <span id="annotationSummary" class="annotation-summary">0 annotations</span>
+          </div>
+          <button id="toggleClassManager" class="small-button" type="button" aria-expanded="false">Manage</button>
+        </div>
+
+        <div id="classManagementControls" class="class-management-controls management-only">
+          <button id="addClassButton" class="small-button add-class-button" type="button">+ Add class</button>
+          <div id="classEditor" class="class-editor" hidden>
+            <input id="classNameInput" type="text" maxlength="80" placeholder="Class name" autocomplete="off">
+            <input id="classColorInput" type="color" value="#ff6b6b" aria-label="Class color">
+            <button id="saveClassButton" type="button">Save class</button>
+            <button id="cancelClassButton" type="button">Cancel</button>
+          </div>
+        </div>
+
+        <div id="classList" class="class-list"></div>
+
+        <section class="annotation-list-section">
+          <button id="toggleAnnotationList" class="annotation-list-toggle" type="button" aria-expanded="false">
+            <span id="annotationListTitle">Current class annotations</span>
+            <span id="annotationListChevron" aria-hidden="true">▸</span>
+          </button>
+          <div id="annotationList" class="annotation-list" hidden></div>
+        </section>
+      </section>
+
+      <section id="classPanelDetails" class="panel-details management-only">
+        <div class="detail-row"><span>Total annotations</span><strong id="featureCount">0</strong></div>
+        <div class="detail-row"><span>Image size</span><strong id="dimensions">—</strong></div>
+        <p>Classes are saved locally first and synchronized with the server when the connection is available.</p>
+      </section>
+    </aside>
+  </main>
+
+  <div id="uploadOverlay" class="modal-overlay" hidden>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
+      <h2 id="uploadTitle">Uploading image</h2>
+      <p id="uploadFilename" class="modal-filename"></p>
+      <progress id="uploadProgress" max="100" value="0"></progress>
+      <p id="uploadStatus">Preparing upload…</p>
+      <p class="modal-note">If the connection drops, select the same file again to continue from the last received block.</p>
+      <button id="cancelUploadButton" type="button">Pause upload</button>
+    </section>
+  </div>
+
+  <div id="offlineOverlay" class="modal-overlay" hidden>
+    <section class="modal-card offline-card" role="dialog" aria-modal="true" aria-labelledby="offlineTitle">
+      <h2 id="offlineTitle">Offline image</h2>
+      <p id="offlineFilename" class="modal-filename"></p>
+      <p id="offlineStorage" class="modal-note"></p>
+      <label class="offline-quality">
+        <span>Offline quality</span>
+        <select id="offlineQuality">
+          <option value="review">Review quality (up to 1/4 linear resolution)</option>
+          <option value="full">Full resolution</option>
+        </select>
+      </label>
+      <p id="offlineEstimate" class="modal-note">Choose a quality to estimate the tile count.</p>
+      <progress id="offlineProgress" max="100" value="0"></progress>
+      <p id="offlineStatus">Ready to download.</p>
+      <div class="modal-actions">
+        <button id="startOfflineDownload" type="button">Download</button>
+        <button id="cancelOfflineDownload" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="offlineFilesOverlay" class="modal-overlay" hidden>
+    <section class="modal-card offline-card" role="dialog" aria-modal="true" aria-labelledby="offlineFilesTitle">
+      <h2 id="offlineFilesTitle">Offline files</h2>
+      <div id="offlineFilesList" class="offline-files-list"></div>
+      <button id="closeOfflineFiles" type="button">Close</button>
+    </section>
+  </div>
+
+  <div id="infoOverlay" class="modal-overlay" hidden>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
+      <h2 id="infoTitle">Image information</h2>
+      <pre id="imageInfoContent"></pre>
+      <button id="closeInfoButton" type="button">Close</button>
+    </section>
+  </div>
+
+  <script src="./static/app.js?v=0.8.2"></script>
+</body>
+</html>
