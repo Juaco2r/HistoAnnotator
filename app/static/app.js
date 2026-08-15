@@ -1,9 +1,23 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.8.2";
+  const VERSION = "1.0.0";
+
+  // The same frontend runs both in the browser and inside Capacitor.
+  const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
+
+  // Browser deployment, e.g. https://server/annotator/
   const BASE = window.location.pathname.startsWith("/annotator") ? "/annotator" : "";
-  const API = `${BASE}/api`;
+
+  // Native Android deployment. This can later be exposed in Settings.
+  const NATIVE_SERVER_STORAGE_KEY = "histoannotator.nativeServer.v1";
+  const DEFAULT_NATIVE_SERVER = "__HISTOANNOTATOR_NATIVE_SERVER__";
+  const NATIVE_SERVER = (
+    localStorage.getItem(NATIVE_SERVER_STORAGE_KEY) ||
+    DEFAULT_NATIVE_SERVER
+  ).replace(/\/+$/, "");
+
+  const API = `${IS_NATIVE ? NATIVE_SERVER : BASE}/api`;
   const DEFAULT_CLASSES = [
     { name: "Tumor", color: "#ff6b6b" },
     { name: "Stroma", color: "#4dabf7" },
@@ -92,6 +106,7 @@
     redoButton: document.getElementById("redoButton"),
     saveButton: document.getElementById("saveButton"),
     exportButton: document.getElementById("exportButton"),
+    shareGeoJsonButton: document.getElementById("shareGeoJsonButton"),
     importGeoJsonButton: document.getElementById("importGeoJsonButton"),
     importInput: document.getElementById("importInput"),
     fileMenuButton: document.getElementById("fileMenuButton"),
@@ -816,6 +831,10 @@
   }
 
   function registerOfflineServiceWorker() {
+    // The current Service Worker caches URLs from the web deployment.
+    // Android alpha1 uses the native client and will receive a dedicated
+    // native offline-storage implementation in the next stage.
+    if (IS_NATIVE) return;
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker
       .register(`${BASE || ""}/service-worker.js`, { scope: `${BASE || ""}/` })
@@ -1111,7 +1130,7 @@
       animationTime: 0.18,
       blendTime: 0,
       immediateRender: true,
-      maxZoomPixelRatio: 1.35,
+      maxZoomPixelRatio: 4.0,
       visibilityRatio: 0.05,
       constrainDuringPan: false,
       imageLoaderLimit: 8,
@@ -1240,9 +1259,281 @@
     localStorage.setItem(key, JSON.stringify({ imageType, brightnessPercent, displayChannels }));
   }
 
+  // ==========================================================
+  // Scientific multichannel fluorescence display
+  // ==========================================================
+
+  let ifChannelSettings = null;
+  let ifChannelSettingsImageId = null;
+  let selectedIfChannel = 0;
+  let ifRefreshTimer = null;
+
+  function scientificIfMeta() {
+    const meta = currentInfo?.multichannel;
+
+    if (
+      imageType !== "fluorescence" ||
+      !meta?.scientificMultichannel ||
+      !Array.isArray(meta.channels) ||
+      !meta.channels.length
+    ) {
+      return null;
+    }
+
+    return meta;
+  }
+
+  function ifDisplayStorageKey() {
+    if (!currentImage?.id) return null;
+    return `histoannotator.ifDisplay.v1:${currentImage.id}`;
+  }
+
+  function clampNumber(value, minimum, maximum, fallback) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+      return Number(fallback);
+    }
+
+    return Math.max(
+      Number(minimum),
+      Math.min(Number(maximum), number),
+    );
+  }
+
+  function compactDisplayNumber(value) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+      return "0";
+    }
+
+    if (Math.abs(number - Math.round(number)) < 1e-6) {
+      return String(Math.round(number));
+    }
+
+    return String(
+      Number(number.toFixed(4))
+    );
+  }
+
+  function defaultScientificChannel(metaChannel, index) {
+    const allowedMin = Number.isFinite(Number(metaChannel?.allowedMin))
+      ? Number(metaChannel.allowedMin)
+      : 0;
+
+    const allowedMax = Number.isFinite(Number(metaChannel?.allowedMax))
+      ? Number(metaChannel.allowedMax)
+      : 65535;
+
+    const autoMin = Number.isFinite(Number(metaChannel?.minDisplay))
+      ? Number(metaChannel.minDisplay)
+      : allowedMin;
+
+    const autoMax = Number.isFinite(Number(metaChannel?.maxDisplay))
+      ? Number(metaChannel.maxDisplay)
+      : allowedMax;
+
+    const defaultColor =
+      String(metaChannel?.color || "#ffffff");
+
+    const defaultName =
+      String(
+        metaChannel?.name ||
+        `Channel ${index + 1}`
+      );
+
+    return {
+      index,
+      name: defaultName,
+      defaultName,
+      visible: metaChannel?.visible !== false,
+      color: defaultColor,
+      defaultColor,
+      min: autoMin,
+      max: autoMax,
+      autoMin,
+      autoMax,
+      allowedMin,
+      allowedMax,
+      gamma: Number(metaChannel?.gamma) || 1,
+      brightness:
+        Number(metaChannel?.brightness) || 100,
+    };
+  }
+
+  function ensureIfChannelSettings() {
+    const meta = scientificIfMeta();
+
+    if (!meta || !currentImage?.id) {
+      return null;
+    }
+
+    const imageId = currentImage.id;
+
+    if (
+      ifChannelSettings &&
+      ifChannelSettingsImageId === imageId &&
+      Array.isArray(ifChannelSettings.channels) &&
+      ifChannelSettings.channels.length === meta.channels.length
+    ) {
+      return ifChannelSettings;
+    }
+
+    const channels = meta.channels.map(
+      (channel, index) =>
+        defaultScientificChannel(channel, index)
+    );
+
+    let selected = 0;
+
+    const key = ifDisplayStorageKey();
+
+    if (key) {
+      try {
+        const saved = JSON.parse(
+          localStorage.getItem(key) || "null"
+        );
+
+        if (
+          saved &&
+          Array.isArray(saved.channels) &&
+          saved.channels.length === channels.length
+        ) {
+          channels.forEach((channel, index) => {
+            const incoming = saved.channels[index];
+
+            if (!incoming || typeof incoming !== "object") {
+              return;
+            }
+
+            if (
+              typeof incoming.name === "string" &&
+              incoming.name.trim()
+            ) {
+              channel.name = incoming.name.trim();
+            }
+
+            if (typeof incoming.visible === "boolean") {
+              channel.visible = incoming.visible;
+            }
+
+            if (
+              typeof incoming.color === "string" &&
+              /^#[0-9a-fA-F]{6}$/.test(incoming.color)
+            ) {
+              channel.color = incoming.color.toLowerCase();
+            }
+
+            channel.min = clampNumber(
+              incoming.min,
+              channel.allowedMin,
+              channel.allowedMax,
+              channel.min,
+            );
+
+            channel.max = clampNumber(
+              incoming.max,
+              channel.allowedMin,
+              channel.allowedMax,
+              channel.max,
+            );
+
+            if (channel.max <= channel.min) {
+              channel.min = channel.autoMin;
+              channel.max = channel.autoMax;
+            }
+
+            channel.gamma = clampNumber(
+              incoming.gamma,
+              0.05,
+              20,
+              channel.gamma,
+            );
+
+            channel.brightness = clampNumber(
+              incoming.brightness,
+              0,
+              400,
+              channel.brightness,
+            );
+          });
+
+          selected = clampNumber(
+            saved.selected,
+            0,
+            channels.length - 1,
+            0,
+          );
+        }
+      } catch (_) {
+        // Use metadata defaults.
+      }
+    }
+
+    ifChannelSettings = {
+      channels,
+    };
+
+    ifChannelSettingsImageId = imageId;
+    selectedIfChannel = Math.round(selected);
+
+    return ifChannelSettings;
+  }
+
+  function saveIfDisplaySettings() {
+    const settings = ensureIfChannelSettings();
+    const key = ifDisplayStorageKey();
+
+    if (!settings || !key) return;
+
+    try {
+      localStorage.setItem(
+        key,
+        JSON.stringify({
+          selected: selectedIfChannel,
+          channels: settings.channels.map(
+            (channel) => ({
+              name: channel.name,
+              visible: channel.visible,
+              color: channel.color,
+              min: channel.min,
+              max: channel.max,
+              gamma: channel.gamma,
+              brightness: channel.brightness,
+            })
+          ),
+        })
+      );
+    } catch (error) {
+      console.warn(
+        "Could not persist IF display settings",
+        error
+      );
+    }
+  }
+
+  function scheduleIfDisplayRefresh(delay = 140) {
+    saveIfDisplaySettings();
+
+    if (ifRefreshTimer) {
+      clearTimeout(ifRefreshTimer);
+    }
+
+    ifRefreshTimer = setTimeout(() => {
+      ifRefreshTimer = null;
+      refreshImageDisplay();
+    }, delay);
+  }
+
   function loadDisplaySettings() {
     imageType = "he";
     brightnessPercent = 100;
+
+    ifChannelSettings = null;
+    ifChannelSettingsImageId = null;
+    selectedIfChannel = 0;
+
     displayChannels = {
       he: { hematoxylin: true, eosin: true },
       hdab: { hematoxylin: true, dab: true },
@@ -1270,6 +1561,10 @@
   }
 
   function activeDisplayView() {
+    if (scientificIfMeta()) {
+      return { view: "ifmultichannel" };
+    }
+
     if (imageType === "he") {
       const c = displayChannels.he || {};
       if (c.hematoxylin && c.eosin) return { view: "original" };
@@ -1292,47 +1587,816 @@
   function displayQueryString() {
     const display = activeDisplayView();
     const params = new URLSearchParams();
+
     params.set("view", display.view);
     params.set("image_type", imageType);
-    if (display.rgb) params.set("rgb", display.rgb);
-    if (currentImage?.modifiedUnix) params.set("rev", String(currentImage.modifiedUnix));
+
+    const ifMeta = scientificIfMeta();
+    const ifSettings = ifMeta
+      ? ensureIfChannelSettings()
+      : null;
+
+    if (ifMeta && ifSettings) {
+      const channels = ifSettings.channels;
+
+      params.set(
+        "if_enabled",
+        channels
+          .map((channel) =>
+            channel.visible ? "1" : "0"
+          )
+          .join("")
+      );
+
+      params.set(
+        "if_min",
+        channels
+          .map((channel) =>
+            compactDisplayNumber(channel.min)
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_max",
+        channels
+          .map((channel) =>
+            compactDisplayNumber(channel.max)
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_gamma",
+        channels
+          .map((channel) =>
+            compactDisplayNumber(channel.gamma)
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_brightness",
+        channels
+          .map((channel) =>
+            compactDisplayNumber(
+              channel.brightness
+            )
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_colors",
+        channels
+          .map((channel) =>
+            channel.color.replace("#", "")
+          )
+          .join(",")
+      );
+
+    } else if (display.rgb) {
+      params.set("rgb", display.rgb);
+    }
+
+    if (currentImage?.modifiedUnix) {
+      params.set(
+        "rev",
+        String(currentImage.modifiedUnix)
+      );
+    }
+
     return params.toString();
   }
 
   function renderChannelControls() {
     if (!els.stainChannelControls) return;
+
     els.stainChannelControls.innerHTML = "";
-    let names;
-    if (imageType === "he") names = [["hematoxylin", "Hematoxylin", "#6f5da8"], ["eosin", "Eosin", "#ef8ea8"]];
-    else if (imageType === "hdab") names = [["hematoxylin", "Hematoxylin", "#6f5da8"], ["dab", "DAB", "#9a6a3a"]];
-    else names = [["red", "Red", "#ff6b6b"], ["green", "Green", "#69db7c"], ["blue", "Blue", "#4dabf7"]];
-    const state = displayChannels[imageType] || displayChannels.rgb;
-    for (const [key, label, color] of names) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `channel-toggle ${state[key] ? "active" : ""}`;
-      const dot = document.createElement("span"); dot.className = "channel-dot"; dot.style.background = color;
-      const text = document.createElement("span"); text.textContent = label;
-      button.append(dot, text);
-      button.addEventListener("click", () => {
-        state[key] = !state[key];
-        saveDisplaySettings();
-        renderChannelControls();
-        refreshImageDisplay();
+
+    const meta = scientificIfMeta();
+    const settings = meta
+      ? ensureIfChannelSettings()
+      : null;
+
+    els.displayPanel?.classList.toggle(
+      "scientific-if",
+      Boolean(meta && settings)
+    );
+
+    // --------------------------------------------------------
+    // Scientific multichannel fluorescence
+    // --------------------------------------------------------
+    if (meta && settings) {
+      const channels = settings.channels;
+
+      selectedIfChannel = Math.max(
+        0,
+        Math.min(
+          channels.length - 1,
+          Number(selectedIfChannel) || 0
+        )
+      );
+
+      const heading =
+        document.createElement("div");
+
+      heading.className = "if-display-heading";
+
+      const title =
+        document.createElement("strong");
+
+      title.textContent =
+        `Fluorescence channels (${channels.length})`;
+
+      const detail =
+        document.createElement("span");
+
+      detail.textContent =
+        `${meta.dtype || "raw"} · ` +
+        `${meta.axes || "channels"}`;
+
+      heading.append(title, detail);
+      els.stainChannelControls.append(heading);
+
+      const list =
+        document.createElement("div");
+
+      list.className = "if-channel-list";
+
+      channels.forEach((channel, index) => {
+        const row =
+          document.createElement("div");
+
+        row.className =
+          "if-channel-row";
+
+        if (index === selectedIfChannel) {
+          row.classList.add("selected");
+        }
+
+        const visible =
+          document.createElement("input");
+
+        visible.type = "checkbox";
+        visible.checked =
+          Boolean(channel.visible);
+
+        visible.title =
+          `Show ${channel.name}`;
+
+        visible.setAttribute(
+          "aria-label",
+          `Show ${channel.name}`
+        );
+
+        visible.addEventListener(
+          "change",
+          () => {
+            channel.visible =
+              visible.checked;
+
+            scheduleIfDisplayRefresh();
+            renderChannelControls();
+          }
+        );
+
+        const select =
+          document.createElement("button");
+
+        select.type = "button";
+        select.className =
+          "if-channel-select";
+
+        const dot =
+          document.createElement("span");
+
+        dot.className = "channel-dot";
+        dot.style.background =
+          channel.color;
+
+        const label =
+          document.createElement("span");
+
+        label.textContent =
+          channel.name;
+
+        select.append(dot, label);
+
+        select.addEventListener(
+          "click",
+          () => {
+            selectedIfChannel = index;
+            saveIfDisplaySettings();
+            renderChannelControls();
+          }
+        );
+
+        const color =
+          document.createElement("input");
+
+        color.type = "color";
+        color.className =
+          "if-channel-color";
+
+        color.value =
+          channel.color;
+
+        color.title =
+          `Color for ${channel.name}`;
+
+        color.setAttribute(
+          "aria-label",
+          `Color for ${channel.name}`
+        );
+
+        color.addEventListener(
+          "input",
+          () => {
+            channel.color =
+              color.value.toLowerCase();
+
+            dot.style.background =
+              channel.color;
+
+            scheduleIfDisplayRefresh();
+          }
+        );
+
+        row.append(
+          visible,
+          select,
+          color
+        );
+
+        list.append(row);
       });
-      els.stainChannelControls.append(button);
+
+      els.stainChannelControls.append(list);
+
+      const channel =
+        channels[selectedIfChannel];
+
+      const editor =
+        document.createElement("div");
+
+      editor.className =
+        "if-channel-editor";
+
+      const editorTitle =
+        document.createElement("div");
+
+      editorTitle.className =
+        "if-editor-title";
+
+      editorTitle.textContent =
+        `Channel ${selectedIfChannel + 1}`;
+
+      editor.append(editorTitle);
+
+      // Name
+      const nameLabel =
+        document.createElement("label");
+
+      nameLabel.className =
+        "if-field";
+
+      const nameCaption =
+        document.createElement("span");
+
+      nameCaption.textContent = "Name";
+
+      const nameInput =
+        document.createElement("input");
+
+      nameInput.type = "text";
+      nameInput.value =
+        channel.name;
+
+      nameInput.maxLength = 48;
+
+      nameInput.addEventListener(
+        "change",
+        () => {
+          const value =
+            nameInput.value.trim();
+
+          channel.name =
+            value ||
+            channel.defaultName;
+
+          saveIfDisplaySettings();
+          renderChannelControls();
+        }
+      );
+
+      nameLabel.append(
+        nameCaption,
+        nameInput
+      );
+
+      editor.append(nameLabel);
+
+      // Min / Max
+      const rangeGrid =
+        document.createElement("div");
+
+      rangeGrid.className =
+        "if-range-grid";
+
+      function numericField(
+        caption,
+        property
+      ) {
+        const label =
+          document.createElement("label");
+
+        label.className =
+          "if-field";
+
+        const span =
+          document.createElement("span");
+
+        span.textContent = caption;
+
+        const input =
+          document.createElement("input");
+
+        input.type = "number";
+        input.step = "1";
+        input.min =
+          compactDisplayNumber(
+            channel.allowedMin
+          );
+        input.max =
+          compactDisplayNumber(
+            channel.allowedMax
+          );
+        input.value =
+          compactDisplayNumber(
+            channel[property]
+          );
+
+        input.addEventListener(
+          "change",
+          () => {
+            const value =
+              clampNumber(
+                input.value,
+                channel.allowedMin,
+                channel.allowedMax,
+                channel[property]
+              );
+
+            channel[property] = value;
+
+            if (
+              property === "min" &&
+              channel.min >= channel.max
+            ) {
+              channel.min =
+                Math.max(
+                  channel.allowedMin,
+                  channel.max - 1
+                );
+            }
+
+            if (
+              property === "max" &&
+              channel.max <= channel.min
+            ) {
+              channel.max =
+                Math.min(
+                  channel.allowedMax,
+                  channel.min + 1
+                );
+            }
+
+            input.value =
+              compactDisplayNumber(
+                channel[property]
+              );
+
+            scheduleIfDisplayRefresh();
+          }
+        );
+
+        label.append(span, input);
+        return label;
+      }
+
+      rangeGrid.append(
+        numericField("Min", "min"),
+        numericField("Max", "max")
+      );
+
+      editor.append(rangeGrid);
+
+      // Gamma
+      const gammaLabel =
+        document.createElement("label");
+
+      gammaLabel.className =
+        "if-slider-field";
+
+      const gammaTop =
+        document.createElement("span");
+
+      gammaTop.textContent =
+        "Gamma";
+
+      const gammaValue =
+        document.createElement("output");
+
+      gammaValue.textContent =
+        Number(channel.gamma)
+          .toFixed(2);
+
+      const gammaSlider =
+        document.createElement("input");
+
+      gammaSlider.type = "range";
+      gammaSlider.min = "0.20";
+      gammaSlider.max = "4.00";
+      gammaSlider.step = "0.05";
+      gammaSlider.value =
+        String(channel.gamma);
+
+      gammaSlider.addEventListener(
+        "input",
+        () => {
+          channel.gamma =
+            Number(gammaSlider.value);
+
+          gammaValue.textContent =
+            channel.gamma.toFixed(2);
+
+          scheduleIfDisplayRefresh();
+        }
+      );
+
+      const gammaHeader =
+        document.createElement("span");
+
+      gammaHeader.className =
+        "if-slider-header";
+
+      gammaHeader.append(
+        gammaTop,
+        gammaValue
+      );
+
+      gammaLabel.append(
+        gammaHeader,
+        gammaSlider
+      );
+
+      editor.append(gammaLabel);
+
+      // Channel brightness
+      const brightnessLabel =
+        document.createElement("label");
+
+      brightnessLabel.className =
+        "if-slider-field";
+
+      const brightnessTop =
+        document.createElement("span");
+
+      brightnessTop.textContent =
+        "Channel brightness";
+
+      const brightnessValue =
+        document.createElement("output");
+
+      brightnessValue.textContent =
+        `${Math.round(channel.brightness)}%`;
+
+      const brightnessSlider =
+        document.createElement("input");
+
+      brightnessSlider.type = "range";
+      brightnessSlider.min = "0";
+      brightnessSlider.max = "300";
+      brightnessSlider.step = "5";
+      brightnessSlider.value =
+        String(channel.brightness);
+
+      brightnessSlider.addEventListener(
+        "input",
+        () => {
+          channel.brightness =
+            Number(
+              brightnessSlider.value
+            );
+
+          brightnessValue.textContent =
+            `${Math.round(
+              channel.brightness
+            )}%`;
+
+          scheduleIfDisplayRefresh();
+        }
+      );
+
+      const brightnessHeader =
+        document.createElement("span");
+
+      brightnessHeader.className =
+        "if-slider-header";
+
+      brightnessHeader.append(
+        brightnessTop,
+        brightnessValue
+      );
+
+      brightnessLabel.append(
+        brightnessHeader,
+        brightnessSlider
+      );
+
+      editor.append(brightnessLabel);
+
+      // Buttons
+      const actions =
+        document.createElement("div");
+
+      actions.className =
+        "if-editor-actions";
+
+      const autoButton =
+        document.createElement("button");
+
+      autoButton.type = "button";
+      autoButton.textContent = "Auto";
+
+      autoButton.addEventListener(
+        "click",
+        () => {
+          channel.min =
+            channel.autoMin;
+
+          channel.max =
+            channel.autoMax;
+
+          saveIfDisplaySettings();
+          renderChannelControls();
+          refreshImageDisplay();
+        }
+      );
+
+      const resetButton =
+        document.createElement("button");
+
+      resetButton.type = "button";
+      resetButton.textContent = "Reset";
+
+      resetButton.addEventListener(
+        "click",
+        () => {
+          channel.name =
+            channel.defaultName;
+
+          channel.visible = true;
+          channel.color =
+            channel.defaultColor;
+
+          channel.min =
+            channel.autoMin;
+
+          channel.max =
+            channel.autoMax;
+
+          channel.gamma = 1;
+          channel.brightness = 100;
+
+          saveIfDisplaySettings();
+          renderChannelControls();
+          refreshImageDisplay();
+        }
+      );
+
+      actions.append(
+        autoButton,
+        resetButton
+      );
+
+      editor.append(actions);
+
+      els.stainChannelControls.append(
+        editor
+      );
+
+      if (els.displayHint) {
+        const assumption =
+          meta.assumedChannelAxis
+            ? " The leading TIFF axis is being interpreted as channels because this image is set to Fluorescence."
+            : "";
+
+        els.displayHint.textContent =
+          "Scientific channel controls affect display only. Raw pixel values are unchanged." +
+          assumption;
+      }
+
+      return;
     }
+
+    // --------------------------------------------------------
+    // Existing H&E / H-DAB / RGB display
+    // --------------------------------------------------------
+    let names;
+
+    if (imageType === "he") {
+      names = [
+        [
+          "hematoxylin",
+          "Hematoxylin",
+          "#6f5da8"
+        ],
+        [
+          "eosin",
+          "Eosin",
+          "#ef8ea8"
+        ],
+      ];
+
+    } else if (imageType === "hdab") {
+      names = [
+        [
+          "hematoxylin",
+          "Hematoxylin",
+          "#6f5da8"
+        ],
+        [
+          "dab",
+          "DAB",
+          "#9a6a3a"
+        ],
+      ];
+
+    } else {
+      names = [
+        ["red", "Red", "#ff6b6b"],
+        ["green", "Green", "#69db7c"],
+        ["blue", "Blue", "#4dabf7"],
+      ];
+    }
+
+    const state =
+      displayChannels[imageType] ||
+      displayChannels.rgb;
+
+    for (
+      const [key, label, color]
+      of names
+    ) {
+      const button =
+        document.createElement("button");
+
+      button.type = "button";
+
+      button.className =
+        `channel-toggle ${
+          state[key] ? "active" : ""
+        }`;
+
+      const dot =
+        document.createElement("span");
+
+      dot.className = "channel-dot";
+      dot.style.background = color;
+
+      const text =
+        document.createElement("span");
+
+      text.textContent = label;
+
+      button.append(dot, text);
+
+      button.addEventListener(
+        "click",
+        () => {
+          state[key] = !state[key];
+
+          saveDisplaySettings();
+          renderChannelControls();
+          refreshImageDisplay();
+        }
+      );
+
+      els.stainChannelControls.append(
+        button
+      );
+    }
+
     if (els.displayHint) {
-      els.displayHint.textContent = imageType === "fluorescence"
-        ? "RGB channel toggles are available now; true >3-channel IF support can plug into this panel later."
-        : "Stain views use color deconvolution for visualization only. Original pixels are never modified.";
+      els.displayHint.textContent =
+        imageType === "fluorescence"
+          ? "This image is currently being displayed as RGB fluorescence."
+          : "Stain views use color deconvolution for visualization only. Original pixels are never modified.";
+    }
+  }
+
+  async function offlineTileResponse(url) {
+    if (!("caches" in window)) return null;
+
+    try {
+      const cache = await caches.open(OFFLINE_CACHE);
+      return await cache.match(url);
+    } catch (error) {
+      console.warn("Offline tile cache read failed", error);
+      return null;
+    }
+  }
+
+  function localFirstTileDownloadStart(context) {
+    const controller =
+      typeof AbortController !== "undefined"
+        ? new AbortController()
+        : null;
+
+    context.userData.histoAbortController = controller;
+
+    (async () => {
+      try {
+        let response = await offlineTileResponse(context.src);
+        let source = "local";
+
+        if (!response) {
+          source = "network";
+
+          response = await fetch(context.src, {
+            cache: "no-store",
+            credentials: "same-origin",
+            ...(controller ? { signal: controller.signal } : {}),
+          });
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            `${response.status} ${response.statusText}`.trim()
+          );
+        }
+
+        const blob = await response.blob();
+
+        if (!blob.size) {
+          throw new Error("Empty tile response");
+        }
+
+        context.userData.histoTileSource = source;
+
+        // OpenSeadragon knows how to convert rasterBlob to the
+        // image representation required by the active drawer.
+        context.finish(blob, null, "rasterBlob");
+
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+
+        const message =
+          error?.message ||
+          String(error) ||
+          "Unknown tile error";
+
+        context.fail(
+          `Tile unavailable: ${message}`,
+          null
+        );
+      }
+    })();
+  }
+
+  function localFirstTileDownloadAbort(context) {
+    try {
+      context.userData?.histoAbortController?.abort();
+    } catch (_) {
+      // Best effort only.
     }
   }
 
   function buildViewerSource(imageId, info) {
     const display = activeDisplayView();
-    if (info.directRaster && display.view === "original") return { type: "image", url: `${API}/images/${imageId}/original` };
+
+    // Direct-raster images still use their normal URL in alpha2.
+    // The local-first path below covers the DeepZoom tiled images.
+    if (
+      info.directRaster &&
+      display.view === "original" &&
+      !(
+        imageType === "fluorescence" &&
+        info.multichannel?.scientificMultichannel
+      )
+    ) {
+      return {
+        type: "image",
+        url: `${API}/images/${imageId}/original`
+      };
+    }
+
     const query = displayQueryString();
+
     return {
       width: info.width,
       height: info.height,
@@ -1340,7 +2404,19 @@
       tileOverlap: info.tileOverlap,
       minLevel: 0,
       maxLevel: info.levelCount - 1,
-      getTileUrl(level, x, y) { return `${API}/images/${imageId}/tiles/${level}/${x}_${y}.jpeg?${query}`; },
+
+      getTileUrl(level, x, y) {
+        return `${API}/images/${imageId}/tiles/${level}/${x}_${y}.jpeg?${query}`;
+      },
+
+      // Android and Web can now read previously downloaded tiles
+      // directly from CacheStorage without involving the server.
+      downloadTileStart: localFirstTileDownloadStart,
+      downloadTileAbort: localFirstTileDownloadAbort,
+
+      hasTransparency() {
+        return false;
+      },
     };
   }
 
@@ -1802,12 +2878,15 @@
       try {
         const regionPoints = prepareFreehandPolygon(points);
         if (regionPoints.length < 3) throw new Error("Selection area is too small");
-        const response = await apiFetch(`${API}/geometry/select`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ region: polygonGeometry(regionPoints), features: featureCollection.features.map((feature) => ({ id: featureId(feature), geometry: feature.geometry })) }),
-        });
-        const payload = await response.json();
-        const ids = Array.isArray(payload.ids) ? payload.ids.map(String) : [];
+        const ids = await requestGeometrySelection(
+          polygonGeometry(regionPoints),
+          featureCollection.features.map(
+            (feature) => ({
+              id: featureId(feature),
+              geometry: feature.geometry,
+            })
+          )
+        );
         if (draft.additive) setMultiSelection([...new Set([...selectedIds, ...ids])], selectedId);
         else setMultiSelection(ids);
         const feature = selectedId ? findFeature(selectedId) : null;
@@ -1954,19 +3033,263 @@
     return { type: "Polygon", coordinates: [closeRing(points)] };
   }
 
+  function geometryToClippingInput(geometry) {
+    if (!geometry) {
+      throw new Error("Missing geometry");
+    }
+
+    if (geometry.type === "Polygon") {
+      return geometry.coordinates;
+    }
+
+    if (geometry.type === "MultiPolygon") {
+      return geometry.coordinates;
+    }
+
+    throw new Error(
+      `Unsupported geometry type: ${geometry.type || "unknown"}`
+    );
+  }
+
+  function clippingResultToGeometry(result) {
+    if (!Array.isArray(result) || result.length === 0) {
+      return null;
+    }
+
+    // polygon-clipping always returns MultiPolygon coordinates.
+    // Convert a single polygon back to normal GeoJSON Polygon.
+    if (result.length === 1) {
+      return {
+        type: "Polygon",
+        coordinates: result[0],
+      };
+    }
+
+    return {
+      type: "MultiPolygon",
+      coordinates: result,
+    };
+  }
+
+  function localBooleanGeometry(subject, operand, operation) {
+    const engine = window.polygonClipping;
+
+    if (!engine) {
+      throw new Error(
+        "Offline geometry engine is unavailable"
+      );
+    }
+
+    const a = geometryToClippingInput(subject);
+    const b = geometryToClippingInput(operand);
+
+    const normalizedOperation = ({
+      add: "union",
+      union: "union",
+      subtract: "difference",
+      difference: "difference",
+      intersect: "intersection",
+      intersection: "intersection",
+    })[operation] || "difference";
+
+    let result;
+
+    if (normalizedOperation === "union") {
+      result = engine.union(a, b);
+
+    } else if (normalizedOperation === "intersection") {
+      result = engine.intersection(a, b);
+
+    } else {
+      result = engine.difference(a, b);
+    }
+
+    return clippingResultToGeometry(result);
+  }
+
   async function requestBooleanGeometry(subject, operand, operation) {
-    const response = await apiFetch(`${API}/geometry/boolean`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    // If Android already knows the server is unavailable,
+    // perform the operation locally without waiting for timeout.
+    if (
+      IS_NATIVE &&
+      serverReachable === false &&
+      window.polygonClipping
+    ) {
+      return localBooleanGeometry(
         subject,
         operand,
-        operation: ({ add: "union", union: "union", subtract: "difference", difference: "difference", intersect: "intersection", intersection: "intersection" })[operation] || "difference",
-        simplifyTolerance: Math.max(0.05, screenToleranceToImage(0.18)),
-      }),
-    });
-    const payload = await response.json();
-    return payload.geometry || null;
+        operation
+      );
+    }
+
+    try {
+      const response = await apiFetch(
+        `${API}/geometry/boolean`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            subject,
+            operand,
+            operation: ({
+              add: "union",
+              union: "union",
+              subtract: "difference",
+              difference: "difference",
+              intersect: "intersection",
+              intersection: "intersection"
+            })[operation] || "difference",
+
+            simplifyTolerance:
+              Math.max(
+                0.05,
+                screenToleranceToImage(0.18)
+              ),
+          }),
+          timeoutMs: 3500,
+        }
+      );
+
+      const payload = await response.json();
+      return payload.geometry || null;
+
+    } catch (error) {
+      // Android fallback:
+      // if the server/VPN disappears, repeat the same operation locally.
+      if (
+        IS_NATIVE &&
+        window.polygonClipping
+      ) {
+        console.warn(
+          "Server geometry unavailable; using local geometry engine",
+          error
+        );
+
+        return localBooleanGeometry(
+          subject,
+          operand,
+          operation
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  function localSelectGeometries(region, features) {
+    const engine = window.polygonClipping;
+
+    if (!engine) {
+      throw new Error(
+        "Offline geometry engine is unavailable"
+      );
+    }
+
+    const regionInput =
+      geometryToClippingInput(region);
+
+    const ids = [];
+
+    for (const item of features || []) {
+      if (!item?.geometry) continue;
+
+      try {
+        const geometryInput =
+          geometryToClippingInput(
+            item.geometry
+          );
+
+        /*
+         * We want the same concept as:
+         *
+         *     selectionRegion.covers(annotation)
+         *
+         * If:
+         *
+         *     annotation - selectionRegion
+         *
+         * produces nothing, the annotation is fully inside
+         * the selection region.
+         */
+        const outside =
+          engine.difference(
+            geometryInput,
+            regionInput
+          );
+
+        if (
+          Array.isArray(outside) &&
+          outside.length === 0
+        ) {
+          ids.push(String(item.id));
+        }
+
+      } catch (error) {
+        console.warn(
+          "Local selection test failed",
+          item?.id,
+          error
+        );
+      }
+    }
+
+    return ids;
+  }
+
+  async function requestGeometrySelection(region, features) {
+    if (
+      IS_NATIVE &&
+      serverReachable === false &&
+      window.polygonClipping
+    ) {
+      return localSelectGeometries(
+        region,
+        features
+      );
+    }
+
+    try {
+      const response = await apiFetch(
+        `${API}/geometry/select`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            region,
+            features,
+          }),
+          timeoutMs: 3500,
+        }
+      );
+
+      const payload = await response.json();
+
+      return Array.isArray(payload.ids)
+        ? payload.ids.map(String)
+        : [];
+
+    } catch (error) {
+      if (
+        IS_NATIVE &&
+        window.polygonClipping
+      ) {
+        console.warn(
+          "Server selection unavailable; using local geometry engine",
+          error
+        );
+
+        return localSelectGeometries(
+          region,
+          features
+        );
+      }
+
+      throw error;
+    }
   }
 
   function createAnnotationFeature(geometry) {
@@ -2148,6 +3471,7 @@
     const enabled = Boolean(currentImage);
     els.saveButton.disabled = !enabled || !dirty || geometryBusy;
     els.exportButton.disabled = !enabled;
+    if (els.shareGeoJsonButton) els.shareGeoJsonButton.disabled = !enabled;
     els.importGeoJsonButton.disabled = !enabled;
     els.downloadOriginalButton.disabled = !enabled;
     if (els.downloadOfflineButton) els.downloadOfflineButton.disabled = !enabled || !currentInfo;
@@ -2282,54 +3606,279 @@
 
   async function loadImages(preserveSelection = true) {
     const sequence = ++imageCatalogSequence;
-    const previous = preserveSelection ? (els.imageSelect.value || currentImage?.id || "") : "";
+    const previous = preserveSelection
+      ? (els.imageSelect.value || currentImage?.id || "")
+      : "";
 
-    // Local-first: render immediately from IndexedDB. The remote catalog is a
-    // background refresh and never blocks the Files dropdown.
-    const [catalog, offlineRecords] = await Promise.all([restoreCachedCatalog(), listOfflineRecords()]);
-    const packageImages = offlineRecords.map((item) => item.image).filter(Boolean);
-    images = mergeKnownImages(catalog, packageImages);
-    if (!navigator.onLine) serverReachable = false;
-    let localState = await collectLocalImageState(offlineRecords);
-    renderImageOptions(previous, localState);
+    let localState = {
+      readyIds: new Set(),
+      partialIds: new Set(),
+      pendingIds: new Set(),
+    };
 
-    if (images.length) {
-      const downloadedCount = images.filter((image) => localState.readyIds.has(image.id)).length;
-      setStatus(`${images.length} cached file${images.length === 1 ? "" : "s"} available immediately${downloadedCount ? ` · ${downloadedCount} downloaded` : ""}`, "local");
-    } else if (!navigator.onLine) {
-      setStatus("Offline: no cached files are available on this device", "local");
+    let offlineRecords = [];
+    let catalog = [];
+
+    // ---------------------------------------------------------
+    // 1. LOCAL FIRST
+    // Local storage problems must never prevent the server list
+    // from being loaded.
+    // ---------------------------------------------------------
+    try {
+      [catalog, offlineRecords] = await Promise.all([
+        restoreCachedCatalog(),
+        listOfflineRecords(),
+      ]);
+
+      const packageImages = offlineRecords
+        .map((item) => item.image)
+        .filter(Boolean);
+
+      images = mergeKnownImages(catalog, packageImages);
+
+      localState = await collectLocalImageState(offlineRecords);
+
+      renderImageOptions(previous, localState);
+
+      if (images.length) {
+        const downloadedCount = images.filter(
+          (image) => localState.readyIds.has(image.id)
+        ).length;
+
+        setStatus(
+          `${images.length} cached file${images.length === 1 ? "" : "s"} available immediately` +
+          `${downloadedCount ? ` · ${downloadedCount} downloaded` : ""}`,
+          "local"
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "Could not restore local image catalog",
+        error
+      );
+    }
+
+    // navigator.onLine is useful in a browser, but Android
+    // WebView/VPN connectivity can report an unreliable value.
+    // Native Android therefore always attempts the API request.
+    if (!IS_NATIVE && !navigator.onLine) {
+      serverReachable = false;
+
+      if (!images.length) {
+        setStatus(
+          "Offline: no cached files are available on this device",
+          "local"
+        );
+      }
+
       return;
-    } else {
+    }
+
+    if (!images.length) {
       setStatus("Checking the server for files…", "local");
     }
 
-    if (!navigator.onLine) return;
+    let diagnosticStage = "starting";
 
     try {
-      const response = await apiFetch(`${API}/images`, { timeoutMs: 6000 });
+      // -------------------------------------------------------
+      // 2. GET REMOTE CATALOG
+      // -------------------------------------------------------
+      diagnosticStage = "requesting /api/images";
+
+      const response = await apiFetch(
+        `${API}/images`,
+        { timeoutMs: 10000 }
+      );
+
+      diagnosticStage = "reading /api/images JSON";
+
       const payload = await response.json();
-      if (sequence !== imageCatalogSequence) return;
+
+      if (sequence !== imageCatalogSequence) {
+        return;
+      }
+
+      diagnosticStage = "validating image catalog";
+
+      if (
+        !payload ||
+        !Array.isArray(payload.images)
+      ) {
+        throw new Error(
+          "The server response does not contain an images array"
+        );
+      }
+
+      const remoteImages = payload.images;
+
       serverReachable = true;
-      const remoteImages = Array.isArray(payload.images) ? payload.images : [];
-      await cacheImageCatalog(payload);
-      const currentOfflineRecords = await listOfflineRecords();
-      images = mergeKnownImages(currentOfflineRecords.map((item) => item.image).filter(Boolean), remoteImages);
-      localState = await collectLocalImageState(currentOfflineRecords);
-      renderImageOptions(previous, localState);
-      setStatus(`${remoteImages.length} server file${remoteImages.length === 1 ? "" : "s"} found`, "saved");
+
+      // -------------------------------------------------------
+      // 3. RENDER FIRST
+      //
+      // Important:
+      // Do NOT wait for IndexedDB before displaying server files.
+      // -------------------------------------------------------
+      diagnosticStage = "reading local file state";
+
+      try {
+        offlineRecords = await listOfflineRecords();
+        localState = await collectLocalImageState(
+          offlineRecords
+        );
+      } catch (localError) {
+        console.warn(
+          "Could not read local file state",
+          localError
+        );
+
+        offlineRecords = [];
+
+        localState = {
+          readyIds: new Set(),
+          partialIds: new Set(),
+          pendingIds: new Set(),
+        };
+      }
+
+      diagnosticStage = "merging image catalog";
+
+      const packageImages = offlineRecords
+        .map((item) => item.image)
+        .filter(Boolean);
+
+      images = mergeKnownImages(
+        packageImages,
+        remoteImages
+      );
+
+      diagnosticStage = "rendering Files";
+
+      renderImageOptions(
+        previous,
+        localState
+      );
+
+      setStatus(
+        `${remoteImages.length} server file${remoteImages.length === 1 ? "" : "s"} found`,
+        "saved"
+      );
+
+      // -------------------------------------------------------
+      // 4. CACHE AFTER RENDERING
+      //
+      // Failure here is non-fatal.
+      // -------------------------------------------------------
+      diagnosticStage = "saving image catalog locally";
+
+      try {
+        await cacheImageCatalog(payload);
+      } catch (cacheError) {
+        console.warn(
+          "Files loaded, but catalog cache could not be saved",
+          cacheError
+        );
+      }
+
+      console.log(
+        "HistoAnnotator Files loaded",
+        {
+          native: IS_NATIVE,
+          origin: window.location.origin,
+          api: API,
+          serverFiles: remoteImages.length,
+          totalFiles: images.length,
+          navigatorOnline: navigator.onLine,
+        }
+      );
+
     } catch (error) {
-      if (sequence !== imageCatalogSequence) return;
+      if (sequence !== imageCatalogSequence) {
+        return;
+      }
+
       serverReachable = false;
-      const currentOfflineRecords = await listOfflineRecords();
-      const cached = await restoreCachedCatalog();
-      images = mergeKnownImages(cached, currentOfflineRecords.map((item) => item.image).filter(Boolean));
-      localState = await collectLocalImageState(currentOfflineRecords);
-      renderImageOptions(previous, localState);
-      const downloadedCount = images.filter((image) => localState.readyIds.has(image.id)).length;
-      setStatus(`Server/VPN unavailable. Showing local catalog${downloadedCount ? ` · ${downloadedCount} downloaded` : ""}.`, "local");
+
+      const errorMessage =
+        error?.message ||
+        String(error) ||
+        "Unknown error";
+
+      console.error(
+        "HistoAnnotator Files error",
+        {
+          stage: diagnosticStage,
+          error,
+          native: IS_NATIVE,
+          origin: window.location.origin,
+          api: API,
+          navigatorOnline: navigator.onLine,
+        }
+      );
+
+      // Keep whatever local files are available.
+      try {
+        const currentOfflineRecords =
+          await listOfflineRecords();
+
+        const cached =
+          await restoreCachedCatalog();
+
+        images = mergeKnownImages(
+          cached,
+          currentOfflineRecords
+            .map((item) => item.image)
+            .filter(Boolean)
+        );
+
+        localState =
+          await collectLocalImageState(
+            currentOfflineRecords
+          );
+
+        renderImageOptions(
+          previous,
+          localState
+        );
+      } catch (localError) {
+        console.warn(
+          "Could not restore Files after server error",
+          localError
+        );
+      }
+
+      // Since the backend may be remote, expose the exact error directly
+      // on the Android tablet during alpha testing.
+      if (IS_NATIVE && !images.length) {
+        window.alert(
+          [
+            "HistoAnnotator Android diagnostics",
+            "",
+            `Stage: ${diagnosticStage}`,
+            `Error: ${errorMessage}`,
+            "",
+            `Origin: ${window.location.origin}`,
+            `API: ${API}`,
+            `navigator.onLine: ${navigator.onLine}`,
+            `Native: ${IS_NATIVE}`,
+          ].join("\n")
+        );
+      }
+
+      if (images.length) {
+        setStatus(
+          `Offline: ${images.length} local file${images.length === 1 ? "" : "s"} available`,
+          "local"
+        );
+      } else {
+        setStatus(
+          `Files error: ${diagnosticStage} · ${errorMessage}`,
+          "error"
+        );
+      }
     }
   }
-
 
   async function ensurePrepared(image, sequence) {
     if (!image.needsPreparation || image.prepared) return true;
@@ -2513,6 +4062,7 @@
         if (dirty && navigator.onLine) saveAnnotations(false);
       });
 
+      renderChannelControls();
       viewer.open(buildViewerSource(imageId, currentInfo));
       els.dimensions.textContent = `${currentInfo.width} × ${currentInfo.height}`;
       await cacheCurrentImageMetadata();
@@ -3358,39 +4908,258 @@
     }
   }
 
-  async function exportGeoJson() {
-    if (!currentImage) return;
-    let exportCollection = quPathFeatureCollection(featureCollection);
+  async function prepareGeoJsonExport() {
+    if (!currentImage) return null;
+
+    let exportCollection =
+      quPathFeatureCollection(featureCollection);
+
     let report = null;
-    if (navigator.onLine) {
+
+    // Prefer server validation when available, but export/share
+    // must remain available offline.
+    if (navigator.onLine || IS_NATIVE) {
       try {
-        const response = await apiFetch(`${API}/geojson/qupath-export`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(exportCollection),
-        });
+        const response = await apiFetch(
+          `${API}/geojson/qupath-export`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(exportCollection),
+            timeoutMs: 3500,
+          }
+        );
+
         const payload = await response.json();
-        if (payload?.featureCollection?.type === "FeatureCollection") exportCollection = payload.featureCollection;
+
+        if (
+          payload?.featureCollection?.type ===
+          "FeatureCollection"
+        ) {
+          exportCollection =
+            payload.featureCollection;
+        }
+
         report = payload?.report || null;
+
       } catch (error) {
-        setStatus(`QuPath geometry validation unavailable; exporting local GeoJSON: ${error.message}`, "local");
+        setStatus(
+          `QuPath geometry validation unavailable; using local GeoJSON: ${error.message}`,
+          "local"
+        );
       }
     }
-    const blob = new Blob([JSON.stringify(exportCollection, null, 2)], { type: "application/geo+json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
+
+    const filename =
+      `${currentImage.name}${
+        currentAnnotationFile === "Default"
+          ? ""
+          : `.${currentAnnotationFile}`
+      }.geojson`;
+
+    return {
+      exportCollection,
+      report,
+      filename,
+      text: JSON.stringify(
+        exportCollection,
+        null,
+        2
+      ),
+    };
+  }
+
+
+  function showGeoJsonExportReport(
+    report,
+    action = "exported"
+  ) {
+    if (!report) return;
+
+    const repaired =
+      Number(report.repaired || 0);
+
+    const dropped =
+      Number(report.dropped || 0);
+
+    setStatus(
+      `QuPath GeoJSON ${action} · ${report.features} annotations${
+        repaired
+          ? ` · ${repaired} repaired`
+          : ""
+      }${
+        dropped
+          ? ` · ${dropped} invalid dropped`
+          : ""
+      }`,
+      dropped ? "local" : "saved"
+    );
+  }
+
+
+  function downloadPreparedGeoJson(prepared) {
+    const blob = new Blob(
+      [prepared.text],
+      {
+        type: "application/geo+json"
+      }
+    );
+
+    const url =
+      URL.createObjectURL(blob);
+
+    const anchor =
+      document.createElement("a");
+
     anchor.href = url;
-    anchor.download = `${currentImage.name}${currentAnnotationFile === "Default" ? "" : `.${currentAnnotationFile}`}.geojson`;
+    anchor.download = prepared.filename;
+
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    if (report) {
-      const repaired = Number(report.repaired || 0); const dropped = Number(report.dropped || 0);
-      setStatus(`QuPath GeoJSON exported · ${report.features} annotations${repaired ? ` · ${repaired} repaired` : ""}${dropped ? ` · ${dropped} invalid dropped` : ""}`, dropped ? "local" : "saved");
-    }
+
+    setTimeout(
+      () => URL.revokeObjectURL(url),
+      1000
+    );
   }
 
+
+  async function exportGeoJson() {
+    const prepared =
+      await prepareGeoJsonExport();
+
+    if (!prepared) return;
+
+    downloadPreparedGeoJson(prepared);
+
+    showGeoJsonExportReport(
+      prepared.report,
+      "exported"
+    );
+  }
+
+
+  async function shareGeoJson() {
+    const prepared =
+      await prepareGeoJsonExport();
+
+    if (!prepared) return;
+
+    const safeFilename =
+      prepared.filename.replace(
+        /[^a-zA-Z0-9._-]+/g,
+        "_"
+      );
+
+    const plugins =
+      window.Capacitor?.Plugins || {};
+
+    const Filesystem =
+      plugins.Filesystem;
+
+    const Share =
+      plugins.Share;
+
+    // Native Android
+    if (
+      IS_NATIVE &&
+      Filesystem?.writeFile &&
+      Share?.share
+    ) {
+      try {
+        const written =
+          await Filesystem.writeFile({
+            path:
+              `exports/${safeFilename}`,
+            data: prepared.text,
+            directory: "CACHE",
+            encoding: "utf8",
+            recursive: true,
+          });
+
+        await Share.share({
+          title:
+            `${currentImage.name} annotations`,
+          text:
+            `QuPath GeoJSON from HistoAnnotator v${VERSION}`,
+          files: [written.uri],
+          dialogTitle:
+            "Share GeoJSON",
+        });
+
+        showGeoJsonExportReport(
+          prepared.report,
+          "shared"
+        );
+
+        if (!prepared.report) {
+          setStatus(
+            "GeoJSON ready to share",
+            "saved"
+          );
+        }
+
+        return;
+
+      } catch (error) {
+        console.warn(
+          "Native GeoJSON share failed",
+          error
+        );
+      }
+    }
+
+    // Browser/PWA fallback if supported
+    try {
+      const file = new File(
+        [prepared.text],
+        prepared.filename,
+        {
+          type: "application/geo+json"
+        }
+      );
+
+      if (
+        navigator.share &&
+        navigator.canShare &&
+        navigator.canShare({
+          files: [file]
+        })
+      ) {
+        await navigator.share({
+          title:
+            `${currentImage.name} annotations`,
+          text:
+            `QuPath GeoJSON from HistoAnnotator v${VERSION}`,
+          files: [file],
+        });
+
+        showGeoJsonExportReport(
+          prepared.report,
+          "shared"
+        );
+
+        return;
+      }
+
+    } catch (error) {
+      console.warn(
+        "Web GeoJSON share failed",
+        error
+      );
+    }
+
+    // Last fallback
+    downloadPreparedGeoJson(prepared);
+
+    setStatus(
+      "Native sharing unavailable; GeoJSON downloaded instead",
+      "local"
+    );
+  }
 
   async function importGeoJson(file) {
     if (!file || !currentImage) return;
@@ -3489,6 +5258,7 @@
     });
     els.importInput.addEventListener("change", () => importGeoJson(els.importInput.files?.[0]));
     els.exportButton.addEventListener("click", () => { toggleFileMenu(false); exportGeoJson(); });
+    els.shareGeoJsonButton?.addEventListener("click", () => { toggleFileMenu(false); shareGeoJson(); });
     els.saveButton.addEventListener("click", () => { toggleFileMenu(false); saveAnnotations(true); });
     els.imageInfoButton.addEventListener("click", showImageInfo);
     els.closeInfoButton.addEventListener("click", () => { els.infoOverlay.hidden = true; });

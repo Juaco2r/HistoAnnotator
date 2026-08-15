@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">HistoAnnotator</string>
+    <string name="title_activity_main">HistoAnnotator</string>
+    <string name="package_name">org.juaco2r.histoannotator</string>
+    <string name="custom_url_scheme">org.juaco2r.histoannotator</string>
+</resources>

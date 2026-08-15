@@ -1,189 +1,233 @@
-# HistoAnnotator MVP v0.1
+# HistoAnnotator
 
-Visor web/PWA local para navegar imágenes histológicas y crear anotaciones GeoJSON compatibles con QuPath. Diseñado para la Lenovo M11:
+HistoAnnotator is a web and Android application for interactive annotation
+of histology and microscopy images.
 
-- dedos: mover y ampliar;
-- lápiz: trazo libre, polígono y rectángulo;
-- guardado local-first con sincronización automática;
-- imágenes pequeñas mediante Pillow;
-- WSI compatibles mediante OpenSlide + Deep Zoom;
-- originales del NAS montados como solo lectura;
-- anotaciones y caché en el SSD de Krypton.
+It is designed for research workflows involving whole-slide images,
+standard raster images, scientific multichannel fluorescence TIFF files,
+and QuPath-compatible GeoJSON annotations.
 
-> Es un MVP de prueba. Todavía no incluye autenticación individual, auditoría ni edición de vértices. No uses datos clínicos identificables hasta añadir esos controles y obtener aprobación institucional.
+> **Pre-release software**
+>
+> HistoAnnotator v1.0.0 is intended for research and testing.
+> It is not clinically validated medical software and currently does not
+> provide individual authentication, audit trails, or regulatory controls.
 
-## 1. Copiar y configurar
+## Main features
 
-```bash
-cd ~
-unzip HistoAnnotator-v0.1.0-MVP.zip
-mv histoannotator_mvp histoannotator
-cd ~/histoannotator
+- OpenSlide-based whole-slide image viewing
+- Deep Zoom / OpenSeadragon navigation
+- Freehand, Brush, Polygon, Rectangle, Circle and Wand tools
+- Multi-object selection
+- Merge, intersection and subtraction operations
+- Annotation classes and colors
+- Undo / redo
+- QuPath-compatible GeoJSON import and export
+- GeoJSON sharing from Android
+- Local-first annotation storage
+- Downloaded image viewing without a continuous server connection
+- Android tablet support through Capacitor
+- H&E and H-DAB display visualization
+- Scientific multichannel fluorescence TIFF visualization
+- Per-channel false color, Min/Max, gamma and brightness controls
 
-cp .env.example .env
-nano .env
-```
+## Multichannel fluorescence
 
-La ruta ya propuesta es:
+HistoAnnotator preserves supported scientific fluorescence channels instead
+of converting the source image to RGB before visualization.
 
-```dotenv
-IMAGE_ROOT=/home/jrod/jalcaraz/Images_Datasets/HistoAnnotator
-ANNOTATION_ROOT=/srv/histoannotator/annotations
-TILE_CACHE_ROOT=/srv/histoannotator/cache
-```
+For supported TIFF files it provides:
 
-Comprueba que el montaje es legible:
+- independent channel visibility;
+- false-color assignment;
+- automatic display range estimation;
+- per-channel minimum and maximum display values;
+- gamma adjustment;
+- per-channel brightness;
+- persistent display settings per image.
 
-```bash
-findmnt -T /home/jrod/jalcaraz/Images_Datasets/HistoAnnotator
-find /home/jrod/jalcaraz/Images_Datasets/HistoAnnotator -maxdepth 2 -type f | head
-```
+Display operations are non-destructive. Raw scientific pixel values are
+not modified.
 
-## 2. Crear las carpetas de escritura locales
+OME metadata and channel names are used when available.
 
-```bash
-sudo mkdir -p /srv/histoannotator/annotations /srv/histoannotator/cache
-sudo chown -R jrod:jrod /srv/histoannotator
-```
+The initial v1.0 implementation primarily supports three-dimensional
+multichannel TIFF datasets with spatial Y/X axes and 2-16 channels.
 
-## 3. Construir e iniciar el MVP
+Some non-OME TIFF files may expose a small leading dimension as Z even when
+the planes represent fluorescence channels. HistoAnnotator can interpret
+that leading axis as channels when the image is explicitly configured as
+**Fluorescence**.
 
-La red `cytomine_host_network` ya existe porque la creó el stack de Cytomine.
+See [Multichannel fluorescence](docs/MULTICHANNEL_IF.md).
 
-```bash
-cd ~/histoannotator
-sudo docker compose up -d --build
-```
+## Quick start with Docker
 
-Prueba el backend local:
+### Requirements
 
-```bash
-curl -s http://127.0.0.1:8020/health | python3 -m json.tool
-curl -s http://127.0.0.1:8020/api/images | python3 -m json.tool | head -60
-```
+- Git
+- Docker Engine
+- Docker Compose v2
 
-## 4. Añadir la ruta a Caddy
-
-El script hace copia de seguridad e inserta la ruta al comienzo de `route {`:
-
-```bash
-cd ~/histoannotator
-python3 scripts/patch_caddy.py ~/cytomine/Caddyfile
-```
-
-Puedes confirmar el bloque:
+Clone the repository:
 
 ```bash
-grep -A5 -B2 'BEGIN HISTOANNOTATOR' ~/cytomine/Caddyfile
+git clone https://github.com/Juaco2r/HistoAnnotator.git
+cd HistoAnnotator
 ```
 
-Valida y recrea únicamente Caddy:
+Create local storage directories:
 
 ```bash
-cd ~/cytomine
-
-sudo docker compose \
-  -f compose.yaml \
-  -f compose.https.yaml \
-  exec -T caddy \
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-
-sudo docker compose \
-  -f compose.yaml \
-  -f compose.https.yaml \
-  up -d --force-recreate caddy
+mkdir -p \
+  data/images \
+  data/annotations \
+  data/cache \
+  data/prepared \
+  data/uploads
 ```
 
-## 5. Abrirlo
-
-En Krypton, PC o tablet con la CA ya instalada:
+Place one or more test images in:
 
 ```text
-https://161.116.13.132/annotator/
+data/images/
 ```
 
-No uses `/annotator` sin la barra final en este MVP.
-
-## 6. Primera prueba
-
-1. Coloca un JPG/PNG pequeño en el directorio del NAS.
-2. Pulsa **Actualizar** en HistoAnnotator.
-3. Selecciona la imagen.
-4. En tablet: usa dedos para navegar y el lápiz para dibujar.
-5. Comprueba el archivo guardado en Krypton:
+Start HistoAnnotator:
 
 ```bash
-find /srv/histoannotator/annotations -type f -name '*.geojson' -printf '%p\n'
+docker compose \
+  -f docker-compose.standalone.yml \
+  up -d --build
 ```
 
-Si el archivo se llama `prueba.jpg`, la anotación se guarda como:
+Check the service:
+
+```bash
+docker compose \
+  -f docker-compose.standalone.yml \
+  ps
+
+curl http://127.0.0.1:8020/health/live
+```
+
+Open HistoAnnotator in a browser:
 
 ```text
-/srv/histoannotator/annotations/prueba.jpg.geojson
+http://127.0.0.1:8020/
 ```
 
-## 7. Probar en QuPath
-
-En QuPath, abre la misma imagen y arrastra el `.geojson` sobre el visor, o usa el flujo de importación de objetos. Las coordenadas se almacenan en píxeles del nivel original y cada Feature incluye:
-
-```json
-{
-  "properties": {
-    "objectType": "annotation",
-    "classification": {"name": "Tumor"}
-  }
-}
-```
-
-## 8. Diagnóstico
+Stop the application:
 
 ```bash
-cd ~/histoannotator
-./scripts/check_setup.sh
-sudo docker compose logs -f --tail=100 histoannotator
+docker compose \
+  -f docker-compose.standalone.yml \
+  down
 ```
 
-Desde Caddy:
+Images, annotations and cache data remain in the local `data/` directory.
+
+For detailed configuration see
+[Installation](docs/INSTALLATION.md).
+
+## Android
+
+The Android application is built using Capacitor.
+
+The backend address is intentionally not stored in the public source code.
+It must be supplied when generating Android web assets:
 
 ```bash
-cd ~/cytomine
-sudo docker compose -f compose.yaml -f compose.https.yaml logs --tail=100 caddy
+HISTOANNOTATOR_NATIVE_SERVER="https://your-server.example/annotator" \
+  bash scripts/build_android_web.sh
 ```
 
-### No aparecen imágenes
-
-Comprueba el montaje dentro del contenedor:
+Install the JavaScript dependencies and synchronize Capacitor:
 
 ```bash
-cd ~/histoannotator
-sudo docker compose exec histoannotator sh -lc 'find /data/images -maxdepth 2 -type f | head -30'
+cd android-app
+npm ci
+npx cap sync android
 ```
 
-Si el host ve los archivos pero el contenedor no, el montaje SSHFS necesita `allow_other` y debe estar activo antes de arrancar Docker.
-
-### Una WSI es lenta
-
-El MVP lee la WSI directamente desde el montaje SFTP y guarda los tiles generados en `/srv/histoannotator/cache`. La primera visita a una zona puede ser lenta; las siguientes deberían mejorar. La siguiente versión puede copiar bajo demanda la diapositiva activa al SSD local.
-
-### Formato no compatible
-
-OpenSlide admite formatos WSI y TIFF genérico tiled; las imágenes normales se abren con Pillow. Convierte TIFF no compatible a TIFF piramidal o prueba primero JPG/PNG.
-
-## 9. Detener sin borrar datos
+Build a development APK:
 
 ```bash
-cd ~/histoannotator
-sudo docker compose down
+cd android
+./gradlew assembleDebug
 ```
 
-No borra `/srv/histoannotator` ni los originales del NAS.
+The APK is generated at:
 
-## Próxima iteración recomendada
+```text
+android-app/android/app/build/outputs/apk/debug/app-debug.apk
+```
 
-- editar vértices;
-- ocultar/mostrar clases;
-- copiar WSI activa del NAS al SSD de forma asíncrona;
-- autenticación y permisos;
-- historial de versiones por usuario;
-- importación/exportación QuPath más completa, incluidos MultiPolygon y huecos;
-- integración con HistoAnalyzer.
+See [Android build](docs/ANDROID.md).
+
+## QuPath interoperability
+
+Annotations are represented as GeoJSON features using level-0 image pixel
+coordinates.
+
+HistoAnnotator supports importing and exporting QuPath-compatible GeoJSON,
+including annotation classification information.
+
+## Offline mode
+
+Downloaded images can be opened using locally cached tiles and annotations.
+Local changes can later synchronize with the server.
+
+The initial v1.0 multichannel fluorescence implementation caches rendered
+display variants. It does not yet download every raw scientific channel
+for unrestricted offline recomposition.
+
+See [Offline mode](docs/OFFLINE_MODE.md).
+
+## Documentation
+
+- [Installation](docs/INSTALLATION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Android](docs/ANDROID.md)
+- [Offline mode](docs/OFFLINE_MODE.md)
+- [Multichannel fluorescence](docs/MULTICHANNEL_IF.md)
+- [Annotation tools](docs/ANNOTATION_TOOLS.md)
+
+## Data privacy
+
+Do not commit research or patient data to this repository.
+
+In particular, do not commit:
+
+- whole-slide images;
+- microscopy datasets;
+- patient-identifiable files;
+- annotations containing sensitive information;
+- `.env` files;
+- passwords or API tokens;
+- private TLS keys;
+- Android signing keystores.
+
+HistoAnnotator should be deployed according to the data-governance,
+security and ethics requirements of the institution using it.
+
+## Current limitations
+
+HistoAnnotator v1.0.0 is a research/testing pre-release.
+
+Current limitations include:
+
+- no individual user authentication;
+- no complete audit trail;
+- no clinical validation;
+- debug-signed Android APK;
+- offline IF stores rendered variants rather than all raw channels;
+- some image-aware operations may still require the backend;
+- complex T/Z/C scientific datasets are not fully supported yet.
+
+## Project status
+
+**v1.0.0** is the first public pre-release of HistoAnnotator.
+
+The Android APK distributed with this pre-release is provided for research,
+development and testing purposes.

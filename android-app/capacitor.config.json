@@ -1,0 +1,15 @@
+{
+  "appId": "org.juaco2r.histoannotator",
+  "appName": "HistoAnnotator",
+  "webDir": "www",
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": false
+    },
+    "SystemBars": {
+      "insetsHandling": "css",
+      "style": "DEFAULT",
+      "hidden": false
+    }
+  }
+}
