@@ -1,5 +1,7 @@
 # HistoAnnotator
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21941344.svg)](https://doi.org/10.5281/zenodo.21941344)
+
 HistoAnnotator is a web and Android application for interactive annotation
 of histology and microscopy images.
 
