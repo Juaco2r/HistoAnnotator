@@ -2,8 +2,22 @@
   "use strict";
 
   const VERSION = "0.8.2";
+
+  // The same frontend runs both in the browser and inside Capacitor.
+  const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
+
+  // Browser deployment, e.g. https://server/annotator/
   const BASE = window.location.pathname.startsWith("/annotator") ? "/annotator" : "";
-  const API = `${BASE}/api`;
+
+  // Native Android deployment. This can later be exposed in Settings.
+  const NATIVE_SERVER_STORAGE_KEY = "histoannotator.nativeServer.v1";
+  const DEFAULT_NATIVE_SERVER = "https://161.116.13.132/annotator";
+  const NATIVE_SERVER = (
+    localStorage.getItem(NATIVE_SERVER_STORAGE_KEY) ||
+    DEFAULT_NATIVE_SERVER
+  ).replace(/\/+$/, "");
+
+  const API = `${IS_NATIVE ? NATIVE_SERVER : BASE}/api`;
   const DEFAULT_CLASSES = [
     { name: "Tumor", color: "#ff6b6b" },
     { name: "Stroma", color: "#4dabf7" },
@@ -816,6 +830,10 @@
   }
 
   function registerOfflineServiceWorker() {
+    // The current Service Worker caches URLs from the web deployment.
+    // Android alpha1 uses the native client and will receive a dedicated
+    // native offline-storage implementation in the next stage.
+    if (IS_NATIVE) return;
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker
       .register(`${BASE || ""}/service-worker.js`, { scope: `${BASE || ""}/` })
@@ -2282,54 +2300,272 @@
 
   async function loadImages(preserveSelection = true) {
     const sequence = ++imageCatalogSequence;
-    const previous = preserveSelection ? (els.imageSelect.value || currentImage?.id || "") : "";
+    const previous = preserveSelection
+      ? (els.imageSelect.value || currentImage?.id || "")
+      : "";
 
-    // Local-first: render immediately from IndexedDB. The remote catalog is a
-    // background refresh and never blocks the Files dropdown.
-    const [catalog, offlineRecords] = await Promise.all([restoreCachedCatalog(), listOfflineRecords()]);
-    const packageImages = offlineRecords.map((item) => item.image).filter(Boolean);
-    images = mergeKnownImages(catalog, packageImages);
-    if (!navigator.onLine) serverReachable = false;
-    let localState = await collectLocalImageState(offlineRecords);
-    renderImageOptions(previous, localState);
+    let localState = {
+      readyIds: new Set(),
+      partialIds: new Set(),
+      pendingIds: new Set(),
+    };
 
-    if (images.length) {
-      const downloadedCount = images.filter((image) => localState.readyIds.has(image.id)).length;
-      setStatus(`${images.length} cached file${images.length === 1 ? "" : "s"} available immediately${downloadedCount ? ` · ${downloadedCount} downloaded` : ""}`, "local");
-    } else if (!navigator.onLine) {
-      setStatus("Offline: no cached files are available on this device", "local");
+    let offlineRecords = [];
+    let catalog = [];
+
+    // ---------------------------------------------------------
+    // 1. LOCAL FIRST
+    // Local storage problems must never prevent the server list
+    // from being loaded.
+    // ---------------------------------------------------------
+    try {
+      [catalog, offlineRecords] = await Promise.all([
+        restoreCachedCatalog(),
+        listOfflineRecords(),
+      ]);
+
+      const packageImages = offlineRecords
+        .map((item) => item.image)
+        .filter(Boolean);
+
+      images = mergeKnownImages(catalog, packageImages);
+
+      localState = await collectLocalImageState(offlineRecords);
+
+      renderImageOptions(previous, localState);
+
+      if (images.length) {
+        const downloadedCount = images.filter(
+          (image) => localState.readyIds.has(image.id)
+        ).length;
+
+        setStatus(
+          `${images.length} cached file${images.length === 1 ? "" : "s"} available immediately` +
+          `${downloadedCount ? ` · ${downloadedCount} downloaded` : ""}`,
+          "local"
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "Could not restore local image catalog",
+        error
+      );
+    }
+
+    // navigator.onLine is useful in a browser, but Android
+    // WebView/VPN connectivity can report an unreliable value.
+    // Native Android therefore always attempts the API request.
+    if (!IS_NATIVE && !navigator.onLine) {
+      serverReachable = false;
+
+      if (!images.length) {
+        setStatus(
+          "Offline: no cached files are available on this device",
+          "local"
+        );
+      }
+
       return;
-    } else {
+    }
+
+    if (!images.length) {
       setStatus("Checking the server for files…", "local");
     }
 
-    if (!navigator.onLine) return;
+    let diagnosticStage = "starting";
 
     try {
-      const response = await apiFetch(`${API}/images`, { timeoutMs: 6000 });
+      // -------------------------------------------------------
+      // 2. GET REMOTE CATALOG
+      // -------------------------------------------------------
+      diagnosticStage = "requesting /api/images";
+
+      const response = await apiFetch(
+        `${API}/images`,
+        { timeoutMs: 10000 }
+      );
+
+      diagnosticStage = "reading /api/images JSON";
+
       const payload = await response.json();
-      if (sequence !== imageCatalogSequence) return;
+
+      if (sequence !== imageCatalogSequence) {
+        return;
+      }
+
+      diagnosticStage = "validating image catalog";
+
+      if (
+        !payload ||
+        !Array.isArray(payload.images)
+      ) {
+        throw new Error(
+          "The server response does not contain an images array"
+        );
+      }
+
+      const remoteImages = payload.images;
+
       serverReachable = true;
-      const remoteImages = Array.isArray(payload.images) ? payload.images : [];
-      await cacheImageCatalog(payload);
-      const currentOfflineRecords = await listOfflineRecords();
-      images = mergeKnownImages(currentOfflineRecords.map((item) => item.image).filter(Boolean), remoteImages);
-      localState = await collectLocalImageState(currentOfflineRecords);
-      renderImageOptions(previous, localState);
-      setStatus(`${remoteImages.length} server file${remoteImages.length === 1 ? "" : "s"} found`, "saved");
+
+      // -------------------------------------------------------
+      // 3. RENDER FIRST
+      //
+      // Important:
+      // Do NOT wait for IndexedDB before displaying server files.
+      // -------------------------------------------------------
+      diagnosticStage = "reading local file state";
+
+      try {
+        offlineRecords = await listOfflineRecords();
+        localState = await collectLocalImageState(
+          offlineRecords
+        );
+      } catch (localError) {
+        console.warn(
+          "Could not read local file state",
+          localError
+        );
+
+        offlineRecords = [];
+
+        localState = {
+          readyIds: new Set(),
+          partialIds: new Set(),
+          pendingIds: new Set(),
+        };
+      }
+
+      diagnosticStage = "merging image catalog";
+
+      const packageImages = offlineRecords
+        .map((item) => item.image)
+        .filter(Boolean);
+
+      images = mergeKnownImages(
+        packageImages,
+        remoteImages
+      );
+
+      diagnosticStage = "rendering Files";
+
+      renderImageOptions(
+        previous,
+        localState
+      );
+
+      setStatus(
+        `${remoteImages.length} server file${remoteImages.length === 1 ? "" : "s"} found`,
+        "saved"
+      );
+
+      // -------------------------------------------------------
+      // 4. CACHE AFTER RENDERING
+      //
+      // Failure here is non-fatal.
+      // -------------------------------------------------------
+      diagnosticStage = "saving image catalog locally";
+
+      try {
+        await cacheImageCatalog(payload);
+      } catch (cacheError) {
+        console.warn(
+          "Files loaded, but catalog cache could not be saved",
+          cacheError
+        );
+      }
+
+      console.log(
+        "HistoAnnotator Files loaded",
+        {
+          native: IS_NATIVE,
+          origin: window.location.origin,
+          api: API,
+          serverFiles: remoteImages.length,
+          totalFiles: images.length,
+          navigatorOnline: navigator.onLine,
+        }
+      );
+
     } catch (error) {
-      if (sequence !== imageCatalogSequence) return;
+      if (sequence !== imageCatalogSequence) {
+        return;
+      }
+
       serverReachable = false;
-      const currentOfflineRecords = await listOfflineRecords();
-      const cached = await restoreCachedCatalog();
-      images = mergeKnownImages(cached, currentOfflineRecords.map((item) => item.image).filter(Boolean));
-      localState = await collectLocalImageState(currentOfflineRecords);
-      renderImageOptions(previous, localState);
-      const downloadedCount = images.filter((image) => localState.readyIds.has(image.id)).length;
-      setStatus(`Server/VPN unavailable. Showing local catalog${downloadedCount ? ` · ${downloadedCount} downloaded` : ""}.`, "local");
+
+      const errorMessage =
+        error?.message ||
+        String(error) ||
+        "Unknown error";
+
+      console.error(
+        "HistoAnnotator Files error",
+        {
+          stage: diagnosticStage,
+          error,
+          native: IS_NATIVE,
+          origin: window.location.origin,
+          api: API,
+          navigatorOnline: navigator.onLine,
+        }
+      );
+
+      // Keep whatever local files are available.
+      try {
+        const currentOfflineRecords =
+          await listOfflineRecords();
+
+        const cached =
+          await restoreCachedCatalog();
+
+        images = mergeKnownImages(
+          cached,
+          currentOfflineRecords
+            .map((item) => item.image)
+            .filter(Boolean)
+        );
+
+        localState =
+          await collectLocalImageState(
+            currentOfflineRecords
+          );
+
+        renderImageOptions(
+          previous,
+          localState
+        );
+      } catch (localError) {
+        console.warn(
+          "Could not restore Files after server error",
+          localError
+        );
+      }
+
+      // Since Krypton is remote, expose the exact error directly
+      // on the Android tablet during alpha testing.
+      if (IS_NATIVE) {
+        window.alert(
+          [
+            "HistoAnnotator Android diagnostics",
+            "",
+            `Stage: ${diagnosticStage}`,
+            `Error: ${errorMessage}`,
+            "",
+            `Origin: ${window.location.origin}`,
+            `API: ${API}`,
+            `navigator.onLine: ${navigator.onLine}`,
+            `Native: ${IS_NATIVE}`,
+          ].join("\n")
+        );
+      }
+
+      setStatus(
+        `Files error: ${diagnosticStage} · ${errorMessage}`,
+        "error"
+      );
     }
   }
-
 
   async function ensurePrepared(image, sequence) {
     if (!image.needsPreparation || image.prepared) return true;

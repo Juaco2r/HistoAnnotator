@@ -20,6 +20,7 @@ from typing import Any, Iterator
 import openslide
 import numpy as np
 from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from openslide import ImageSlide, OpenSlide
@@ -71,6 +72,21 @@ IMAGE_TYPES_PATH = ANNOTATION_ROOT / "_config" / "image_types.json"
 CONFIG_LOCK = threading.RLock()
 
 app = FastAPI(title=APP_TITLE, docs_url="/api/docs", redoc_url=None)
+
+# Allow the installed Capacitor Android client to communicate with
+# the HistoAnnotator API. Capacitor serves its Android WebView from
+# http://localhost by default.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost",
+        "https://localhost",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 PREP_JOBS: dict[str, dict[str, Any]] = {}
@@ -1279,14 +1295,44 @@ def _polygonal_geometry(value: Any):
 
 
 def _geometry_json(geometry: Any, simplify_tolerance: float = 0.0) -> dict[str, Any] | None:
+    """Return a robust Polygon/MultiPolygon representation.
+
+    Simplification is an optimization only. A valid geometry must never be
+    discarded just because simplification collapses a thin or complex region.
+    """
     polygonal = _polygonal_geometry(geometry)
+
     if polygonal.is_empty:
         return None
+
+    original = polygonal
+
     if simplify_tolerance > 0:
-        polygonal = polygonal.simplify(float(simplify_tolerance), preserve_topology=True)
-        polygonal = _polygonal_geometry(polygonal)
+        try:
+            simplified = polygonal.simplify(
+                float(simplify_tolerance),
+                preserve_topology=True,
+            )
+            simplified = _polygonal_geometry(simplified)
+
+            # Keep the simplified geometry only if it remains usable.
+            if not simplified.is_empty:
+                polygonal = simplified
+            else:
+                polygonal = original
+
+        except Exception:
+            polygonal = original
+
     if polygonal.is_empty:
         return None
+
+    if not polygonal.is_valid:
+        polygonal = _polygonal_geometry(make_valid(polygonal))
+
+    if polygonal.is_empty:
+        return None
+
     return mapping(polygonal)
 
 

@@ -61,3 +61,7 @@ node_modules/
 android-app/www/
 android-app/android/.gradle/
 android-app/android/**/build/
+
+# Android local build state
+android-app/android/local.properties
+releases/
