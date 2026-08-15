@@ -780,14 +780,14 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "0.8.2"}
+    return {"status": "ok", "version": "1.0.0"}
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "version": "0.8.2",
+        "version": "1.0.0",
         "imageRoot": str(IMAGE_ROOT),
         "imageRootExists": IMAGE_ROOT.exists(),
         "imageRootWritable": os.access(IMAGE_ROOT, os.W_OK),
@@ -813,6 +813,759 @@ def put_classes(payload: Any = Body(...)) -> dict[str, Any]:
     classes = validate_classes(payload)
     atomic_write_json(CLASSES_PATH, {"classes": classes, "updatedAtUnix": int(time.time())})
     return {"saved": True, "classes": classes}
+
+
+
+# ============================================================
+# Scientific multichannel fluorescence display
+# ============================================================
+
+_IF_MULTICHANNEL_CACHE: dict[tuple, dict | None] = {}
+_IF_MULTICHANNEL_LOCK = threading.Lock()
+
+_IF_DEFAULT_COLORS = [
+    "#0000ff",  # blue
+    "#00ff00",  # green
+    "#ff0000",  # red
+    "#ff00ff",  # magenta
+    "#00ffff",  # cyan
+    "#ffff00",  # yellow
+    "#ff7300",  # orange
+    "#ffffff",  # white
+]
+
+
+def _if_channel_slice(
+    array,
+    meta: dict,
+    channel: int,
+    y0: int,
+    y1: int,
+    x0: int,
+    x1: int,
+    step: int = 1,
+):
+    """Read only one spatial ROI from one scientific channel."""
+    step = max(1, int(step))
+
+    slicer = [0] * array.ndim
+    slicer[int(meta["channelAxisIndex"])] = int(channel)
+    slicer[int(meta["yAxisIndex"])] = slice(int(y0), int(y1), step)
+    slicer[int(meta["xAxisIndex"])] = slice(int(x0), int(x1), step)
+
+    return np.asarray(array[tuple(slicer)])
+
+
+def _if_infer_allowed_range(dtype, observed_max: float) -> tuple[float, float]:
+    dtype = np.dtype(dtype)
+
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+
+        if info.min >= 0:
+            dtype_bits = int(info.bits)
+
+            try:
+                needed_bits = max(
+                    1,
+                    int(np.ceil(np.log2(max(1.0, float(observed_max) + 1.0))))
+                )
+            except Exception:
+                needed_bits = dtype_bits
+
+            # Scientific microscopy commonly stores 10/12/14-bit
+            # acquisitions inside uint16 containers.
+            if 8 < dtype_bits <= 16:
+                needed_bits = max(12, needed_bits)
+
+            standard_bits = [8, 10, 12, 14, 16, 20, 24, 32, 64]
+
+            chosen_bits = next(
+                (
+                    bit
+                    for bit in standard_bits
+                    if bit >= needed_bits and bit <= dtype_bits
+                ),
+                dtype_bits,
+            )
+
+            if chosen_bits < 63:
+                maximum = min(
+                    float(info.max),
+                    float((1 << chosen_bits) - 1),
+                )
+            else:
+                maximum = float(info.max)
+
+            return 0.0, max(1.0, maximum)
+
+        return float(info.min), float(info.max)
+
+    return 0.0, max(1.0, float(observed_max))
+
+
+def scientific_multichannel_info(path: Path) -> dict | None:
+    """Inspect TIFF scientific channel structure without converting it to RGB.
+
+    A real C axis is preferred. For non-OME TIFFs such as D1_Crop.tif,
+    a small leading Z-like axis may be interpreted as channels later when the
+    user explicitly marks the image as Fluorescence.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+
+    key = (
+        str(path),
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+    )
+
+    with _IF_MULTICHANNEL_LOCK:
+        if key in _IF_MULTICHANNEL_CACHE:
+            return _IF_MULTICHANNEL_CACHE[key]
+
+    result = None
+
+    try:
+        import tifffile
+        import xml.etree.ElementTree as ET
+
+        lower = path.name.lower()
+
+        if not lower.endswith((".tif", ".tiff")):
+            raise ValueError("Not TIFF")
+
+        with tifffile.TiffFile(str(path)) as tif:
+            series = tif.series[0]
+
+            shape = tuple(int(v) for v in series.shape)
+            axes = str(getattr(series, "axes", "") or "")
+
+            if len(shape) != 3 or len(axes) != 3:
+                raise ValueError(
+                    f"Only 3-D multichannel TIFF is enabled initially: "
+                    f"shape={shape}, axes={axes}"
+                )
+
+            if "Y" not in axes or "X" not in axes:
+                raise ValueError(
+                    f"No spatial Y/X axes: {axes}"
+                )
+
+            y_axis = axes.index("Y")
+            x_axis = axes.index("X")
+
+            assumed_channel_axis = False
+
+            if "C" in axes:
+                channel_axis = axes.index("C")
+
+            elif (
+                y_axis == 1
+                and x_axis == 2
+                and 2 <= shape[0] <= 16
+                and axes.endswith("YX")
+            ):
+                # Non-OME scientific TIFFs frequently lose semantic channel
+                # metadata and tifffile labels the leading dimension Z/Q/I.
+                # We expose it as a channel candidate; HistoAnnotator only uses
+                # this interpretation when Image type == Fluorescence.
+                channel_axis = 0
+                assumed_channel_axis = True
+
+            else:
+                raise ValueError(
+                    f"No suitable channel axis: shape={shape}, axes={axes}"
+                )
+
+            channel_count = int(shape[channel_axis])
+
+            if channel_count < 2 or channel_count > 16:
+                raise ValueError(
+                    f"Unsupported channel count: {channel_count}"
+                )
+
+            width = int(shape[x_axis])
+            height = int(shape[y_axis])
+
+            names = [
+                f"Channel {i + 1}"
+                for i in range(channel_count)
+            ]
+
+            # Use true OME channel names when available.
+            if tif.ome_metadata:
+                try:
+                    root = ET.fromstring(tif.ome_metadata)
+
+                    ome_channels = [
+                        elem
+                        for elem in root.iter()
+                        if elem.tag.endswith("Channel")
+                    ]
+
+                    for i, elem in enumerate(
+                        ome_channels[:channel_count]
+                    ):
+                        name = str(
+                            elem.attrib.get("Name") or ""
+                        ).strip()
+
+                        if name:
+                            names[i] = name
+
+                except Exception:
+                    pass
+
+            meta = {
+                "scientificMultichannel": True,
+                "width": width,
+                "height": height,
+                "shape": list(shape),
+                "axes": axes,
+                "dtype": str(series.dtype),
+                "channelAxisIndex": int(channel_axis),
+                "yAxisIndex": int(y_axis),
+                "xAxisIndex": int(x_axis),
+                "channelCount": channel_count,
+                "assumedChannelAxis": assumed_channel_axis,
+                "ome": bool(tif.ome_metadata),
+                "regionAccess": "memmap",
+            }
+
+        # Stable whole-image display ranges.
+        # Sampling is sparse and read directly through the memory map.
+        mm = tifffile.memmap(str(path), series=0)
+
+        total_spatial_pixels = max(1, width * height)
+        target_samples = 300_000
+
+        step = max(
+            1,
+            int(
+                np.ceil(
+                    np.sqrt(
+                        total_spatial_pixels
+                        / float(target_samples)
+                    )
+                )
+            ),
+        )
+
+        channels = []
+
+        for c in range(channel_count):
+            sample = _if_channel_slice(
+                mm,
+                meta,
+                c,
+                0,
+                height,
+                0,
+                width,
+                step=step,
+            )
+
+            values = np.asarray(
+                sample,
+                dtype=np.float64,
+            ).reshape(-1)
+
+            values = values[np.isfinite(values)]
+
+            if values.size:
+                observed_min = float(values.min())
+                observed_max = float(values.max())
+
+                allowed_min, allowed_max = (
+                    _if_infer_allowed_range(
+                        mm.dtype,
+                        observed_max,
+                    )
+                )
+
+                lo = float(
+                    np.percentile(values, 1.0)
+                )
+                hi = float(
+                    np.percentile(values, 99.0)
+                )
+
+                lo = max(
+                    allowed_min,
+                    min(lo, allowed_max),
+                )
+
+                hi = max(
+                    allowed_min,
+                    min(hi, allowed_max),
+                )
+
+                if hi <= lo:
+                    lo = max(
+                        allowed_min,
+                        observed_min,
+                    )
+                    hi = min(
+                        allowed_max,
+                        observed_max,
+                    )
+
+                if hi <= lo:
+                    lo = allowed_min
+                    hi = allowed_max
+
+            else:
+                allowed_min = 0.0
+                allowed_max = 1.0
+                lo = 0.0
+                hi = 1.0
+                observed_min = 0.0
+                observed_max = 0.0
+
+            channels.append({
+                "index": c,
+                "name": names[c],
+                "color": _IF_DEFAULT_COLORS[
+                    c % len(_IF_DEFAULT_COLORS)
+                ],
+                "visible": True,
+                "minDisplay": float(lo),
+                "maxDisplay": float(hi),
+                "allowedMin": float(allowed_min),
+                "allowedMax": float(allowed_max),
+                "observedMin": float(observed_min),
+                "observedMax": float(observed_max),
+                "gamma": 1.0,
+                "brightness": 100.0,
+            })
+
+        try:
+            del mm
+        except Exception:
+            pass
+
+        result = {
+            **meta,
+            "channels": channels,
+        }
+
+    except Exception:
+        result = None
+
+    with _IF_MULTICHANNEL_LOCK:
+        # Remove stale versions of this same file.
+        stale = [
+            cache_key
+            for cache_key in _IF_MULTICHANNEL_CACHE
+            if cache_key[0] == str(path)
+            and cache_key != key
+        ]
+
+        for cache_key in stale:
+            _IF_MULTICHANNEL_CACHE.pop(
+                cache_key,
+                None,
+            )
+
+        _IF_MULTICHANNEL_CACHE[key] = result
+
+    return result
+
+
+def _if_parse_float_list(
+    raw: str,
+    defaults: list[float],
+) -> list[float]:
+    if not raw:
+        return list(defaults)
+
+    values = []
+
+    for item in str(raw).split(","):
+        try:
+            values.append(float(item))
+        except Exception:
+            values.append(float("nan"))
+
+    output = []
+
+    for i, default in enumerate(defaults):
+        if i < len(values) and np.isfinite(values[i]):
+            output.append(float(values[i]))
+        else:
+            output.append(float(default))
+
+    return output
+
+
+def _if_parse_enabled(
+    raw: str,
+    count: int,
+) -> list[bool]:
+    if not raw:
+        return [True] * count
+
+    clean = "".join(
+        ch
+        for ch in str(raw)
+        if ch in "01"
+    )
+
+    return [
+        clean[i] == "1"
+        if i < len(clean)
+        else True
+        for i in range(count)
+    ]
+
+
+def _if_parse_colors(
+    raw: str,
+    defaults: list[str],
+) -> list[str]:
+    if not raw:
+        return list(defaults)
+
+    supplied = [
+        item.strip()
+        for item in str(raw).split(",")
+    ]
+
+    output = []
+
+    for i, default in enumerate(defaults):
+        value = (
+            supplied[i]
+            if i < len(supplied)
+            else default
+        )
+
+        value = value.lstrip("#")
+
+        if not re.fullmatch(
+            r"[0-9a-fA-F]{6}",
+            value,
+        ):
+            value = default.lstrip("#")
+
+        output.append("#" + value.lower())
+
+    return output
+
+
+def _if_render_settings(
+    meta: dict,
+    enabled: str = "",
+    minimums: str = "",
+    maximums: str = "",
+    gammas: str = "",
+    brightness: str = "",
+    colors: str = "",
+) -> dict:
+    channels = meta["channels"]
+
+    return {
+        "enabled": _if_parse_enabled(
+            enabled,
+            len(channels),
+        ),
+        "minimums": _if_parse_float_list(
+            minimums,
+            [
+                float(ch["minDisplay"])
+                for ch in channels
+            ],
+        ),
+        "maximums": _if_parse_float_list(
+            maximums,
+            [
+                float(ch["maxDisplay"])
+                for ch in channels
+            ],
+        ),
+        "gammas": _if_parse_float_list(
+            gammas,
+            [
+                float(ch.get("gamma", 1.0))
+                for ch in channels
+            ],
+        ),
+        "brightness": _if_parse_float_list(
+            brightness,
+            [
+                float(
+                    ch.get(
+                        "brightness",
+                        100.0,
+                    )
+                )
+                for ch in channels
+            ],
+        ),
+        "colors": _if_parse_colors(
+            colors,
+            [
+                str(ch["color"])
+                for ch in channels
+            ],
+        ),
+    }
+
+
+def _if_resize_float_plane(
+    plane: np.ndarray,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    plane = np.asarray(
+        plane,
+        dtype=np.float32,
+    )
+
+    width = max(1, int(width))
+    height = max(1, int(height))
+
+    if plane.shape == (height, width):
+        return plane
+
+    image = Image.fromarray(
+        plane,
+        mode="F",
+    )
+
+    image = image.resize(
+        (width, height),
+        Image.Resampling.BILINEAR,
+    )
+
+    return np.asarray(
+        image,
+        dtype=np.float32,
+    )
+
+
+def render_scientific_multichannel_region(
+    path: Path,
+    meta: dict,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    output_width: int,
+    output_height: int,
+    settings: dict,
+) -> Image.Image:
+    """Render scientific raw channels to RGB for display only."""
+    import tifffile
+
+    image_width = int(meta["width"])
+    image_height = int(meta["height"])
+
+    x0 = max(
+        0,
+        min(int(x), image_width - 1),
+    )
+
+    y0 = max(
+        0,
+        min(int(y), image_height - 1),
+    )
+
+    x1 = max(
+        x0 + 1,
+        min(
+            image_width,
+            x0 + int(width),
+        ),
+    )
+
+    y1 = max(
+        y0 + 1,
+        min(
+            image_height,
+            y0 + int(height),
+        ),
+    )
+
+    output_width = max(
+        1,
+        int(output_width),
+    )
+
+    output_height = max(
+        1,
+        int(output_height),
+    )
+
+    source_width = x1 - x0
+    source_height = y1 - y0
+
+    # Downsample while reading the memory map, rather than materializing
+    # a huge full-resolution ROI and resizing afterwards.
+    step_x = max(
+        1,
+        int(
+            np.floor(
+                source_width
+                / float(output_width)
+            )
+        ),
+    )
+
+    step_y = max(
+        1,
+        int(
+            np.floor(
+                source_height
+                / float(output_height)
+            )
+        ),
+    )
+
+    step = max(
+        1,
+        min(step_x, step_y),
+    )
+
+    mm = tifffile.memmap(
+        str(path),
+        series=0,
+    )
+
+    rgb = np.zeros(
+        (
+            output_height,
+            output_width,
+            3,
+        ),
+        dtype=np.float32,
+    )
+
+    for c in range(
+        int(meta["channelCount"])
+    ):
+        if not settings["enabled"][c]:
+            continue
+
+        raw = _if_channel_slice(
+            mm,
+            meta,
+            c,
+            y0,
+            y1,
+            x0,
+            x1,
+            step=step,
+        )
+
+        raw = _if_resize_float_plane(
+            raw,
+            output_width,
+            output_height,
+        )
+
+        lo = float(
+            settings["minimums"][c]
+        )
+
+        hi = float(
+            settings["maximums"][c]
+        )
+
+        if not np.isfinite(lo):
+            lo = 0.0
+
+        if (
+            not np.isfinite(hi)
+            or hi <= lo
+        ):
+            hi = lo + 1.0
+
+        channel = np.nan_to_num(
+            raw,
+            nan=lo,
+            posinf=hi,
+            neginf=lo,
+        )
+
+        channel = np.clip(
+            (channel - lo) / (hi - lo),
+            0.0,
+            1.0,
+        )
+
+        gamma = float(
+            settings["gammas"][c]
+        )
+
+        gamma = max(
+            0.05,
+            min(20.0, gamma),
+        )
+
+        if abs(gamma - 1.0) > 1e-6:
+            # QuPath-like display gamma:
+            # >1 brightens mid-tones.
+            channel = np.power(
+                channel,
+                1.0 / gamma,
+            )
+
+        brightness_factor = max(
+            0.0,
+            float(
+                settings["brightness"][c]
+            ) / 100.0,
+        )
+
+        if brightness_factor != 1.0:
+            channel = np.clip(
+                channel * brightness_factor,
+                0.0,
+                1.0,
+            )
+
+        color = (
+            settings["colors"][c]
+            .lstrip("#")
+        )
+
+        color_vector = np.asarray(
+            [
+                int(color[0:2], 16),
+                int(color[2:4], 16),
+                int(color[4:6], 16),
+            ],
+            dtype=np.float32,
+        ) / 255.0
+
+        rgb += (
+            channel[..., None]
+            * color_vector[
+                None,
+                None,
+                :
+            ]
+        )
+
+    try:
+        del mm
+    except Exception:
+        pass
+
+    rgb = (
+        np.clip(rgb, 0.0, 1.0)
+        * 255.0
+    ).astype(np.uint8)
+
+    return Image.fromarray(
+        rgb,
+        mode="RGB",
+    )
+
 
 
 @app.get("/api/images")
@@ -881,6 +1634,7 @@ def image_info(image_id: str) -> dict[str, Any]:
     handle = get_slide(render_path)
     width, height = handle.dimensions
     properties = handle.slide.properties
+    multichannel = scientific_multichannel_info(path)
 
     def float_property(key: str) -> float | None:
         value = properties.get(key)
@@ -903,6 +1657,7 @@ def image_info(image_id: str) -> dict[str, Any]:
         "preparedLocally": render_path != path,
         "mppX": float_property(openslide.PROPERTY_NAME_MPP_X),
         "mppY": float_property(openslide.PROPERTY_NAME_MPP_Y),
+        "multichannel": multichannel,
     }
 
 
@@ -964,6 +1719,12 @@ def image_tile(
     view: str = Query("original"),
     image_type: str = Query("he"),
     rgb: str = Query("111"),
+    if_enabled: str = Query(""),
+    if_min: str = Query(""),
+    if_max: str = Query(""),
+    if_gamma: str = Query(""),
+    if_brightness: str = Query(""),
+    if_colors: str = Query(""),
 ) -> Response:
     path, relative = safe_image_path(image_id)
     if preparation_required(path) and not read_ready_manifest(path, relative):
@@ -976,14 +1737,160 @@ def image_tile(
     if col < 0 or row < 0 or col >= cols or row >= rows:
         raise HTTPException(status_code=404, detail="Tile is out of range")
 
-    variant = f"{view}|{image_type}|{rgb}"
-    cached = cache_tile_path(render_path, level, col, row, variant)
+    if_meta = (
+        scientific_multichannel_info(path)
+        if str(image_type).lower() == "fluorescence"
+        else None
+    )
+
+    if if_meta:
+        import hashlib
+
+        render_signature = "|".join([
+            str(if_enabled),
+            str(if_min),
+            str(if_max),
+            str(if_gamma),
+            str(if_brightness),
+            str(if_colors),
+        ])
+
+        variant = (
+            "ifmc-"
+            + hashlib.sha1(
+                render_signature.encode("utf-8")
+            ).hexdigest()[:24]
+        )
+
+        cache_source = path
+
+    else:
+        variant = f"{view}|{image_type}|{rgb}"
+        cache_source = render_path
+
+    cached = cache_tile_path(
+        cache_source,
+        level,
+        col,
+        row,
+        variant,
+    )
+
     if cached.exists():
-        return FileResponse(cached, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000, immutable"})
-    try:
-        tile = handle.deepzoom.get_tile(level, (col, row))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Could not generate tile: {exc}") from exc
+        return FileResponse(
+            cached,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control":
+                "public, max-age=31536000, immutable"
+            },
+        )
+
+    if if_meta:
+        level_width, level_height = (
+            handle.deepzoom.level_dimensions[level]
+        )
+
+        level_x0 = int(col) * TILE_SIZE
+        level_y0 = int(row) * TILE_SIZE
+
+        level_x1 = min(
+            int(level_width),
+            level_x0 + TILE_SIZE,
+        )
+
+        level_y1 = min(
+            int(level_height),
+            level_y0 + TILE_SIZE,
+        )
+
+        target_width = max(
+            1,
+            level_x1 - level_x0,
+        )
+
+        target_height = max(
+            1,
+            level_y1 - level_y0,
+        )
+
+        downsample = 2 ** (
+            (handle.deepzoom.level_count - 1)
+            - int(level)
+        )
+
+        source_x0 = (
+            level_x0 * downsample
+        )
+
+        source_y0 = (
+            level_y0 * downsample
+        )
+
+        source_x1 = min(
+            int(if_meta["width"]),
+            level_x1 * downsample,
+        )
+
+        source_y1 = min(
+            int(if_meta["height"]),
+            level_y1 * downsample,
+        )
+
+        settings = _if_render_settings(
+            if_meta,
+            enabled=if_enabled,
+            minimums=if_min,
+            maximums=if_max,
+            gammas=if_gamma,
+            brightness=if_brightness,
+            colors=if_colors,
+        )
+
+        try:
+            tile = (
+                render_scientific_multichannel_region(
+                    path,
+                    if_meta,
+                    source_x0,
+                    source_y0,
+                    max(
+                        1,
+                        source_x1 - source_x0,
+                    ),
+                    max(
+                        1,
+                        source_y1 - source_y0,
+                    ),
+                    target_width,
+                    target_height,
+                    settings,
+                )
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Could not generate "
+                    f"multichannel tile: {exc}"
+                ),
+            ) from exc
+
+    else:
+        try:
+            tile = handle.deepzoom.get_tile(
+                level,
+                (col, row),
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Could not generate tile: {exc}"
+                ),
+            ) from exc
 
     if tile.mode == "RGBA":
         background = Image.new("RGB", tile.size, "white")
@@ -992,7 +1899,13 @@ def image_tile(
     elif tile.mode != "RGB":
         tile = tile.convert("RGB")
 
-    tile = apply_display_transform(tile, view=view, image_type=image_type, rgb=rgb)
+    if not if_meta:
+        tile = apply_display_transform(
+            tile,
+            view=view,
+            image_type=image_type,
+            rgb=rgb,
+        )
 
     if cached.exists():
         return FileResponse(cached, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000, immutable"})
@@ -1020,6 +1933,12 @@ def image_region(
     view: str = Query("original"),
     image_type: str = Query("he"),
     rgb: str = Query("111"),
+    if_enabled: str = Query(""),
+    if_min: str = Query(""),
+    if_max: str = Query(""),
+    if_gamma: str = Query(""),
+    if_brightness: str = Query(""),
+    if_colors: str = Query(""),
 ) -> Response:
     """Return a clipped RGB image region for interactive tools such as Wand.
 
@@ -1032,29 +1951,195 @@ def image_region(
         raise HTTPException(status_code=409, detail="Image is not ready yet")
     render_path = resolve_render_path(path, relative)
     handle = get_slide(render_path)
-    image_width, image_height = handle.dimensions
+    if_meta = (
+        scientific_multichannel_info(path)
+        if str(image_type).lower() == "fluorescence"
+        else None
+    )
 
-    x0 = max(0, min(int(x), image_width - 1))
-    y0 = max(0, min(int(y), image_height - 1))
-    source_width = max(1, min(int(width), image_width - x0))
-    source_height = max(1, min(int(height), image_height - y0))
-    requested_downsample = max(1.0, source_width / max_size, source_height / max_size)
-    level = int(handle.slide.get_best_level_for_downsample(requested_downsample))
-    level_downsample = float(handle.slide.level_downsamples[level])
-    level_width = max(1, int((source_width + level_downsample - 1) // level_downsample))
-    level_height = max(1, int((source_height + level_downsample - 1) // level_downsample))
+    if if_meta:
+        image_width = int(if_meta["width"])
+        image_height = int(if_meta["height"])
+    else:
+        image_width, image_height = (
+            handle.dimensions
+        )
 
-    try:
-        region = handle.slide.read_region((x0, y0), level, (level_width, level_height)).convert("RGB")
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Could not read image region: {exc}") from exc
+    x0 = max(
+        0,
+        min(int(x), image_width - 1),
+    )
 
-    scale = min(1.0, max_size / max(region.width, region.height))
-    if scale < 1.0:
-        output_size = (max(1, round(region.width * scale)), max(1, round(region.height * scale)))
-        region = region.resize(output_size, Image.Resampling.BILINEAR)
+    y0 = max(
+        0,
+        min(int(y), image_height - 1),
+    )
 
-    region = apply_display_transform(region, view=view, image_type=image_type, rgb=rgb)
+    source_width = max(
+        1,
+        min(
+            int(width),
+            image_width - x0,
+        ),
+    )
+
+    source_height = max(
+        1,
+        min(
+            int(height),
+            image_height - y0,
+        ),
+    )
+
+    if if_meta:
+        scale = min(
+            1.0,
+            max_size
+            / max(
+                source_width,
+                source_height,
+            ),
+        )
+
+        output_width = max(
+            1,
+            round(source_width * scale),
+        )
+
+        output_height = max(
+            1,
+            round(source_height * scale),
+        )
+
+        settings = _if_render_settings(
+            if_meta,
+            enabled=if_enabled,
+            minimums=if_min,
+            maximums=if_max,
+            gammas=if_gamma,
+            brightness=if_brightness,
+            colors=if_colors,
+        )
+
+        try:
+            region = (
+                render_scientific_multichannel_region(
+                    path,
+                    if_meta,
+                    x0,
+                    y0,
+                    source_width,
+                    source_height,
+                    output_width,
+                    output_height,
+                    settings,
+                )
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Could not read multichannel "
+                    f"image region: {exc}"
+                ),
+            ) from exc
+
+    else:
+        requested_downsample = max(
+            1.0,
+            source_width / max_size,
+            source_height / max_size,
+        )
+
+        level = int(
+            handle.slide.get_best_level_for_downsample(
+                requested_downsample
+            )
+        )
+
+        level_downsample = float(
+            handle.slide.level_downsamples[level]
+        )
+
+        level_width = max(
+            1,
+            int(
+                (
+                    source_width
+                    + level_downsample
+                    - 1
+                )
+                // level_downsample
+            ),
+        )
+
+        level_height = max(
+            1,
+            int(
+                (
+                    source_height
+                    + level_downsample
+                    - 1
+                )
+                // level_downsample
+            ),
+        )
+
+        try:
+            region = handle.slide.read_region(
+                (x0, y0),
+                level,
+                (
+                    level_width,
+                    level_height,
+                ),
+            ).convert("RGB")
+
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Could not read image region: {exc}"
+                ),
+            ) from exc
+
+        scale = min(
+            1.0,
+            max_size
+            / max(
+                region.width,
+                region.height,
+            ),
+        )
+
+        if scale < 1.0:
+            output_size = (
+                max(
+                    1,
+                    round(
+                        region.width * scale
+                    ),
+                ),
+                max(
+                    1,
+                    round(
+                        region.height * scale
+                    ),
+                ),
+            )
+
+            region = region.resize(
+                output_size,
+                Image.Resampling.BILINEAR,
+            )
+
+        region = apply_display_transform(
+            region,
+            view=view,
+            image_type=image_type,
+            rgb=rgb,
+        )
 
     buffer = io.BytesIO()
     region.save(buffer, format="PNG", optimize=False)

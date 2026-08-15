@@ -16,7 +16,8 @@
     "@capacitor/network": "^8.0.1",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/share": "^8.0.1",
-    "openseadragon": "^6.0.2"
+    "openseadragon": "^6.0.2",
+    "polygon-clipping": "^0.15.7"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.0"

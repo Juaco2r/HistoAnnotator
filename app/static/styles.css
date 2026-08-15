@@ -410,3 +410,338 @@ html {
 *, *::before, *::after {
   box-sizing: inherit;
 }
+
+
+/* =========================================================
+   HistoAnnotator v1.0
+   Portrait tablet layout
+
+   In portrait orientation the annotation/class panel moves
+   underneath the compact tool palette on the LEFT side.
+   The viewer therefore keeps most of the screen width.
+   ========================================================= */
+
+@media (orientation: portrait) and (max-width: 1100px) {
+
+  :root {
+    --portrait-left-rail:
+      clamp(124px, 22vw, 162px);
+  }
+
+  .workspace,
+  .workspace.class-manager-open {
+    grid-template-columns:
+      var(--portrait-left-rail)
+      minmax(0, 1fr);
+
+    grid-template-rows:
+      auto
+      minmax(0, 1fr);
+  }
+
+
+  /* -------- Tools: upper-left -------- */
+
+  .toolbar {
+    grid-column: 1;
+    grid-row: 1;
+
+    display: grid;
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+
+    align-content: start;
+
+    gap: 4px;
+
+    padding: 5px;
+
+    max-height: 48vh;
+
+    overflow-y: auto;
+
+    border-right:
+      1px solid var(--border);
+
+    border-bottom:
+      1px solid var(--border);
+  }
+
+
+  .toolbar > button,
+  .toolbar .tool {
+    min-width: 0;
+    min-height: 32px;
+
+    padding: 4px 2px;
+
+    font-size: 10px;
+
+    line-height: 1.05;
+  }
+
+
+  /* Controls belonging to a tool occupy the full rail. */
+
+  .toolbar .brush-controls,
+  .toolbar .wand-controls,
+  .toolbar .circle-controls,
+  .toolbar .edit-operation-controls {
+    grid-column: 1 / -1;
+
+    padding: 5px;
+
+    font-size: 10px;
+  }
+
+
+  .toolbar input[type="range"] {
+    min-width: 0;
+    width: 100%;
+  }
+
+
+  /* -------- Annotation/classes: lower-left -------- */
+
+  .sidepanel,
+  .sidepanel.management-open {
+    grid-column: 1;
+    grid-row: 2;
+
+    min-width: 0;
+
+    max-height: none;
+
+    overflow-y: auto;
+
+    padding: 6px;
+
+    border-left: 0;
+
+    border-right:
+      1px solid var(--border);
+
+    border-top:
+      1px solid var(--border);
+  }
+
+
+  .sidepanel h2 {
+    font-size: 10px;
+  }
+
+
+  .sidepanel section + section {
+    margin-top: 7px;
+    padding-top: 7px;
+  }
+
+
+  .annotation-summary {
+    font-size: 9px;
+  }
+
+
+  .annotation-file-row {
+    grid-template-columns:
+      minmax(0, 1fr)
+      28px;
+
+    gap: 3px;
+  }
+
+
+  .annotation-file-row button {
+    width: 28px;
+    min-height: 30px;
+  }
+
+
+  .class-list {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+
+  .class-main,
+  .annotation-select {
+    min-height: 31px;
+    padding: 4px;
+
+    font-size: 10px;
+  }
+
+
+  .annotation-list {
+    max-height: 24vh;
+  }
+
+
+  /* -------- Viewer: full right side -------- */
+
+  .viewer-shell {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+
+    min-width: 0;
+    min-height: 0;
+  }
+
+
+  .input-guide {
+    font-size: 9px;
+  }
+
+}
+
+/* ==========================================================
+   v1.0.0 scientific multichannel fluorescence controls
+   ========================================================== */
+
+.display-panel.scientific-if {
+  width: min(330px, calc(100vw - 16px));
+  max-height: min(78vh, 650px);
+  overflow-y: auto;
+}
+
+.if-display-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+
+.if-display-heading strong {
+  font-size: 12px;
+}
+
+.if-display-heading span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.if-channel-list {
+  display: grid;
+  gap: 5px;
+}
+
+.if-channel-row {
+  display: grid;
+  grid-template-columns: 22px 1fr 32px;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 5px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.if-channel-row.selected {
+  border-color: var(--accent);
+  background:
+    color-mix(
+      in srgb,
+      var(--accent) 10%,
+      transparent
+    );
+}
+
+.if-channel-row > input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+}
+
+.if-channel-select {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 7px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.if-channel-select span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.if-channel-color {
+  width: 30px;
+  height: 28px;
+  padding: 2px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.if-channel-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.if-editor-title {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.if-field {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.if-field input[type="text"],
+.if-field input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 7px;
+}
+
+.if-range-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.if-slider-field {
+  display: grid;
+  gap: 4px;
+}
+
+.if-slider-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.if-slider-field input[type="range"] {
+  width: 100%;
+}
+
+.if-editor-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.if-editor-actions button {
+  min-height: 32px;
+}
+
+@media (orientation: portrait) and (max-width: 1100px) {
+  .display-panel.scientific-if {
+    width: min(330px, calc(100vw - 16px));
+    max-height: 72vh;
+  }
+}

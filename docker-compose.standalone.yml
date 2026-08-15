@@ -1,0 +1,29 @@
+services:
+  histoannotator:
+    build: .
+    container_name: histoannotator
+    restart: unless-stopped
+
+    environment:
+      IMAGE_ROOT: /data/images
+      ANNOTATION_ROOT: /data/annotations
+      TILE_CACHE_ROOT: /data/cache
+      PREPARED_ROOT: /data/prepared
+      UPLOAD_ROOT: /data/uploads
+      APP_TITLE: HistoAnnotator
+      MAX_SCAN_FILES: ${MAX_SCAN_FILES:-5000}
+      PREPARE_THRESHOLD_MB: ${PREPARE_THRESHOLD_MB:-128}
+      TILE_SIZE: ${TILE_SIZE:-512}
+      TILE_JPEG_QUALITY: ${TILE_JPEG_QUALITY:-90}
+      UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-8}
+      MAX_UPLOAD_GB: ${MAX_UPLOAD_GB:-50}
+
+    volumes:
+      - ${IMAGE_ROOT:-./data/images}:/data/images
+      - ${ANNOTATION_ROOT:-./data/annotations}:/data/annotations
+      - ${TILE_CACHE_ROOT:-./data/cache}:/data/cache
+      - ${PREPARED_ROOT:-./data/prepared}:/data/prepared
+      - ${UPLOAD_ROOT:-./data/uploads}:/data/uploads
+
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8020}:8000"

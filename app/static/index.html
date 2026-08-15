@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=0.8.2">
+  <link rel="stylesheet" href="./static/styles.css?v=1.0.0">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v0.8.2</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.0.0</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -42,6 +42,7 @@
         <button id="importGeoJsonButton" class="menu-item" type="button" disabled>Import GeoJSON</button>
         <input id="importInput" class="visually-hidden" type="file" accept=".geojson,application/geo+json,application/json">
         <button id="exportButton" class="menu-item" type="button" disabled>Export QuPath GeoJSON</button>
+        <button id="shareGeoJsonButton" class="menu-item" type="button" disabled>Share GeoJSON</button>
         <button id="saveButton" class="menu-item" type="button" disabled>Save now</button>
         <div class="menu-separator"></div>
         <label class="menu-field">
@@ -254,6 +255,6 @@
     </section>
   </div>
 
-  <script src="./static/app.js?v=0.8.2"></script>
+  <script src="./static/app.js?v=1.0.0"></script>
 </body>
 </html>

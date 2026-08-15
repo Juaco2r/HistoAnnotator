@@ -65,3 +65,12 @@ android-app/android/**/build/
 # Android local build state
 android-app/android/local.properties
 releases/
+
+# Standalone local data
+/data/
+
+# Capacitor-generated Android web assets
+android-app/android/app/src/main/assets/public/
+
+# Local Android deployment overlay (private CA / environment-specific trust)
+android-app/android/app/src/debug/res/
