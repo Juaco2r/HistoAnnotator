@@ -143,9 +143,17 @@ script = (
 )
 
 if "polygon-clipping.umd.js" not in text:
-    target = '  <script src="./static/app.js?v=1.0.0"></script>'
+    target = next(
+        (
+            line
+            for line in text.splitlines()
+            if '<script src="./static/app.js' in line
+            and '</script>' in line
+        ),
+        None,
+    )
 
-    if target not in text:
+    if target is None:
         raise SystemExit("ERROR: app.js script tag not found")
 
     text = text.replace(

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.0.0">
+  <link rel="stylesheet" href="./static/styles.css?v=1.1.0">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.0.0</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.1.0</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -56,6 +56,8 @@
         </label>
         <button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
         <div class="menu-separator"></div>
+        <button id="reviewModeButton" class="menu-item" type="button" disabled>Review annotations</button>
+        <button id="annotationStatsButton" class="menu-item" type="button" disabled>Annotation statistics</button>
         <button id="imageInfoButton" class="menu-item" type="button" disabled>Image information</button>
       </div>
     </div>
@@ -154,6 +156,17 @@
         <button id="subtractSelection" type="button" hidden>Subtract</button>
         <button id="clearSelection" type="button">Clear</button>
       </div>
+      <div id="reviewDecisionBar" class="context-actions review-decision-bar" hidden>
+        <button id="reviewCorrectButton" class="review-correct" type="button">✓ Correct</button>
+        <button id="reviewMaybeButton" class="review-maybe" type="button">? Maybe</button>
+        <button id="reviewLaterButton" class="review-later" type="button">Review Later</button>
+        <button id="reviewDeleteButton" class="review-delete" type="button">Delete</button>
+      </div>
+      <div id="viewerCalibrationBadge" class="viewer-calibration-badge" hidden>—</div>
+      <div id="scaleBar" class="scale-bar" hidden>
+        <div id="scaleBarLine" class="scale-bar-line"></div>
+        <div id="scaleBarLabel" class="scale-bar-label">100 µm</div>
+      </div>
       <div id="viewerDiagnostics" class="viewer-diagnostics" aria-live="polite"></div>
       <div id="status" class="status-toast" aria-live="polite" hidden></div>
     </section>
@@ -196,6 +209,30 @@
           </button>
           <div id="annotationList" class="annotation-list" hidden></div>
         </section>
+      </section>
+
+      <section id="reviewPanel" class="review-panel" hidden>
+        <div class="review-header">
+          <div>
+            <strong>Review mode</strong>
+            <div id="reviewScopeLabel" class="review-scope-label">All annotations</div>
+          </div>
+          <button id="exitReviewModeButton" class="small-button" type="button">Exit</button>
+        </div>
+        <div class="review-progress-wrap">
+          <div class="review-progress-bar" aria-hidden="true">
+            <div id="reviewProgressFill" class="review-progress-fill" style="width:0%"></div>
+          </div>
+          <strong id="reviewProgressText">0 / 0 reviewed · 0%</strong>
+          <span id="reviewRemainingText" class="review-remaining-text">Remaining: 0 · Maybe: 0</span>
+          <span id="reviewCurrentText" class="review-current-text">—</span>
+        </div>
+        <label class="review-class-label" for="reviewClassSelect">Current annotation class</label>
+        <div class="review-class-row">
+          <select id="reviewClassSelect"></select>
+          <button id="reviewNewClassButton" class="small-button" type="button">+ New</button>
+        </div>
+        <p class="review-help">The current annotation remains editable with the normal annotation tools.</p>
       </section>
 
       <section id="classPanelDetails" class="panel-details management-only">
@@ -247,14 +284,68 @@
     </section>
   </div>
 
+  <div id="reviewSetupModal" class="modal-overlay" hidden>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reviewSetupTitle">
+      <h2 id="reviewSetupTitle">Review annotations</h2>
+      <label class="review-setup-field" for="reviewScopeSelect">
+        <span>Review</span>
+        <select id="reviewScopeSelect"><option value="all">All annotations</option></select>
+      </label>
+      <p class="modal-note">Correct annotations are finalized. Maybe annotations are shown again once after the first pass. Delete removes the annotation from the GeoJSON.</p>
+      <div class="modal-actions">
+        <button id="reviewSetupCancelButton" type="button">Cancel</button>
+        <button id="reviewSetupStartButton" type="button">Start review</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="annotationStatsModal" class="modal-overlay" hidden>
+    <section class="modal-card stats-card" role="dialog" aria-modal="true" aria-labelledby="annotationStatsTitle">
+      <h2 id="annotationStatsTitle">Annotation statistics</h2>
+      <div id="annotationStatsContent"></div>
+      <div class="modal-actions">
+        <button id="annotationStatsCloseButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
   <div id="infoOverlay" class="modal-overlay" hidden>
     <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
       <h2 id="infoTitle">Image information</h2>
       <pre id="imageInfoContent"></pre>
+      <div id="manualCalibrationPanel" class="manual-calibration-panel">
+        <div class="manual-calibration-heading">
+          <strong>Manual calibration</strong>
+          <span id="manualCalibrationState" class="manual-calibration-state">Optional</span>
+        </div>
+        <p class="modal-note">
+          Use this only when you know the physical calibration. Manual values override detected metadata for the viewer display and scale bar on this device.
+        </p>
+        <div class="manual-calibration-grid">
+          <label>
+            <span>Resolution</span>
+            <div class="manual-input-unit">
+              <input id="manualMppInput" type="number" min="0.000001" step="0.001" inputmode="decimal" placeholder="e.g. 0.220">
+              <span>µm/px</span>
+            </div>
+          </label>
+          <label>
+            <span>Magnification</span>
+            <div class="manual-input-unit">
+              <input id="manualObjectiveInput" type="number" min="0.01" step="0.1" inputmode="decimal" placeholder="e.g. 40">
+              <span>×</span>
+            </div>
+          </label>
+        </div>
+        <div class="manual-calibration-actions">
+          <button id="saveManualCalibrationButton" type="button">Save manual calibration</button>
+          <button id="clearManualCalibrationButton" type="button">Use image metadata</button>
+        </div>
+      </div>
       <button id="closeInfoButton" type="button">Close</button>
     </section>
   </div>
 
-  <script src="./static/app.js?v=1.0.0"></script>
+  <script src="./static/app.js?v=1.1.0"></script>
 </body>
 </html>

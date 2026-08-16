@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.0.0";
+  const VERSION = "1.1.0";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -129,6 +129,29 @@
     offlineFilesList: document.getElementById("offlineFilesList"),
     closeOfflineFiles: document.getElementById("closeOfflineFiles"),
     imageInfoButton: document.getElementById("imageInfoButton"),
+    annotationStatsButton: document.getElementById("annotationStatsButton"),
+    annotationStatsModal: document.getElementById("annotationStatsModal"),
+    annotationStatsContent: document.getElementById("annotationStatsContent"),
+    annotationStatsCloseButton: document.getElementById("annotationStatsCloseButton"),
+    reviewModeButton: document.getElementById("reviewModeButton"),
+    reviewPanel: document.getElementById("reviewPanel"),
+    reviewScopeLabel: document.getElementById("reviewScopeLabel"),
+    reviewProgressFill: document.getElementById("reviewProgressFill"),
+    reviewProgressText: document.getElementById("reviewProgressText"),
+    reviewRemainingText: document.getElementById("reviewRemainingText"),
+    reviewCurrentText: document.getElementById("reviewCurrentText"),
+    reviewClassSelect: document.getElementById("reviewClassSelect"),
+    reviewNewClassButton: document.getElementById("reviewNewClassButton"),
+    exitReviewModeButton: document.getElementById("exitReviewModeButton"),
+    reviewDecisionBar: document.getElementById("reviewDecisionBar"),
+    reviewCorrectButton: document.getElementById("reviewCorrectButton"),
+    reviewMaybeButton: document.getElementById("reviewMaybeButton"),
+    reviewLaterButton: document.getElementById("reviewLaterButton"),
+    reviewDeleteButton: document.getElementById("reviewDeleteButton"),
+    reviewSetupModal: document.getElementById("reviewSetupModal"),
+    reviewScopeSelect: document.getElementById("reviewScopeSelect"),
+    reviewSetupCancelButton: document.getElementById("reviewSetupCancelButton"),
+    reviewSetupStartButton: document.getElementById("reviewSetupStartButton"),
     uploadOverlay: document.getElementById("uploadOverlay"),
     uploadFilename: document.getElementById("uploadFilename"),
     uploadProgress: document.getElementById("uploadProgress"),
@@ -137,8 +160,17 @@
     infoOverlay: document.getElementById("infoOverlay"),
     imageInfoContent: document.getElementById("imageInfoContent"),
     closeInfoButton: document.getElementById("closeInfoButton"),
+    manualCalibrationState: document.getElementById("manualCalibrationState"),
+    manualMppInput: document.getElementById("manualMppInput"),
+    manualObjectiveInput: document.getElementById("manualObjectiveInput"),
+    saveManualCalibrationButton: document.getElementById("saveManualCalibrationButton"),
+    clearManualCalibrationButton: document.getElementById("clearManualCalibrationButton"),
     featureCount: document.getElementById("featureCount"),
     dimensions: document.getElementById("dimensions"),
+    viewerCalibrationBadge: document.getElementById("viewerCalibrationBadge"),
+    scaleBar: document.getElementById("scaleBar"),
+    scaleBarLine: document.getElementById("scaleBarLine"),
+    scaleBarLabel: document.getElementById("scaleBarLabel"),
     diagnostics: document.getElementById("viewerDiagnostics"),
   };
 
@@ -158,6 +190,12 @@
   let mode = "navigate";
   let selectedId = null;
   let selectedIds = new Set();
+
+  const REVIEW_PROPERTY = "histoannotatorReview";
+  let reviewPendingNewClassAssignment = false;
+  let reviewAutoExitTimeout = null;
+  let reviewAutoExitInterval = null;
+  let reviewState = { active:false, scope:"all", scopeIds:[], queue:[], maybeQueue:[], phase:"main", currentId:null };
   let activeDraft = null;
   let polygonDraft = [];
   let polygonOperation = "new";
@@ -248,6 +286,14 @@
           properties.classification = { name: String(classification.name) };
           const rgb = color ? hexToRgbArray(color) : null;
           if (rgb) properties.classification.color = rgb;
+        }
+        const review = sourceProperties.histoannotatorReview;
+        if (review && typeof review === "object") {
+          const status = String(review.status || "").toLowerCase();
+          if (status === "correct" || status === "maybe" || status === "later") {
+            properties.histoannotatorReview = { status };
+            if (review.reviewedAt) properties.histoannotatorReview.reviewedAt = String(review.reviewedAt);
+          }
         }
         for (const key of ["name", "description", "measurements"]) {
           if (key in sourceProperties) properties[key] = sourceProperties[key];
@@ -837,7 +883,7 @@
     if (IS_NATIVE) return;
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker
-      .register(`${BASE || ""}/service-worker.js`, { scope: `${BASE || ""}/` })
+      .register(`${BASE || ""}/service-worker.js?v=${VERSION}`, { scope: `${BASE || ""}/`, updateViaCache: "none" })
       .then(() => navigator.serviceWorker.ready)
       .catch((error) => console.warn("Service worker registration failed", error));
   }
@@ -949,6 +995,10 @@
     if (classEditIndex === null) {
       classes.push({ name, color });
       currentClass = classes[classes.length - 1];
+      if (reviewState.active && reviewPendingNewClassAssignment) {
+        reviewPendingNewClassAssignment = false;
+        assignReviewFeatureClass(currentClass.name);
+      }
     } else {
       const oldName = classes[classEditIndex].name;
       classes[classEditIndex] = { name, color };
@@ -1157,6 +1207,8 @@
       viewer.addHandler(eventName, () => {
         drawAnnotations();
         updateDiagnostics();
+        updateScaleBar();
+        updateCalibrationBadge();
         if (eventName === "open" && viewer.navigator?.element) {
           viewer.navigator.element.title = "Overview: tap or drag to move to another part of the image";
           viewer.navigator.element.setAttribute("aria-label", "Image overview. Tap or drag to navigate.");
@@ -3476,6 +3528,8 @@
     els.downloadOriginalButton.disabled = !enabled;
     if (els.downloadOfflineButton) els.downloadOfflineButton.disabled = !enabled || !currentInfo;
     els.imageInfoButton.disabled = !enabled;
+    if (els.annotationStatsButton) els.annotationStatsButton.disabled = !enabled || featureCollection.features.length === 0;
+    if (els.reviewModeButton) els.reviewModeButton.disabled = !enabled || featureCollection.features.length === 0;
     if (els.imageTypeSelect) els.imageTypeSelect.disabled = !enabled;
     if (els.eyeButton) els.eyeButton.disabled = !enabled;
     if (els.displayButton) els.displayButton.disabled = !enabled;
@@ -3906,6 +3960,7 @@
   }
 
   async function openImage(imageId) {
+    if (reviewState.active) exitReviewMode();
     const sequence = ++openSequence;
     if (dirty) await saveAnnotations(false);
     if (!imageId) {
@@ -4207,6 +4262,13 @@
   }
 
   function drawGeometry(feature) {
+    if (
+      reviewState.active
+      && String(featureId(feature))
+        !== String(reviewState.currentId || "")
+    ) {
+      return;
+    }
     const geometry = feature.geometry;
     if (!geometry) return;
     const color = colorForFeature(feature);
@@ -4284,7 +4346,12 @@
     const rect = resizeCanvas();
     ctx.clearRect(0, 0, rect.width, rect.height);
     if (!viewer || !viewer.world.getItemCount()) return;
-    if (annotationsVisible) featureCollection.features.forEach(drawGeometry);
+    if (annotationsVisible) {
+      const drawableFeatures = reviewState.active
+        ? (reviewState.currentId ? [findFeature(reviewState.currentId)].filter(Boolean) : [])
+        : featureCollection.features;
+      drawableFeatures.forEach(drawGeometry);
+    }
     if (pathologistDraft && drawingProfile === "pathologist" && mode === "freehand") {
       if (pathologistDraft.outer.length) drawRing(pathologistDraft.outer, drawingColor(pathologistDraft.operation), false, true);
       pathologistDraft.holes.forEach((ring) => { if (ring.length) drawRing(ring, "#ffcf66", false, true); });
@@ -4540,6 +4607,83 @@
     const paddingX = Math.max(width * 0.12, 0.00002);
     const paddingY = Math.max(height * 0.12, 0.00002);
     viewer.viewport.fitBounds(new OpenSeadragon.Rect(topLeft.x - paddingX, topLeft.y - paddingY, width + paddingX * 2, height + paddingY * 2), false);
+  }
+
+  function zoomToReviewFeature(feature) {
+    if (
+      !viewer
+      || !viewer.world.getItemCount()
+      || !feature?.geometry
+    ) {
+      return;
+    }
+
+    const bounds = geometryBounds(feature.geometry);
+    if (!bounds) return;
+
+    const imageWidth = Math.max(
+      1,
+      Number(currentInfo?.width) || bounds.maxX
+    );
+    const imageHeight = Math.max(
+      1,
+      Number(currentInfo?.height) || bounds.maxY
+    );
+
+    const annotationWidth = Math.max(
+      1,
+      bounds.maxX - bounds.minX
+    );
+    const annotationHeight = Math.max(
+      1,
+      bounds.maxY - bounds.minY
+    );
+
+    // Keep the current ~12% padding for large annotations, while
+    // guaranteeing useful tissue context around very small/cell-sized ROIs.
+    const targetWidth = Math.min(
+      imageWidth,
+      Math.max(1024, annotationWidth * 1.24)
+    );
+    const targetHeight = Math.min(
+      imageHeight,
+      Math.max(1024, annotationHeight * 1.24)
+    );
+
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+
+    const x = Math.max(
+      0,
+      Math.min(
+        imageWidth - targetWidth,
+        centerX - targetWidth / 2
+      )
+    );
+    const y = Math.max(
+      0,
+      Math.min(
+        imageHeight - targetHeight,
+        centerY - targetHeight / 2
+      )
+    );
+
+    const item = viewer.world.getItemAt(0);
+    const topLeft = item.imageToViewportCoordinates(x, y);
+    const bottomRight = item.imageToViewportCoordinates(
+      x + targetWidth,
+      y + targetHeight
+    );
+
+    viewer.viewport.fitBounds(
+      new OpenSeadragon.Rect(
+        topLeft.x,
+        topLeft.y,
+        Math.max(bottomRight.x - topLeft.x, 0.00001),
+        Math.max(bottomRight.y - topLeft.y, 0.00001)
+      ),
+      false
+    );
   }
 
   function syncCurrentClassFromFeature(feature) {
@@ -4800,25 +4944,774 @@
     setStatus(`Download started: ${currentImage.name}`, "saved");
   }
 
+  function getFeatureClassName(feature) {
+    return feature?.properties?.classification?.name || "Unclassified";
+  }
+  function reviewStatus(feature) {
+    const status = feature?.properties?.[REVIEW_PROPERTY]?.status;
+    return status === "correct"
+      || status === "maybe"
+      || status === "later"
+      ? status
+      : "pending";
+  }
+  function setReviewStatus(feature, status) {
+    feature.properties ||= {};
+    feature.properties[REVIEW_PROPERTY] = { status, reviewedAt: new Date().toISOString() };
+  }
+  function featuresForReviewScope(scope) {
+    return (featureCollection.features || []).filter((feature) =>
+      feature?.geometry && (scope === "all" || getFeatureClassName(feature) === scope)
+    );
+  }
+  function activeReviewFeatures() {
+    const ids = new Set(reviewState.scopeIds.map(String));
+    return (featureCollection.features || []).filter((feature) => ids.has(featureId(feature)));
+  }
+  function populateReviewScopeOptions() {
+    const previous = els.reviewScopeSelect?.value || "all";
+    const names = [...new Set((featureCollection.features || []).map(getFeatureClassName).filter(Boolean))]
+      .sort((a,b) => a.localeCompare(b));
+    els.reviewScopeSelect.innerHTML = "";
+    const all = document.createElement("option");
+    all.value = "all"; all.textContent = "All annotations"; els.reviewScopeSelect.append(all);
+    for (const name of names) {
+      const option = document.createElement("option");
+      option.value = name; option.textContent = name; els.reviewScopeSelect.append(option);
+    }
+    if ([...els.reviewScopeSelect.options].some((option) => option.value === previous)) els.reviewScopeSelect.value = previous;
+  }
+  function populateReviewClassSelect(feature) {
+    if (!feature) return;
+    const current = getFeatureClassName(feature);
+    const names = [...new Set([...classes.map((item) => item.name), current])].filter(Boolean).sort((a,b) => a.localeCompare(b));
+    els.reviewClassSelect.innerHTML = "";
+    for (const name of names) {
+      const option = document.createElement("option");
+      option.value = name; option.textContent = name; option.selected = name === current; els.reviewClassSelect.append(option);
+    }
+  }
+  function currentReviewFeature() {
+    return reviewState.currentId ? findFeature(reviewState.currentId) : null;
+  }
+  function clearReviewAutoExitTimer() {
+    if (reviewAutoExitTimeout) {
+      clearTimeout(reviewAutoExitTimeout);
+      reviewAutoExitTimeout = null;
+    }
+    if (reviewAutoExitInterval) {
+      clearInterval(reviewAutoExitInterval);
+      reviewAutoExitInterval = null;
+    }
+  }
+
+  function scheduleReviewAutoExit(seconds = 30) {
+    clearReviewAutoExitTimer();
+
+    let remaining = Math.max(1, Math.round(seconds));
+
+    const renderCountdown = () => {
+      if (!reviewState.active || reviewState.currentId) return;
+      if (els.reviewCurrentText) {
+        els.reviewCurrentText.textContent = `Review complete - auto exit in ${remaining}s`;
+      }
+    };
+
+    renderCountdown();
+
+    reviewAutoExitInterval = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) renderCountdown();
+    }, 1000);
+
+    reviewAutoExitTimeout = setTimeout(() => {
+      if (reviewState.active && !reviewState.currentId) {
+        exitReviewMode();
+        setStatus("Review mode closed automatically", "saved");
+      }
+    }, remaining * 1000);
+  }
+
+  function updateReviewProgress() {
+    if (!reviewState.active) return;
+
+    const currentFeatures = activeReviewFeatures();
+    const currentIds = new Set(currentFeatures.map(featureId));
+    const deleted = reviewState.scopeIds.filter(
+      (id) => !currentIds.has(String(id))
+    ).length;
+
+    const correct = currentFeatures.filter(
+      (feature) => reviewStatus(feature) === "correct"
+    ).length;
+    const maybe = currentFeatures.filter(
+      (feature) => reviewStatus(feature) === "maybe"
+    ).length;
+    const later = currentFeatures.filter(
+      (feature) => reviewStatus(feature) === "later"
+    ).length;
+
+    const total = reviewState.scopeIds.length;
+    const finalized = correct + deleted;
+    const remaining = Math.max(0, total - finalized);
+    const percent = total
+      ? Math.round((finalized / total) * 100)
+      : 100;
+
+    els.reviewProgressFill.style.width = `${percent}%`;
+    els.reviewProgressText.textContent =
+      `${finalized} / ${total} reviewed · ${percent}%`;
+    els.reviewRemainingText.textContent =
+      `Remaining: ${remaining} · Maybe: ${maybe} · Later: ${later}`;
+
+    const feature = currentReviewFeature();
+
+    if (feature) {
+      const passLabel =
+        reviewState.phase === "maybe"
+          ? "Maybe pass"
+          : reviewState.phase === "later"
+            ? "Review Later pass"
+            : "First pass";
+
+      els.reviewCurrentText.textContent =
+        `${passLabel} · ${getFeatureClassName(feature)}`;
+    } else {
+      els.reviewCurrentText.textContent = "Review pass complete";
+    }
+  }
+  function nextReviewFeature() {
+    if (!reviewState.active) return;
+
+    clearReviewAutoExitTimer();
+
+    while (reviewState.queue.length) {
+      const id = String(reviewState.queue.shift());
+      const feature = findFeature(id);
+
+      if (!feature) continue;
+
+      const status = reviewStatus(feature);
+
+      if (
+        reviewState.phase === "main"
+        && status !== "pending"
+      ) {
+        continue;
+      }
+
+      if (
+        reviewState.phase === "maybe"
+        && status !== "maybe"
+      ) {
+        continue;
+      }
+
+      if (
+        reviewState.phase === "later"
+        && status !== "later"
+      ) {
+        continue;
+      }
+
+      reviewState.currentId = id;
+      setSingleSelection(id);
+      syncCurrentClassFromFeature(feature);
+      populateReviewClassSelect(feature);
+      updateControls();
+      drawAnnotations();
+      zoomToReviewFeature(feature);
+      updateReviewProgress();
+      return;
+    }
+
+    if (
+      reviewState.phase === "main"
+      && reviewState.maybeQueue.length
+    ) {
+      reviewState.phase = "maybe";
+      reviewState.queue = [
+        ...new Set(reviewState.maybeQueue.map(String))
+      ];
+      reviewState.maybeQueue = [];
+      nextReviewFeature();
+      return;
+    }
+
+    if (
+      (reviewState.phase === "main"
+        || reviewState.phase === "maybe")
+      && reviewState.laterQueue.length
+    ) {
+      reviewState.phase = "later";
+      reviewState.queue = [
+        ...new Set(reviewState.laterQueue.map(String))
+      ];
+      reviewState.laterQueue = [];
+      nextReviewFeature();
+      return;
+    }
+
+    reviewState.currentId = null;
+    clearSelectedFeatures(false);
+    updateControls();
+    drawAnnotations();
+    updateReviewProgress();
+    setStatus("Review complete", "saved");
+    scheduleReviewAutoExit(30);
+  }
+  function startReviewMode(scope = "all") {
+    clearReviewAutoExitTimer();
+
+    let scoped = featuresForReviewScope(scope);
+
+    if (!scoped.length) {
+      window.alert(
+        "There are no annotations in the selected review scope."
+      );
+      return;
+    }
+
+    let pending = scoped.filter(
+      (feature) => reviewStatus(feature) === "pending"
+    );
+    let maybe = scoped.filter(
+      (feature) => reviewStatus(feature) === "maybe"
+    );
+    let later = scoped.filter(
+      (feature) => reviewStatus(feature) === "later"
+    );
+
+    if (!pending.length && !maybe.length && !later.length) {
+      const restart = window.confirm(
+        "All annotations in this scope have already been reviewed.\n\nReview all of them again?"
+      );
+
+      if (!restart) {
+        setStatus(
+          "All annotations in this scope are already reviewed",
+          "saved"
+        );
+        return;
+      }
+
+      pushUndo();
+
+      for (const feature of scoped) {
+        if (feature?.properties?.[REVIEW_PROPERTY]) {
+          delete feature.properties[REVIEW_PROPERTY];
+        }
+      }
+
+      markChanged();
+
+      scoped = featuresForReviewScope(scope);
+      pending = [...scoped];
+      maybe = [];
+      later = [];
+    }
+
+    reviewState.active = true;
+    reviewState.scope = scope;
+    reviewState.scopeIds = scoped.map(
+      (feature) => String(featureId(feature))
+    );
+    reviewState.queue = pending.map(
+      (feature) => String(featureId(feature))
+    );
+    reviewState.maybeQueue = maybe.map(
+      (feature) => String(featureId(feature))
+    );
+    reviewState.laterQueue = later.map(
+      (feature) => String(featureId(feature))
+    );
+    reviewState.phase = "main";
+    reviewState.currentId = null;
+
+    els.reviewPanel.hidden = false;
+    els.reviewDecisionBar.hidden = false;
+    els.reviewScopeLabel.textContent =
+      scope === "all"
+        ? "All annotations"
+        : `Class: ${scope}`;
+
+    nextReviewFeature();
+  }
+  function exitReviewMode() {
+    clearReviewAutoExitTimer();
+
+    reviewState.active = false;
+    reviewState.scope = "all";
+    reviewState.scopeIds = [];
+    reviewState.queue = [];
+    reviewState.maybeQueue = [];
+    reviewState.laterQueue = [];
+    reviewState.phase = "main";
+    reviewState.currentId = null;
+    reviewPendingNewClassAssignment = false;
+
+    if (els.reviewPanel) els.reviewPanel.hidden = true;
+    if (els.reviewDecisionBar) {
+      els.reviewDecisionBar.hidden = true;
+    }
+
+    clearSelectedFeatures(false);
+    updateControls();
+    drawAnnotations();
+  }
+  function assignReviewFeatureClass(className) {
+    const feature = currentReviewFeature();
+    const classItem = classes.find((item) => item.name === className);
+    if (!feature || !classItem) return;
+    pushUndo();
+    feature.properties ||= {};
+    feature.properties.classification = { name:classItem.name, color:hexToRgbArray(classItem.color) };
+    delete feature.properties.histoannotator;
+    currentClass = classItem;
+    markChanged(); populateReviewClassSelect(feature); updateReviewProgress();
+  }
+  function applyReviewDecision(decision) {
+    const feature = currentReviewFeature();
+    if (!feature || !reviewState.active) return;
+
+    const id = String(featureId(feature));
+
+    if (decision === "delete") {
+      pushUndo();
+      featureCollection.features =
+        featureCollection.features.filter(
+          (item) => String(featureId(item)) !== id
+        );
+      markChanged();
+
+    } else {
+      pushUndo();
+      setReviewStatus(feature, decision);
+      markChanged();
+
+      if (
+        decision === "maybe"
+        && reviewState.phase === "main"
+      ) {
+        reviewState.maybeQueue.push(id);
+      }
+
+      if (
+        decision === "later"
+        && reviewState.phase !== "later"
+      ) {
+        reviewState.laterQueue.push(id);
+      }
+    }
+
+    reviewState.currentId = null;
+    nextReviewFeature();
+  }
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function formatStatNumber(value, digits = 0) {
+    return new Intl.NumberFormat(undefined, {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(Number(value) || 0);
+  }
+
+  async function showAnnotationStatistics() {
+    if (!currentImage || !currentInfo || !featureCollection.features.length) return;
+
+    toggleFileMenu(false);
+    els.annotationStatsContent.innerHTML = '<p class="modal-note">Calculating geometric unions…</p>';
+    els.annotationStatsModal.hidden = false;
+
+    try {
+      const response = await apiFetch(`${API}/geojson/statistics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(featureCollection),
+        timeoutMs: 30000,
+      });
+
+      const stats = await response.json();
+      const imageArea = Number(currentInfo.width || 0) * Number(currentInfo.height || 0);
+
+      const rowsHtml = (stats.rows || []).map((row) => {
+        const area = Number(row.areaPx2 || 0);
+        const percent = imageArea > 0 ? (area / imageArea) * 100 : 0;
+        return `
+          <tr>
+            <td>${escapeHtml(row.className)}</td>
+            <td>${formatStatNumber(row.count)}</td>
+            <td>${formatStatNumber(area)}</td>
+            <td>${formatStatNumber(percent, 2)}%</td>
+          </tr>
+        `;
+      }).join("");
+
+      const totalArea = Number(stats.totalUnionAreaPx2 || 0);
+      const totalPercent = imageArea > 0 ? (totalArea / imageArea) * 100 : 0;
+
+      els.annotationStatsContent.innerHTML = `
+        <div class="stats-summary">
+          <strong>${escapeHtml(currentImage.name)}</strong>
+          <span>${formatStatNumber(currentInfo.width)} × ${formatStatNumber(currentInfo.height)} px</span>
+          <span>Full image area: ${formatStatNumber(imageArea)} px²</span>
+        </div>
+        <div class="stats-table-wrap">
+          <table class="stats-table">
+            <thead><tr><th>Class</th><th>Annotations</th><th>Union area (px²)</th><th>% image</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+            <tfoot>
+              <tr>
+                <td>All annotations</td>
+                <td>${formatStatNumber(stats.totalAnnotations)}</td>
+                <td>${formatStatNumber(totalArea)}</td>
+                <td>${formatStatNumber(totalPercent, 2)}%</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <p class="stats-note">
+          Area uses the geometric union within each class, so overlap between
+          annotations of the same class is counted once. Different classes may
+          overlap, therefore class percentages do not necessarily sum to 100%.
+        </p>
+      `;
+    } catch (error) {
+      els.annotationStatsContent.innerHTML =
+        `<p class="modal-note">Statistics could not be calculated: ${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  function manualCalibrationStorageKey() {
+    return currentImage?.id ? `histoannotator.manualCalibration.v1::${currentImage.id}` : null;
+  }
+
+  function readManualCalibration() {
+    const key = manualCalibrationStorageKey();
+    if (!key) return null;
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "null");
+      if (!value || typeof value !== "object") return null;
+      const mpp = Number(value.mpp);
+      const objective = Number(value.objective);
+      return {
+        mpp: Number.isFinite(mpp) && mpp > 0 ? mpp : null,
+        objective: Number.isFinite(objective) && objective > 0 ? objective : null,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function metadataResolutionMpp() {
+    const x = Number(currentInfo?.mppX);
+    const y = Number(currentInfo?.mppY);
+    const validX = Number.isFinite(x) && x > 0;
+    const validY = Number.isFinite(y) && y > 0;
+    if (validX && validY) return (x + y) / 2;
+    if (validX) return x;
+    if (validY) return y;
+    return null;
+  }
+
+  function effectiveCalibration() {
+    const manual = readManualCalibration();
+    const metadataMpp = metadataResolutionMpp();
+    const metadataObjective = Number(currentInfo?.objectivePower);
+    return {
+      mpp: manual?.mpp || metadataMpp || null,
+      objective: manual?.objective || (Number.isFinite(metadataObjective) && metadataObjective > 0 ? metadataObjective : null),
+      source: manual
+        ? "Manual override"
+        : (currentInfo?.calibrationSource || null),
+      manualActive: Boolean(manual),
+    };
+  }
+
+  function formatMagnification(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return "—";
+    if (number < 1) return number.toFixed(2);
+    if (number < 10) return number.toFixed(1);
+    if (number < 100) return number.toFixed(number % 1 ? 1 : 0);
+    return number.toFixed(0);
+  }
+
+  function currentApproxMagnification(calibration = effectiveCalibration()) {
+    const sourceObjective = Number(calibration?.objective);
+    if (!Number.isFinite(sourceObjective) || sourceObjective <= 0 || !viewer?.world?.getItemCount()) return null;
+
+    const imagePixelsFor100ScreenPx = screenToleranceToImage(100);
+    if (!Number.isFinite(imagePixelsFor100ScreenPx) || imagePixelsFor100ScreenPx <= 0) return null;
+
+    const screenPixelsPerImagePixel = 100 / imagePixelsFor100ScreenPx;
+    return sourceObjective * screenPixelsPerImagePixel;
+  }
+
+  function renderManualCalibrationEditor() {
+    const manual = readManualCalibration();
+
+    if (els.manualMppInput) {
+      els.manualMppInput.value = manual?.mpp ? String(manual.mpp) : "";
+      const detectedMpp = metadataResolutionMpp();
+      els.manualMppInput.placeholder = detectedMpp ? `Detected: ${detectedMpp.toFixed(4)}` : "e.g. 0.220";
+    }
+
+    if (els.manualObjectiveInput) {
+      els.manualObjectiveInput.value = manual?.objective ? String(manual.objective) : "";
+      const detectedObjective = Number(currentInfo?.objectivePower);
+      els.manualObjectiveInput.placeholder =
+        Number.isFinite(detectedObjective) && detectedObjective > 0
+          ? `Detected: ${formatMagnification(detectedObjective)}`
+          : "e.g. 40";
+    }
+
+    if (els.manualCalibrationState) {
+      els.manualCalibrationState.textContent = manual ? "Manual override active" : "Using image metadata";
+    }
+
+    if (els.clearManualCalibrationButton) {
+      els.clearManualCalibrationButton.disabled = !manual;
+    }
+  }
+
+  function saveManualCalibration() {
+    if (!currentImage) return;
+
+    const mppText = String(els.manualMppInput?.value || "").trim();
+    const objectiveText = String(els.manualObjectiveInput?.value || "").trim();
+
+    const mpp = mppText ? Number(mppText) : null;
+    const objective = objectiveText ? Number(objectiveText) : null;
+
+    if (mppText && (!Number.isFinite(mpp) || mpp <= 0)) {
+      setStatus("Resolution must be a positive number in um/px", "error");
+      return;
+    }
+
+    if (objectiveText && (!Number.isFinite(objective) || objective <= 0)) {
+      setStatus("Magnification must be a positive number", "error");
+      return;
+    }
+
+    if (!mppText && !objectiveText) {
+      setStatus("Enter a resolution, a magnification, or both", "error");
+      return;
+    }
+
+    const key = manualCalibrationStorageKey();
+    if (!key) return;
+
+    localStorage.setItem(key, JSON.stringify({
+      mpp: mppText ? mpp : null,
+      objective: objectiveText ? objective : null,
+      updatedAt: new Date().toISOString(),
+    }));
+
+    updateCalibrationBadge();
+    updateScaleBar();
+    showImageInfo();
+    setStatus("Manual calibration saved on this device", "saved");
+  }
+
+  function clearManualCalibration() {
+    const key = manualCalibrationStorageKey();
+    if (!key) return;
+
+    localStorage.removeItem(key);
+    updateCalibrationBadge();
+    updateScaleBar();
+    showImageInfo();
+    setStatus("Image metadata calibration restored", "saved");
+  }
+
+  function updateCalibrationBadge() {
+    if (!els.viewerCalibrationBadge) return;
+
+    const calibration = effectiveCalibration();
+    const approx =
+      currentApproxMagnification(calibration);
+
+    const pieces = [];
+
+    if (
+      Number.isFinite(approx)
+      && approx > 0
+    ) {
+      pieces.push(
+        `≈${formatMagnification(approx)}×`
+      );
+    } else if (
+      Number.isFinite(Number(calibration.objective))
+      && Number(calibration.objective) > 0
+    ) {
+      pieces.push(
+        `${formatMagnification(calibration.objective)}× source`
+      );
+    }
+
+    if (
+      Number.isFinite(Number(calibration.mpp))
+      && Number(calibration.mpp) > 0
+    ) {
+      pieces.push(
+        `${Number(calibration.mpp).toFixed(3)} µm/px`
+      );
+    }
+
+    els.viewerCalibrationBadge.hidden =
+      pieces.length === 0;
+
+    els.viewerCalibrationBadge.textContent =
+      pieces.length
+        ? pieces.join(" · ")
+        : "—";
+
+    els.viewerCalibrationBadge.title =
+      calibration.source || "";
+  }
+  function niceScaleLengthUm(targetUm) {
+    if (!Number.isFinite(targetUm) || targetUm <= 0) return null;
+    const exponent = Math.floor(Math.log10(targetUm));
+    let best = 10 ** exponent;
+    for (const factor of [1, 2, 5, 10]) {
+      const candidate = factor * (10 ** exponent);
+      if (candidate <= targetUm) best = candidate;
+    }
+    return best;
+  }
+
+  function updateScaleBar() {
+    if (
+      !els.scaleBar
+      || !els.scaleBarLine
+      || !els.scaleBarLabel
+    ) {
+      return;
+    }
+
+    const calibration = effectiveCalibration();
+    const mpp = Number(calibration.mpp);
+
+    if (
+      !Number.isFinite(mpp)
+      || mpp <= 0
+      || !viewer?.world?.getItemCount()
+    ) {
+      els.scaleBar.hidden = true;
+      return;
+    }
+
+    const imagePixelsFor100ScreenPx =
+      screenToleranceToImage(100);
+
+    if (
+      !Number.isFinite(imagePixelsFor100ScreenPx)
+      || imagePixelsFor100ScreenPx <= 0
+    ) {
+      els.scaleBar.hidden = true;
+      return;
+    }
+
+    const imagePixelsPerScreenPx =
+      imagePixelsFor100ScreenPx / 100;
+
+    const targetUm =
+      120 * imagePixelsPerScreenPx * mpp;
+
+    const niceUm =
+      niceScaleLengthUm(targetUm);
+
+    if (!niceUm) {
+      els.scaleBar.hidden = true;
+      return;
+    }
+
+    const screenWidth =
+      niceUm / (imagePixelsPerScreenPx * mpp);
+
+    if (
+      !Number.isFinite(screenWidth)
+      || screenWidth < 18
+      || screenWidth > 240
+    ) {
+      els.scaleBar.hidden = true;
+      return;
+    }
+
+    els.scaleBar.hidden = false;
+    els.scaleBarLine.style.width =
+      `${screenWidth}px`;
+
+    if (niceUm >= 1000) {
+      const mm = niceUm / 1000;
+      els.scaleBarLabel.textContent =
+        `${Number(mm.toFixed(mm < 10 ? 1 : 0))} mm`;
+    } else {
+      els.scaleBarLabel.textContent =
+        `${Number(
+          niceUm.toFixed(niceUm < 10 ? 1 : 0)
+        )} µm`;
+    }
+  }
   function showImageInfo() {
     if (!currentImage || !currentInfo) return;
+
     toggleFileMenu(false);
+
+    const calibration =
+      effectiveCalibration();
+
+    const approx =
+      currentApproxMagnification(calibration);
+
     const info = {
       file: currentImage.name,
       path: currentImage.relativePath,
-      fileSize: formatBytes(currentImage.sizeBytes),
-      dimensions: `${currentInfo.width} × ${currentInfo.height}`,
+      fileSize:
+        formatBytes(currentImage.sizeBytes),
+      dimensions:
+        `${currentInfo.width} × ${currentInfo.height}`,
       source: currentInfo.sourceKind,
-      preparedOnSSD: Boolean(currentInfo.preparedLocally),
-      tileSize: `${currentInfo.tileSize} px`,
+      preparedOnSSD:
+        Boolean(currentInfo.preparedLocally),
+      tileSize:
+        `${currentInfo.tileSize} px`,
       levels: currentInfo.levelCount,
-      mppX: currentInfo.mppX ?? "—",
-      mppY: currentInfo.mppY ?? "—",
+      resolution:
+        calibration.mpp
+          ? `${Number(calibration.mpp).toFixed(4)} µm/px`
+          : "—",
+      sourceMagnification:
+        calibration.objective
+          ? `${formatMagnification(calibration.objective)}×`
+          : "—",
+      currentApproxMagnification:
+        approx
+          ? `≈${formatMagnification(approx)}×`
+          : "—",
+      calibrationSource:
+        calibration.source || "—",
     };
-    els.imageInfoContent.textContent = Object.entries(info).map(([key, value]) => `${key}: ${value}`).join("\n");
+
+    els.imageInfoContent.textContent =
+      Object.entries(info)
+        .map(
+          ([key, value]) =>
+            `${key}: ${value}`
+        )
+        .join("\n");
+
+    renderManualCalibrationEditor();
     els.infoOverlay.hidden = false;
   }
-
   function updateUploadUi(file, uploaded, total, message) {
     const percentage = total > 0 ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
     els.uploadFilename.textContent = `${file.name} · ${formatBytes(total)}`;
@@ -5261,6 +6154,30 @@
     els.shareGeoJsonButton?.addEventListener("click", () => { toggleFileMenu(false); shareGeoJson(); });
     els.saveButton.addEventListener("click", () => { toggleFileMenu(false); saveAnnotations(true); });
     els.imageInfoButton.addEventListener("click", showImageInfo);
+    els.annotationStatsButton?.addEventListener("click", showAnnotationStatistics);
+    els.annotationStatsCloseButton?.addEventListener("click", () => { els.annotationStatsModal.hidden = true; });
+    els.annotationStatsModal?.addEventListener("click", (event) => {
+      if (event.target === els.annotationStatsModal) els.annotationStatsModal.hidden = true;
+    });
+    els.reviewModeButton?.addEventListener("click", () => {
+      toggleFileMenu(false); populateReviewScopeOptions(); els.reviewSetupModal.hidden = false;
+    });
+    els.reviewSetupCancelButton?.addEventListener("click", () => { els.reviewSetupModal.hidden = true; });
+    els.reviewSetupStartButton?.addEventListener("click", () => {
+      const scope = els.reviewScopeSelect.value || "all";
+      els.reviewSetupModal.hidden = true; startReviewMode(scope);
+    });
+    els.exitReviewModeButton?.addEventListener("click", exitReviewMode);
+    els.reviewCorrectButton?.addEventListener("click", () => applyReviewDecision("correct"));
+    els.reviewMaybeButton?.addEventListener("click", () => applyReviewDecision("maybe"));
+    els.reviewLaterButton?.addEventListener("click", () => applyReviewDecision("later"));
+    els.reviewDeleteButton?.addEventListener("click", () => applyReviewDecision("delete"));
+    els.reviewClassSelect?.addEventListener("change", () => assignReviewFeatureClass(els.reviewClassSelect.value));
+    els.reviewNewClassButton?.addEventListener("click", () => {
+      reviewPendingNewClassAssignment = true; openClassEditor(null);
+    });
+    els.saveManualCalibrationButton?.addEventListener("click", saveManualCalibration);
+    els.clearManualCalibrationButton?.addEventListener("click", clearManualCalibration);
     els.closeInfoButton.addEventListener("click", () => { els.infoOverlay.hidden = true; });
     els.infoOverlay.addEventListener("click", (event) => { if (event.target === els.infoOverlay) els.infoOverlay.hidden = true; });
     els.cancelUploadButton.addEventListener("click", () => {
