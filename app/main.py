@@ -710,6 +710,16 @@ def _qupath_properties(source_properties: dict[str, Any]) -> dict[str, Any]:
         if color is not None:
             normalized_classification["color"] = color
         properties["classification"] = normalized_classification
+    review = source_properties.get("histoannotatorReview")
+    if isinstance(review, dict):
+        status = str(review.get("status") or "").strip().lower()
+        if status in {"correct", "maybe", "later"}:
+            normalized_review: dict[str, Any] = {"status": status}
+            reviewed_at = str(review.get("reviewedAt") or "").strip()
+            if reviewed_at:
+                normalized_review["reviewedAt"] = reviewed_at
+            properties["histoannotatorReview"] = normalized_review
+
     for key in ("name", "description", "measurements"):
         if key in source_properties:
             value = source_properties[key]
@@ -780,14 +790,14 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.1.0"}
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "imageRoot": str(IMAGE_ROOT),
         "imageRootExists": IMAGE_ROOT.exists(),
         "imageRootWritable": os.access(IMAGE_ROOT, os.W_OK),
@@ -1625,6 +1635,152 @@ def start_prepare(image_id: str) -> dict[str, Any]:
     return dict(PREP_JOBS[image_id])
 
 
+
+def _safe_metadata_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            denominator = float(value[1])
+            if denominator == 0:
+                return None
+            number = float(value[0]) / denominator
+        else:
+            number = float(value)
+        return number if np.isfinite(number) else None
+    except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+        return None
+
+
+def _physical_size_to_um(value: Any, unit: Any) -> float | None:
+    number = _safe_metadata_float(value)
+    if number is None or number <= 0:
+        return None
+
+    normalized = str(unit or "µm").strip().lower().replace("μ", "µ")
+    scale = {
+        "µm": 1.0, "um": 1.0,
+        "micrometer": 1.0, "micrometre": 1.0,
+        "micrometers": 1.0, "micrometres": 1.0,
+        "nm": 0.001, "nanometer": 0.001, "nanometre": 0.001,
+        "mm": 1000.0, "millimeter": 1000.0, "millimetre": 1000.0,
+        "cm": 10000.0, "centimeter": 10000.0, "centimetre": 10000.0,
+        "m": 1_000_000.0,
+    }.get(normalized)
+    return number * scale if scale is not None else None
+
+
+def _tiff_resolution_to_mpp(resolution: Any, unit: Any) -> float | None:
+    value = _safe_metadata_float(resolution)
+    if value is None or value <= 0:
+        return None
+
+    unit_name = getattr(unit, "name", None)
+    raw_unit = str(unit_name or unit or "").strip().upper()
+
+    if raw_unit in {"2", "INCH", "RESUNIT.INCH"} or "INCH" in raw_unit:
+        return 25400.0 / value
+    if raw_unit in {"3", "CENTIMETER", "CENTIMETRE", "RESUNIT.CENTIMETER"} or "CENTI" in raw_unit:
+        return 10000.0 / value
+    return None
+
+
+def _image_calibration_info(path: Path, properties: Any) -> dict[str, Any]:
+    # Read explicit metadata only; do not infer magnification from image size.
+    mpp_x = _safe_metadata_float(properties.get(openslide.PROPERTY_NAME_MPP_X))
+    mpp_y = _safe_metadata_float(properties.get(openslide.PROPERTY_NAME_MPP_Y))
+    objective_power = _safe_metadata_float(properties.get("openslide.objective-power"))
+
+    sources: list[str] = []
+    if mpp_x is not None or mpp_y is not None:
+        sources.append("OpenSlide MPP")
+    if objective_power is not None:
+        sources.append("OpenSlide objective")
+
+    if path.name.lower().endswith((".tif", ".tiff")):
+        try:
+            import tifffile
+            import xml.etree.ElementTree as ET
+
+            with tifffile.TiffFile(str(path)) as tif:
+                if tif.ome_metadata:
+                    try:
+                        root = ET.fromstring(tif.ome_metadata)
+                        pixels = next((e for e in root.iter() if e.tag.endswith("Pixels")), None)
+
+                        if pixels is not None:
+                            if mpp_x is None:
+                                mpp_x = _physical_size_to_um(
+                                    pixels.attrib.get("PhysicalSizeX"),
+                                    pixels.attrib.get("PhysicalSizeXUnit") or "µm",
+                                )
+                            if mpp_y is None:
+                                mpp_y = _physical_size_to_um(
+                                    pixels.attrib.get("PhysicalSizeY"),
+                                    pixels.attrib.get("PhysicalSizeYUnit") or "µm",
+                                )
+                            if mpp_x is not None or mpp_y is not None:
+                                sources.append("OME-TIFF physical size")
+
+                        if objective_power is None:
+                            objectives = {
+                                str(e.attrib.get("ID")): e
+                                for e in root.iter()
+                                if e.tag.endswith("Objective") and e.attrib.get("ID")
+                            }
+                            objective_id = None
+                            for e in root.iter():
+                                if e.tag.endswith("ObjectiveSettings"):
+                                    objective_id = e.attrib.get("ID")
+                                    if objective_id:
+                                        break
+
+                            objective = objectives.get(str(objective_id)) if objective_id else None
+                            if objective is None and len(objectives) == 1:
+                                objective = next(iter(objectives.values()))
+
+                            if objective is not None:
+                                objective_power = _safe_metadata_float(
+                                    objective.attrib.get("NominalMagnification")
+                                )
+                                if objective_power is not None:
+                                    sources.append("OME-TIFF objective")
+                    except Exception:
+                        pass
+
+                if (mpp_x is None or mpp_y is None) and len(tif.pages):
+                    page = tif.pages[0]
+                    x_tag = page.tags.get("XResolution")
+                    y_tag = page.tags.get("YResolution")
+                    unit_tag = page.tags.get("ResolutionUnit")
+                    unit = unit_tag.value if unit_tag is not None else None
+
+                    if mpp_x is None and x_tag is not None:
+                        mpp_x = _tiff_resolution_to_mpp(x_tag.value, unit)
+                    if mpp_y is None and y_tag is not None:
+                        mpp_y = _tiff_resolution_to_mpp(y_tag.value, unit)
+
+                    if mpp_x is not None or mpp_y is not None:
+                        sources.append("TIFF resolution tags")
+        except Exception:
+            pass
+
+    if mpp_x is not None and mpp_y is None:
+        mpp_y = mpp_x
+        sources.append("Y assumed equal to X")
+    elif mpp_y is not None and mpp_x is None:
+        mpp_x = mpp_y
+        sources.append("X assumed equal to Y")
+
+    return {
+        "mppX": mpp_x,
+        "mppY": mpp_y,
+        "objectivePower": objective_power,
+        "calibrationAvailable": bool(mpp_x is not None and mpp_y is not None),
+        "calibrationSource": "; ".join(dict.fromkeys(sources)) if sources else None,
+    }
+
+
 @app.get("/api/images/{image_id}/info")
 def image_info(image_id: str) -> dict[str, Any]:
     path, relative = safe_image_path(image_id)
@@ -1635,6 +1791,7 @@ def image_info(image_id: str) -> dict[str, Any]:
     width, height = handle.dimensions
     properties = handle.slide.properties
     multichannel = scientific_multichannel_info(path)
+    calibration = _image_calibration_info(path, properties)
 
     def float_property(key: str) -> float | None:
         value = properties.get(key)
@@ -1655,8 +1812,11 @@ def image_info(image_id: str) -> dict[str, Any]:
         "sourceKind": handle.source_kind,
         "directRaster": path.suffix.lower() in DIRECT_RASTER_SUFFIXES,
         "preparedLocally": render_path != path,
-        "mppX": float_property(openslide.PROPERTY_NAME_MPP_X),
-        "mppY": float_property(openslide.PROPERTY_NAME_MPP_Y),
+        "mppX": calibration["mppX"],
+        "mppY": calibration["mppY"],
+        "objectivePower": calibration["objectivePower"],
+        "calibrationAvailable": calibration["calibrationAvailable"],
+        "calibrationSource": calibration["calibrationSource"],
         "multichannel": multichannel,
     }
 
@@ -2510,6 +2670,57 @@ def select_geometries(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         if region.covers(geometry):
             ids.append(str(item.get("id", "")))
     return {"ids": ids}
+
+
+
+@app.post("/api/geojson/statistics")
+def geojson_statistics(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    # Compute annotation count and geometric union area per class.
+    collection, report = sanitize_qupath_feature_collection(payload)
+
+    grouped: dict[str, list[Any]] = {}
+    all_geometries: list[Any] = []
+
+    for feature in collection.get("features", []):
+        geometry_payload = feature.get("geometry")
+        if not isinstance(geometry_payload, dict):
+            continue
+        try:
+            geometry = shape(geometry_payload)
+        except Exception:
+            continue
+
+        if geometry.is_empty or geometry.geom_type not in {"Polygon", "MultiPolygon"}:
+            continue
+
+        class_name = (
+            feature.get("properties", {})
+            .get("classification", {})
+            .get("name")
+            or "Unclassified"
+        )
+        class_name = str(class_name)
+        grouped.setdefault(class_name, []).append(geometry)
+        all_geometries.append(geometry)
+
+    rows = []
+    for class_name in sorted(grouped, key=str.casefold):
+        geometries = grouped[class_name]
+        merged = unary_union(geometries)
+        rows.append({
+            "className": class_name,
+            "count": len(geometries),
+            "areaPx2": float(merged.area) if not merged.is_empty else 0.0,
+        })
+
+    all_union = unary_union(all_geometries) if all_geometries else GeometryCollection()
+
+    return {
+        "rows": rows,
+        "totalAnnotations": len(all_geometries),
+        "totalUnionAreaPx2": float(all_union.area) if not all_union.is_empty else 0.0,
+        "report": report,
+    }
 
 
 @app.post("/api/geojson/qupath-export")
