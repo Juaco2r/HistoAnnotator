@@ -18,6 +18,30 @@ You can:
 - test and save it;
 - scan the QR displayed by HistoAnnotator Desktop.
 
+## QR pairing
+
+With HistoAnnotator Desktop running, press **Start Server**. Desktop displays a
+LAN URL and QR code.
+
+On Android:
+
+1. Open **File → Connection settings**.
+2. Tap **Scan QR**.
+3. Allow camera access if requested.
+4. Scan the Desktop QR.
+5. HistoAnnotator validates `/api/images`, stores the server and loads the
+   remote image catalog.
+
+No LAN address is embedded in the public APK.
+
+## Local image mode
+
+Android v1.2.0 can open supported local TIFF/images through the native file
+picker. Persisted Android file access allows previously selected local images
+to be reopened where Android permits it.
+
+Local-image use is independent of the selected remote server.
+
 ## Desktop LAN connection
 
 Desktop server mode normally advertises a URL such as:

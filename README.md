@@ -2,16 +2,16 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21941344.svg)](https://doi.org/10.5281/zenodo.21941344)
 
-HistoAnnotator is a web and Android application for interactive annotation
+HistoAnnotator is a web, Android and desktop application for interactive annotation
 of histology and microscopy images.
 
 It is designed for research workflows involving whole-slide images,
 standard raster images, scientific multichannel fluorescence TIFF files,
 and QuPath-compatible GeoJSON annotations.
 
-> **Pre-release software**
+> **Research software**
 >
-> HistoAnnotator v1.2.0 is intended for research and testing.
+> HistoAnnotator v1.2.0 is a public research-software release intended for research and testing.
 > It is not clinically validated medical software and currently does not
 > provide individual authentication, audit trails, or regulatory controls.
 
@@ -53,7 +53,7 @@ not modified.
 
 OME metadata and channel names are used when available.
 
-The initial v1.0 implementation primarily supports three-dimensional
+The current multichannel implementation primarily supports three-dimensional
 multichannel TIFF datasets with spatial Y/X axes and 2-16 channels.
 
 Some non-OME TIFF files may expose a small leading dimension as Z even when
@@ -62,6 +62,24 @@ that leading axis as channels when the image is explicitly configured as
 **Fluorescence**.
 
 See [Multichannel fluorescence](docs/MULTICHANNEL_IF.md).
+
+## Download v1.2.0
+
+The GitHub v1.2.0 release provides:
+
+- `HistoAnnotator-v1.2.0-Windows-x64.zip`
+- `HistoAnnotator-v1.2.0-Linux-x64.tar.gz`
+- `HistoAnnotator-v1.2.0-macOS-AppleSilicon.tar.gz`
+- `HistoAnnotator-v1.2.0-macOS-Intel.tar.gz`
+- `HistoAnnotator-v1.2.0-Android.apk`
+- `SHA256SUMS.txt`
+
+Windows and Linux Desktop builds were manually tested in the v1.2.0 release
+candidate. macOS builds are produced and packaged-self-tested in CI but remain
+unsigned. The Android APK is a debug-signed research/testing build.
+
+For local standalone use, Desktop is the simplest option. Docker remains
+available for server/browser deployments.
 
 ## Quick start with Docker
 
@@ -199,7 +217,7 @@ including annotation classification information.
 Downloaded images can be opened using locally cached tiles and annotations.
 Local changes can later synchronize with the server.
 
-The initial v1.0 multichannel fluorescence implementation caches rendered
+The current multichannel fluorescence implementation caches rendered
 display variants. It does not yet download every raw scientific channel
 for unrestricted offline recomposition.
 
@@ -251,5 +269,5 @@ Current limitations include:
 
 **v1.2.0** adds Android local-image mode, runtime server pairing, QR pairing, and standalone Desktop builds.
 
-The Android APK distributed with this pre-release is provided for research,
+The Android APK distributed with this release is provided for research,
 development and testing purposes.

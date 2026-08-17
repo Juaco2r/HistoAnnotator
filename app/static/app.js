@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.2.0-rc1";
+  const VERSION = "1.2.0";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());

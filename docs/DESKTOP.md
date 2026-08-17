@@ -87,3 +87,17 @@ release archive. v1.2.0 includes its own pyvips/libvips runtime.
 
 If tile requests fail, restart HistoAnnotator Desktop and retry the image after
 preparation completes.
+
+
+## Release validation
+
+For v1.2.0:
+
+- Windows x64: manually tested;
+- Linux x64: manually tested;
+- macOS Apple Silicon: CI build + packaged self-test;
+- macOS Intel: CI build + packaged self-test;
+- OpenSlide and pyvips/libvips are checked by the packaged Desktop self-test.
+
+The release workflow extracts each archive and runs the packaged self-test again
+before publication.

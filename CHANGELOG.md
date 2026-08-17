@@ -26,6 +26,18 @@
 - QuPath-compatible GeoJSON workflows, review mode, statistics, calibration and
   image display controls remain available.
 
+### Fixed
+
+- Windows Desktop artifacts preserve the PySide6/Shiboken runtime layout after
+  extraction.
+- Windows post-archive validation checks the packaged process exit code
+  directly.
+- Android server and tile requests use the native transport when required,
+  avoiding WebView-only fetch failures.
+- Trusted-LAN HTTP remains enabled in the packaged generic Android APK.
+- Desktop large generic TIFF preparation uses the bundled pyvips/libvips
+  runtime rather than requiring a separate system installation.
+
 ### Security / scope
 
 - No deployment-specific server IP is committed to the public repository.

@@ -860,14 +860,14 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.2.0-rc1"}
+    return {"status": "ok", "version": "1.2.0"}
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "version": "1.2.0-dev3a2",
+        "version": "1.2.0",
         "imageRoot": str(IMAGE_ROOT),
         "imageRootExists": IMAGE_ROOT.exists(),
         "imageRootWritable": os.access(IMAGE_ROOT, os.W_OK),
