@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.1.0">
+  <link rel="stylesheet" href="./static/styles.css?v=1.2.0-dev5b">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.1.0</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.2.0-dev5b</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -38,6 +38,9 @@
         <button id="downloadOfflineButton" class="menu-item" type="button" disabled>⬇ Download for offline</button>
         <button id="offlineFilesButton" class="menu-item" type="button">Offline files</button>
         <button id="syncNowButton" class="menu-item" type="button">↻ Sync now</button>
+        <button id="openLocalImageButton" class="menu-item" type="button">＋ Open local image</button>
+        <button id="localImagesButton" class="menu-item" type="button">▣ Local images</button>
+        <button id="connectionSettingsButton" class="menu-item" type="button">⚙ Connection settings</button>
         <div class="menu-separator"></div>
         <button id="importGeoJsonButton" class="menu-item" type="button" disabled>Import GeoJSON</button>
         <input id="importInput" class="visually-hidden" type="file" accept=".geojson,application/geo+json,application/json">
@@ -243,6 +246,36 @@
     </aside>
   </main>
 
+  <div id="localImagesOverlay" class="modal-overlay" hidden>
+    <section class="modal-card local-images-card" role="dialog" aria-modal="true" aria-labelledby="localImagesTitle">
+      <h2 id="localImagesTitle">Local images</h2>
+      <p id="localImagesCapabilities" class="modal-note">Android file access status…</p>
+      <p class="modal-note">Selected files remain in their original Android storage location. HistoAnnotator stores persistent access to the selected document.</p>
+      <div id="localImagesList" class="local-images-list"></div>
+      <div class="modal-actions">
+        <button id="addLocalImageButton" type="button">＋ Add local image</button>
+        <button id="closeLocalImagesButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+  <div id="connectionSettingsOverlay" class="modal-overlay" hidden>
+    <section class="modal-card connection-card" role="dialog" aria-modal="true" aria-labelledby="connectionSettingsTitle">
+      <h2 id="connectionSettingsTitle">Connection settings</h2>
+      <p id="connectionCurrentServer" class="modal-note">Current server: —</p>
+      <label class="connection-field" for="connectionServerInput">
+        <span>HistoAnnotator server</span>
+        <input id="connectionServerInput" type="url" inputmode="url" autocomplete="off" placeholder="https://server.example/annotator">
+      </label>
+      <p class="modal-note">Android only. Include /annotator when your deployment uses that path.</p>
+      <p id="connectionTestResult" class="connection-test-result">—</p>
+      <div class="modal-actions connection-actions">
+        <button id="testConnectionButton" type="button">Test</button>
+        <button id="saveConnectionButton" type="button">Save server</button>
+        <button id="clearConnectionButton" type="button">Local only</button>
+        <button id="closeConnectionButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
   <div id="uploadOverlay" class="modal-overlay" hidden>
     <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
       <h2 id="uploadTitle">Uploading image</h2>
@@ -346,6 +379,6 @@
     </section>
   </div>
 
-  <script src="./static/app.js?v=1.1.0"></script>
+  <script src="./static/app.js?v=1.2.0-dev5b"></script>
 </body>
 </html>

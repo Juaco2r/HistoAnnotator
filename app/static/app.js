@@ -1,23 +1,76 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.1.0";
+  const VERSION = "1.2.0-dev5b";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
 
-  // Browser deployment, e.g. https://server/annotator/
+  // Browser uses its own origin. Android selects a server at runtime.
   const BASE = window.location.pathname.startsWith("/annotator") ? "/annotator" : "";
+  const NATIVE_SERVER_STORAGE_KEY = "histoannotator.nativeServer.v2";
+  const DEFAULT_NATIVE_SERVER_RAW = "__HISTOANNOTATOR_NATIVE_SERVER__";
 
-  // Native Android deployment. This can later be exposed in Settings.
-  const NATIVE_SERVER_STORAGE_KEY = "histoannotator.nativeServer.v1";
-  const DEFAULT_NATIVE_SERVER = "__HISTOANNOTATOR_NATIVE_SERVER__";
-  const NATIVE_SERVER = (
-    localStorage.getItem(NATIVE_SERVER_STORAGE_KEY) ||
-    DEFAULT_NATIVE_SERVER
-  ).replace(/\/+$/, "");
+  function normalizeServerBase(value) {
+    let raw = String(value || "").trim();
+    if (!raw || raw === "__HISTOANNOTATOR_NATIVE_SERVER__") return "";
 
-  const API = `${IS_NATIVE ? NATIVE_SERVER : BASE}/api`;
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+      raw = `https://${raw}`;
+    }
+
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error("Server must use http:// or https://");
+    }
+    if (parsed.username || parsed.password) {
+      throw new Error("Server URL must not contain credentials");
+    }
+
+    parsed.search = "";
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  }
+
+  const DEFAULT_NATIVE_SERVER = (() => {
+    try {
+      return normalizeServerBase(DEFAULT_NATIVE_SERVER_RAW);
+    } catch (_) {
+      return "";
+    }
+  })();
+
+  let NATIVE_SERVER = (() => {
+    try {
+      return normalizeServerBase(
+        localStorage.getItem(NATIVE_SERVER_STORAGE_KEY)
+        || DEFAULT_NATIVE_SERVER
+      );
+    } catch (_) {
+      return DEFAULT_NATIVE_SERVER;
+    }
+  })();
+
+  let API = IS_NATIVE
+    ? (NATIVE_SERVER ? `${NATIVE_SERVER}/api` : "")
+    : `${BASE}/api`;
+
+  function setNativeServerBase(value) {
+    const normalized = normalizeServerBase(value);
+    NATIVE_SERVER = normalized;
+    API = normalized ? `${normalized}/api` : "";
+
+    if (normalized) {
+      localStorage.setItem(NATIVE_SERVER_STORAGE_KEY, normalized);
+    } else {
+      localStorage.removeItem(NATIVE_SERVER_STORAGE_KEY);
+    }
+
+    serverReachable = null;
+    return normalized;
+  }
   const DEFAULT_CLASSES = [
     { name: "Tumor", color: "#ff6b6b" },
     { name: "Stroma", color: "#4dabf7" },
@@ -116,6 +169,22 @@
     downloadOfflineButton: document.getElementById("downloadOfflineButton"),
     offlineFilesButton: document.getElementById("offlineFilesButton"),
     syncNowButton: document.getElementById("syncNowButton"),
+    connectionSettingsButton: document.getElementById("connectionSettingsButton"),
+    openLocalImageButton: document.getElementById("openLocalImageButton"),
+    localImagesButton: document.getElementById("localImagesButton"),
+    localImagesOverlay: document.getElementById("localImagesOverlay"),
+    localImagesList: document.getElementById("localImagesList"),
+    localImagesCapabilities: document.getElementById("localImagesCapabilities"),
+    closeLocalImagesButton: document.getElementById("closeLocalImagesButton"),
+    addLocalImageButton: document.getElementById("addLocalImageButton"),
+    connectionSettingsOverlay: document.getElementById("connectionSettingsOverlay"),
+    connectionServerInput: document.getElementById("connectionServerInput"),
+    connectionCurrentServer: document.getElementById("connectionCurrentServer"),
+    connectionTestResult: document.getElementById("connectionTestResult"),
+    testConnectionButton: document.getElementById("testConnectionButton"),
+    saveConnectionButton: document.getElementById("saveConnectionButton"),
+    clearConnectionButton: document.getElementById("clearConnectionButton"),
+    closeConnectionButton: document.getElementById("closeConnectionButton"),
     offlineOverlay: document.getElementById("offlineOverlay"),
     offlineFilename: document.getElementById("offlineFilename"),
     offlineStorage: document.getElementById("offlineStorage"),
@@ -328,6 +397,2468 @@
     statusHideTimer = setTimeout(() => { els.status.hidden = true; }, type === "error" ? 6500 : 2600);
   }
 
+  function connectionServerDescription() {
+    if (!IS_NATIVE) {
+      return `${window.location.origin}${BASE || ""}`;
+    }
+    return NATIVE_SERVER || "Not configured";
+  }
+
+  function renderConnectionSettings() {
+    if (!els.connectionSettingsOverlay) return;
+
+    if (els.connectionServerInput) {
+      els.connectionServerInput.value = IS_NATIVE ? NATIVE_SERVER : "";
+      els.connectionServerInput.disabled = !IS_NATIVE;
+    }
+
+    if (els.connectionCurrentServer) {
+      els.connectionCurrentServer.textContent =
+        `Current server: ${connectionServerDescription()}`;
+    }
+
+    if (els.connectionTestResult) {
+      els.connectionTestResult.textContent = IS_NATIVE
+        ? (NATIVE_SERVER
+            ? "Ready to test the configured server."
+            : "No server configured. Cached/offline content remains available.")
+        : "The web version uses the server that served this page.";
+    }
+
+    if (els.testConnectionButton) els.testConnectionButton.disabled = !IS_NATIVE;
+    if (els.saveConnectionButton) els.saveConnectionButton.disabled = !IS_NATIVE;
+    if (els.clearConnectionButton) {
+      els.clearConnectionButton.disabled = !IS_NATIVE || !NATIVE_SERVER;
+    }
+  }
+
+  function openConnectionSettings(autoOpened = false) {
+    toggleFileMenu(false);
+    renderConnectionSettings();
+    if (els.connectionSettingsOverlay) {
+      els.connectionSettingsOverlay.hidden = false;
+    }
+    if (autoOpened && els.connectionTestResult) {
+      els.connectionTestResult.textContent =
+        "Choose the HistoAnnotator server for this tablet. You can change it later from File → Connection settings.";
+    }
+  }
+
+  function closeConnectionSettings() {
+    if (els.connectionSettingsOverlay) {
+      els.connectionSettingsOverlay.hidden = true;
+    }
+  }
+
+  async function testNativeServerCandidate() {
+    if (!IS_NATIVE) return;
+
+    let candidate;
+    try {
+      candidate = normalizeServerBase(els.connectionServerInput?.value || "");
+    } catch (error) {
+      els.connectionTestResult.textContent = `Invalid server: ${error.message}`;
+      return;
+    }
+
+    if (!candidate) {
+      els.connectionTestResult.textContent = "Enter a server URL first.";
+      return;
+    }
+
+    els.connectionTestResult.textContent = `Testing ${candidate}…`;
+
+    try {
+      const response = await apiFetch(`${candidate}/api/images`, { timeoutMs: 7000 });
+      const payload = await response.json();
+      if (!payload || !Array.isArray(payload.images)) {
+        throw new Error("The server did not return a valid HistoAnnotator image catalog");
+      }
+      els.connectionTestResult.textContent =
+        `Connected successfully · ${payload.images.length} image${payload.images.length === 1 ? "" : "s"} available`;
+    } catch (error) {
+      els.connectionTestResult.textContent = `Connection failed: ${error.message}`;
+    }
+  }
+
+  async function saveNativeServerCandidate() {
+    if (!IS_NATIVE) return;
+
+    try {
+      setNativeServerBase(els.connectionServerInput?.value || "");
+    } catch (error) {
+      els.connectionTestResult.textContent = `Invalid server: ${error.message}`;
+      return;
+    }
+
+    renderConnectionSettings();
+    closeConnectionSettings();
+    await Promise.all([loadClasses(), loadImages(false)]);
+    if (IS_NATIVE && !API) openConnectionSettings(true);
+    setStatus(
+      NATIVE_SERVER ? `Server set to ${NATIVE_SERVER}` : "Local/offline mode active",
+      "saved"
+    );
+  }
+
+  async function clearNativeServerCandidate() {
+    if (!IS_NATIVE) return;
+    setNativeServerBase("");
+    renderConnectionSettings();
+    await loadImages(false);
+    setStatus("Server cleared · local/offline mode active", "local");
+  }
+
+  function simplifyNativeFileMenu() {
+    if (!IS_NATIVE) return;
+    if (els.openLocalImageButton) els.openLocalImageButton.hidden = true;
+    if (els.saveButton) els.saveButton.hidden = true;
+    if (els.syncNowButton) els.syncNowButton.hidden = true;
+  }
+
+  function organizeNativeLocalFileMenu() {
+    if (!IS_NATIVE) return;
+
+    const openLocal =
+      els.openLocalImageButton
+      || document.getElementById("openLocalImageButton");
+
+    const closeLocal =
+      els.closeLocalImagesButton
+      || document.getElementById("closeLocalImagesButton");
+
+    if (
+      openLocal
+      && closeLocal
+      && closeLocal.parentElement
+      && openLocal.parentElement !== closeLocal.parentElement
+    ) {
+      openLocal.textContent = "＋ Add local image";
+      closeLocal.parentElement.insertBefore(
+        openLocal,
+        closeLocal
+      );
+    }
+
+    for (
+      const button
+      of document.querySelectorAll("button")
+    ) {
+      const label =
+        String(button.textContent || "")
+          .trim()
+          .toLowerCase();
+
+      if (
+        label === "save now"
+        || label === "sync now"
+      ) {
+        button.hidden = true;
+      }
+    }
+  }
+
+  function nativeLocalImagePlugin() {
+    if (!IS_NATIVE) return null;
+    return window.Capacitor?.Plugins?.LocalImage || null;
+  }
+
+  async function nativeLocalImageCapabilities() {
+    const plugin = nativeLocalImagePlugin();
+    if (!plugin?.getCapabilities) return null;
+    try {
+      return await plugin.getCapabilities();
+    } catch (error) {
+      console.warn("LocalImage capabilities unavailable", error);
+      return null;
+    }
+  }
+
+  async function pickNativeLocalImage() {
+    toggleFileMenu(false);
+    const plugin = nativeLocalImagePlugin();
+    if (!plugin?.pickImage) {
+      setStatus("Local image picker is only available in the Android app", "error");
+      return;
+    }
+
+    try {
+      const result = await plugin.pickImage();
+      if (result?.cancelled) return;
+      const image = result?.image;
+      if (!image) throw new Error("Android did not return local image metadata");
+      setStatus(`${image.name} added to local images`, "saved");
+      await showNativeLocalImages();
+    } catch (error) {
+      setStatus(`Could not add local image: ${error.message}`, "error");
+    }
+  }
+
+  function localImageAccessLabel(image) {
+    if (!image?.accessible) return "Access unavailable";
+    return image.seekable
+      ? "Persistent access · random access ready"
+      : "Persistent access · sequential provider";
+  }
+
+  async function showNativeLocalImages() {
+    toggleFileMenu(false);
+    if (!els.localImagesOverlay || !els.localImagesList) return;
+
+    els.localImagesList.innerHTML = "<p>Loading local image catalog…</p>";
+    els.localImagesOverlay.hidden = false;
+
+    const plugin = nativeLocalImagePlugin();
+    if (!plugin?.listImages) {
+      els.localImagesList.innerHTML = "<p>Local images are available only in the Android app.</p>";
+      return;
+    }
+
+    try {
+      const [catalog, capabilities] = await Promise.all([
+        plugin.listImages(),
+        nativeLocalImageCapabilities(),
+      ]);
+
+      if (els.localImagesCapabilities) {
+        els.localImagesCapabilities.textContent = capabilities?.tileReader
+          ? "Native local tile reader available."
+          : "Android file access is active. TIFF/NDPI/SVS tile decoding is the next development stage.";
+      }
+
+      const entries = Array.isArray(catalog?.images) ? catalog.images : [];
+      els.localImagesList.innerHTML = "";
+
+      if (!entries.length) {
+        const empty = document.createElement("p");
+        empty.textContent = "No local images have been selected yet.";
+        els.localImagesList.append(empty);
+        return;
+      }
+
+      entries
+        .slice()
+        .sort((a, b) => Number(b.lastOpened || 0) - Number(a.lastOpened || 0))
+        .forEach((image) => {
+          const row = document.createElement("div");
+          row.className = "local-image-row";
+
+          const details = document.createElement("div");
+          details.className = "local-image-details";
+
+          const name = document.createElement("strong");
+          name.textContent = image.name || "Local image";
+
+          const meta = document.createElement("small");
+          const size = Number.isFinite(Number(image.sizeBytes))
+            ? formatBytes(Number(image.sizeBytes))
+            : "size unknown";
+          const ext = image.extension || "file";
+          meta.textContent = `${ext} · ${size} · ${localImageAccessLabel(image)}`;
+
+          details.append(name, meta);
+          const cachedTiffInfo =
+            readLocalTiffInfo(
+              image.id
+            );
+
+          if (cachedTiffInfo) {
+            const structure =
+              document.createElement(
+                "small"
+              );
+
+            structure.textContent =
+              formatLocalTiffStructure(
+                cachedTiffInfo
+              );
+
+            details.append(
+              structure
+            );
+          }
+
+
+          const actions = document.createElement("div");
+          actions.className = "local-image-actions";
+
+          const inspect = document.createElement("button");
+          inspect.type = "button";
+          inspect.textContent = "Check access";
+          inspect.disabled = !image.accessible;
+          inspect.addEventListener("click", async () => {
+            inspect.disabled = true;
+            try {
+              const result = await plugin.probeImage({ uri: image.uri });
+              const probe = result?.image || {};
+              setStatus(
+                `${image.name} · ${probe.accessible ? "readable" : "not readable"} · ${probe.seekable ? "random access ready" : "provider is not seekable"}`,
+                probe.accessible ? "saved" : "error"
+              );
+              await showNativeLocalImages();
+            } catch (error) {
+              setStatus(`Local access check failed: ${error.message}`, "error");
+            } finally {
+              inspect.disabled = false;
+            }
+          });
+
+          const forget = document.createElement("button");
+          forget.type = "button";
+          forget.textContent = "Forget";
+          forget.addEventListener("click", async () => {
+            if (!window.confirm(`Forget ${image.name}? The source image itself will not be deleted.`)) return;
+            forget.disabled = true;
+            try {
+              await plugin.forgetImage({ id: image.id });
+              setStatus(`${image.name} removed from local images`, "local");
+              await showNativeLocalImages();
+            } catch (error) {
+              setStatus(`Could not forget local image: ${error.message}`, "error");
+              forget.disabled = false;
+            }
+          });
+
+          actions.append(inspect, forget);
+          row.append(details, actions);
+          els.localImagesList.append(row);
+        });
+    } catch (error) {
+      els.localImagesList.innerHTML = "";
+      const message = document.createElement("p");
+      message.textContent = `Could not load local images: ${error.message}`;
+      els.localImagesList.append(message);
+    }
+  }
+
+
+
+
+  // ---------------------------------------------------------
+  // v1.2.0-dev5a: automatic local TIFF optimization
+  // ---------------------------------------------------------
+  const LOCAL_TIFF_INFO_PREFIX =
+    "histoannotator.localTiffInfo.v2:";
+
+  const localTiffSessions =
+    new Map();
+
+  function readLocalTiffInfo(imageId) {
+    if (!imageId) return null;
+
+    try {
+      const raw =
+        localStorage.getItem(
+          `${LOCAL_TIFF_INFO_PREFIX}${imageId}`
+        );
+
+      return raw
+        ? JSON.parse(raw)
+        : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeLocalTiffInfo(imageId, info) {
+    if (!imageId || !info) return;
+
+    try {
+      localStorage.setItem(
+        `${LOCAL_TIFF_INFO_PREFIX}${imageId}`,
+        JSON.stringify(info)
+      );
+    } catch (_) {}
+  }
+
+  function formatLocalTiffStructure(info) {
+    if (!info) return "";
+
+    return [
+      info.width && info.height
+        ? `${info.width} × ${info.height}`
+        : "",
+      info.storage || "",
+      info.pyramidLevels > 1
+        ? `${info.pyramidLevels} internal levels`
+        : "No internal pyramid",
+      info.compression || "",
+      info.fastPath || "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function isNativeLocalTiff(image) {
+    const name =
+      String(image?.name || "")
+        .toLowerCase();
+
+    return (
+      name.endsWith(".tif")
+      || name.endsWith(".tiff")
+      || name.endsWith(".ome.tif")
+      || name.endsWith(".ome.tiff")
+    );
+  }
+
+  function base64ToBytes(value) {
+    const binary =
+      atob(String(value || ""));
+
+    const bytes =
+      new Uint8Array(binary.length);
+
+    for (
+      let i = 0;
+      i < binary.length;
+      i += 1
+    ) {
+      bytes[i] =
+        binary.charCodeAt(i);
+    }
+
+    return bytes;
+  }
+
+  class NativeTiffRangeResponse {
+    constructor(bytes, start, totalSize) {
+      this.bytes = bytes;
+      this.start = Number(start || 0);
+      this.totalSize = Number(totalSize || 0);
+      this.status = 206;
+      this.ok = true;
+    }
+
+    getHeader(name) {
+      const key =
+        String(name || "")
+          .toLowerCase();
+
+      const end =
+        this.start
+        + Math.max(
+            0,
+            this.bytes.byteLength - 1
+          );
+
+      if (key === "content-range") {
+        return `bytes ${this.start}-${end}/${this.totalSize}`;
+      }
+
+      if (key === "content-length") {
+        return String(this.bytes.byteLength);
+      }
+
+      if (key === "accept-ranges") {
+        return "bytes";
+      }
+
+      if (key === "content-type") {
+        return "image/tiff";
+      }
+
+      return null;
+    }
+
+    async getData() {
+      return this.bytes.buffer.slice(
+        this.bytes.byteOffset,
+        this.bytes.byteOffset
+          + this.bytes.byteLength
+      );
+    }
+  }
+
+  class NativeTiffRangeClient {
+    constructor(uri, totalSize) {
+      this.uri = uri;
+      this.totalSize =
+        Number(totalSize || 0);
+    }
+
+    async request(options = {}) {
+      const headers =
+        options?.headers || {};
+
+      const rangeValue =
+        headers.Range
+        || headers.range
+        || "";
+
+      const match =
+        String(rangeValue).match(
+          /^bytes=(\d+)-(\d+)?$/
+        );
+
+      if (!match) {
+        throw new Error(
+          `Unsupported TIFF range request: ${rangeValue || "missing Range header"}`
+        );
+      }
+
+      const start =
+        Number(match[1]);
+
+      const requestedEnd =
+        match[2] !== undefined
+          ? Number(match[2])
+          : Math.min(
+              Math.max(
+                start,
+                this.totalSize - 1
+              ),
+              start + 65535
+            );
+
+      const length =
+        Math.max(
+          1,
+          requestedEnd - start + 1
+        );
+
+      const plugin =
+        nativeLocalImagePlugin();
+
+      if (!plugin?.readRange) {
+        throw new Error(
+          "Native TIFF range reader is unavailable"
+        );
+      }
+
+      const result =
+        await plugin.readRange({
+          uri: this.uri,
+          offset: start,
+          length,
+        });
+
+      const bytes =
+        base64ToBytes(
+          result?.dataBase64 || ""
+        );
+
+      if (!bytes.byteLength) {
+        throw new Error(
+          `Android returned 0 TIFF bytes for ${start}-${requestedEnd}`
+        );
+      }
+
+      const totalSize =
+        Number(result?.totalSize) > 0
+          ? Number(result.totalSize)
+          : this.totalSize;
+
+      return new NativeTiffRangeResponse(
+        bytes,
+        start,
+        totalSize
+      );
+    }
+  }
+
+  function createLocalTiffDecoderPool() {
+    if (
+      typeof window.Worker !== "function"
+      || typeof window.GeoTIFF?.Pool !== "function"
+    ) {
+      return null;
+    }
+
+    try {
+      return new window.GeoTIFF.Pool(2);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  const localTiffViewerDefaults = {
+    captured: false,
+    timeout: 30000,
+    jobLimit: 0,
+    minPixelRatio: 0.5,
+  };
+
+  function configureLocalTiffViewer(active) {
+    if (!viewer?.imageLoader) return;
+
+    if (!localTiffViewerDefaults.captured) {
+      localTiffViewerDefaults.timeout =
+        Number(viewer.imageLoader.timeout)
+        || 30000;
+
+      localTiffViewerDefaults.jobLimit =
+        Number(viewer.imageLoader.jobLimit)
+        || 0;
+
+      localTiffViewerDefaults.minPixelRatio =
+        Number(viewer.minPixelRatio)
+        || 0.5;
+
+      localTiffViewerDefaults.captured =
+        true;
+    }
+
+    if (active) {
+      viewer.imageLoader.jobLimit = 1;
+      viewer.imageLoader.timeout = 120000;
+      viewer.minPixelRatio = 1.0;
+    } else {
+      viewer.imageLoader.jobLimit =
+        localTiffViewerDefaults.jobLimit;
+
+      viewer.imageLoader.timeout =
+        localTiffViewerDefaults.timeout;
+
+      viewer.minPixelRatio =
+        localTiffViewerDefaults.minPixelRatio;
+    }
+  }
+
+  function normalizeTiffNumericArray(value) {
+    if (
+      value === null
+      || value === undefined
+    ) {
+      return [];
+    }
+
+    if (typeof value === "number") {
+      return [Number(value)];
+    }
+
+    try {
+      return Array.from(value, Number);
+    } catch (_) {
+      return [Number(value)]
+        .filter(Number.isFinite);
+    }
+  }
+
+  function detectNativeUncompressedRgbLayout(
+    tiffImage
+  ) {
+    const directory =
+      tiffImage?.fileDirectory
+      || {};
+
+    const width =
+      Number(tiffImage?.getWidth?.());
+
+    const height =
+      Number(tiffImage?.getHeight?.());
+
+    const compression =
+      Number(
+        directory.Compression
+        ?? 1
+      );
+
+    const photometric =
+      Number(
+        directory.PhotometricInterpretation
+      );
+
+    const samplesPerPixel =
+      Number(
+        directory.SamplesPerPixel
+        ?? 1
+      );
+
+    const planarConfiguration =
+      Number(
+        directory.PlanarConfiguration
+        ?? 1
+      );
+
+    const bits =
+      normalizeTiffNumericArray(
+        directory.BitsPerSample
+        ?? 8
+      );
+
+    const stripOffsets =
+      normalizeTiffNumericArray(
+        directory.StripOffsets
+      ).filter(Number.isFinite);
+
+    const stripByteCounts =
+      normalizeTiffNumericArray(
+        directory.StripByteCounts
+      ).filter(Number.isFinite);
+
+    const rowsPerStrip =
+      Math.max(
+        1,
+        Number(
+          directory.RowsPerStrip
+          ?? height
+        )
+      );
+
+    const allEightBit =
+      bits.length > 0
+      && bits.every(
+        (value) =>
+          Number(value) === 8
+      );
+
+    const expectedBytes =
+      width * height * 3;
+
+    const totalStripBytes =
+      stripByteCounts.reduce(
+        (sum, value) =>
+          sum
+          + Number(value || 0),
+        0
+      );
+
+    if (
+      !Number.isFinite(width)
+      || !Number.isFinite(height)
+      || width <= 0
+      || height <= 0
+      || compression !== 1
+      || photometric !== 2
+      || samplesPerPixel !== 3
+      || planarConfiguration !== 1
+      || !allEightBit
+      || stripOffsets.length === 0
+      || (
+        stripByteCounts.length > 0
+        && totalStripBytes < expectedBytes
+      )
+    ) {
+      return null;
+    }
+
+    return {
+      imageWidth: width,
+      imageHeight: height,
+      rowsPerStrip,
+      stripOffsets,
+      stripByteCounts,
+      strips: stripOffsets.length,
+    };
+  }
+
+  function localTiffCandidateLevels(images) {
+    if (!images.length) return [];
+
+    const fullWidth =
+      images[0].getWidth();
+
+    const fullHeight =
+      images[0].getHeight();
+
+    const fullAspect =
+      fullWidth / fullHeight;
+
+    const compatible =
+      images
+        .map(
+          (image, index) => ({
+            image,
+            index,
+            width: image.getWidth(),
+            height: image.getHeight(),
+          })
+        )
+        .filter(
+          (item) => {
+            if (
+              !item.width
+              || !item.height
+            ) {
+              return false;
+            }
+
+            const aspect =
+              item.width / item.height;
+
+            return (
+              Math.abs(
+                aspect / fullAspect - 1
+              )
+              <= 0.025
+            );
+          }
+        );
+
+    const sameFullSize =
+      compatible.filter(
+        (item) =>
+          item.width === fullWidth
+          && item.height === fullHeight
+      ).length;
+
+    if (sameFullSize > 1) {
+      throw new Error(
+        "This TIFF appears to contain multiple full-resolution pages/channels. Scientific multichannel TIFF remains a later local-reader milestone."
+      );
+    }
+
+    const bySize = new Map();
+
+    for (const item of compatible) {
+      const key =
+        `${item.width}x${item.height}`;
+
+      if (!bySize.has(key)) {
+        bySize.set(key, item);
+      }
+    }
+
+    return [
+      ...bySize.values(),
+    ].sort(
+      (a, b) =>
+        a.width - b.width
+    );
+  }
+
+  function chooseLocalTiffLevel(
+    session,
+    targetWidth
+  ) {
+    for (const level of session.levels) {
+      if (level.width >= targetWidth) {
+        return level;
+      }
+    }
+
+    return session.levels[
+      session.levels.length - 1
+    ];
+  }
+
+  async function cachedJpegToContext2D(
+    dataBase64
+  ) {
+    return new Promise(
+      (resolve, reject) => {
+        const image = new Image();
+
+        image.onload = () => {
+          const canvas =
+            document.createElement(
+              "canvas"
+            );
+
+          canvas.width =
+            image.naturalWidth
+            || image.width;
+
+          canvas.height =
+            image.naturalHeight
+            || image.height;
+
+          const context =
+            canvas.getContext(
+              "2d",
+              { alpha: false }
+            );
+
+          if (!context) {
+            reject(
+              new Error(
+                "Could not create cached tile canvas"
+              )
+            );
+            return;
+          }
+
+          context.drawImage(
+            image,
+            0,
+            0
+          );
+
+          resolve(context);
+        };
+
+        image.onerror = () =>
+          reject(
+            new Error(
+              "Could not decode prepared JPEG tile"
+            )
+          );
+
+        image.src =
+          `data:image/jpeg;base64,${dataBase64}`;
+      }
+    );
+  }
+
+  function localTiffRgbToContext2D(
+    rgb,
+    width,
+    height
+  ) {
+    const canvas =
+      document.createElement("canvas");
+
+    canvas.width = width;
+    canvas.height = height;
+
+    const context =
+      canvas.getContext(
+        "2d",
+        { alpha: false }
+      );
+
+    if (!context) {
+      throw new Error(
+        "Could not create TIFF tile canvas"
+      );
+    }
+
+    const imageData =
+      context.createImageData(
+        width,
+        height
+      );
+
+    const target =
+      imageData.data;
+
+    const mask =
+      displayChannels.rgb
+      || {
+        red: true,
+        green: true,
+        blue: true,
+      };
+
+    for (
+      let src = 0, dst = 0;
+      dst < target.length;
+      src += 3, dst += 4
+    ) {
+      target[dst] =
+        mask.red
+          ? Number(rgb[src])
+          : 0;
+
+      target[dst + 1] =
+        mask.green
+          ? Number(rgb[src + 1])
+          : 0;
+
+      target[dst + 2] =
+        mask.blue
+          ? Number(rgb[src + 2])
+          : 0;
+
+      target[dst + 3] = 255;
+    }
+
+    context.putImageData(
+      imageData,
+      0,
+      0
+    );
+
+    return context;
+  }
+
+  async function getLocalTileCacheInfo(image) {
+    const plugin =
+      nativeLocalImagePlugin();
+
+    if (
+      !plugin?.getTileCacheInfo
+      || !image?.uri
+    ) {
+      return {
+        tiles: 0,
+        bytes: 0,
+      };
+    }
+
+    try {
+      return await plugin.getTileCacheInfo({
+        uri: image.uri,
+      });
+    } catch (_) {
+      return {
+        tiles: 0,
+        bytes: 0,
+      };
+    }
+  }
+
+  async function readLocalCachedTile(
+    session,
+    level,
+    x,
+    y
+  ) {
+    const plugin =
+      nativeLocalImagePlugin();
+
+    if (!plugin?.getCachedTile) {
+      return null;
+    }
+
+    try {
+      const result =
+        await plugin.getCachedTile({
+          uri: session.source.uri,
+          level,
+          x,
+          y,
+        });
+
+      if (
+        result?.hit
+        && result?.dataBase64
+      ) {
+        return await cachedJpegToContext2D(
+          result.dataBase64
+        );
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  async function persistEncodedLocalTile(
+    session,
+    level,
+    x,
+    y,
+    dataBase64
+  ) {
+    const plugin =
+      nativeLocalImagePlugin();
+
+    if (
+      !plugin?.putCachedTile
+      || !dataBase64
+    ) {
+      return;
+    }
+
+    await plugin.putCachedTile({
+      uri: session.source.uri,
+      level,
+      x,
+      y,
+      dataBase64,
+    });
+  }
+
+  function canvasToJpegBase64(
+    canvas,
+    quality = 0.88
+  ) {
+    return new Promise(
+      (resolve, reject) => {
+        canvas.toBlob(
+          async (blob) => {
+            if (!blob) {
+              reject(
+                new Error(
+                  "Could not encode prepared TIFF tile"
+                )
+              );
+              return;
+            }
+
+            try {
+              const bytes =
+                new Uint8Array(
+                  await blob.arrayBuffer()
+                );
+
+              let binary = "";
+              const chunk = 0x8000;
+
+              for (
+                let offset = 0;
+                offset < bytes.length;
+                offset += chunk
+              ) {
+                binary +=
+                  String.fromCharCode(
+                    ...bytes.subarray(
+                      offset,
+                      Math.min(
+                        bytes.length,
+                        offset + chunk
+                      )
+                    )
+                  );
+              }
+
+              resolve(
+                btoa(binary)
+              );
+            } catch (error) {
+              reject(error);
+            }
+          },
+          "image/jpeg",
+          quality
+        );
+      }
+    );
+  }
+
+  function dziTileGeometry(
+    info,
+    dziLevel,
+    tileX,
+    tileY
+  ) {
+    const maxLevel =
+      info.levelCount - 1;
+
+    const downsample =
+      2 ** Math.max(
+        0,
+        maxLevel - dziLevel
+      );
+
+    const sourceX =
+      tileX
+      * info.tileSize
+      * downsample;
+
+    const sourceY =
+      tileY
+      * info.tileSize
+      * downsample;
+
+    if (
+      sourceX >= info.width
+      || sourceY >= info.height
+    ) {
+      throw new Error(
+        "Local TIFF tile is outside image bounds"
+      );
+    }
+
+    const sourceWidth =
+      Math.min(
+        info.tileSize * downsample,
+        info.width - sourceX
+      );
+
+    const sourceHeight =
+      Math.min(
+        info.tileSize * downsample,
+        info.height - sourceY
+      );
+
+    return {
+      downsample,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      outWidth:
+        Math.max(
+          1,
+          Math.ceil(
+            sourceWidth / downsample
+          )
+        ),
+      outHeight:
+        Math.max(
+          1,
+          Math.ceil(
+            sourceHeight / downsample
+          )
+        ),
+    };
+  }
+
+  async function readNativeUncompressedRgbTile(
+    session,
+    level,
+    x,
+    y
+  ) {
+    const plugin =
+      nativeLocalImagePlugin();
+
+    const layout =
+      session?.directRgbLayout;
+
+    if (
+      !plugin?.readUncompressedRgbTile
+      || !layout
+    ) {
+      return null;
+    }
+
+    const geometry =
+      dziTileGeometry(
+        session.info,
+        level,
+        x,
+        y
+      );
+
+    const result =
+      await plugin.readUncompressedRgbTile({
+        uri: session.source.uri,
+        imageWidth: layout.imageWidth,
+        imageHeight: layout.imageHeight,
+        sourceX: geometry.sourceX,
+        sourceY: geometry.sourceY,
+        sourceWidth: geometry.sourceWidth,
+        sourceHeight: geometry.sourceHeight,
+        downsample: geometry.downsample,
+        rowsPerStrip: layout.rowsPerStrip,
+        stripOffsets: layout.stripOffsets,
+      });
+
+    if (!result?.dataBase64) {
+      throw new Error(
+        "Native TIFF optimizer returned no tile data"
+      );
+    }
+
+    return {
+      context:
+        await cachedJpegToContext2D(
+          result.dataBase64
+        ),
+      dataBase64:
+        result.dataBase64,
+    };
+  }
+
+  async function renderGeoTiffTile(
+    session,
+    dziLevel,
+    tileX,
+    tileY,
+    signal = null
+  ) {
+    const geometry =
+      dziTileGeometry(
+        session.info,
+        dziLevel,
+        tileX,
+        tileY
+      );
+
+    const targetImageWidth =
+      Math.max(
+        1,
+        Math.ceil(
+          session.info.width
+          / geometry.downsample
+        )
+      );
+
+    const selected =
+      chooseLocalTiffLevel(
+        session,
+        targetImageWidth
+      );
+
+    const scaleX =
+      selected.width
+      / session.info.width;
+
+    const scaleY =
+      selected.height
+      / session.info.height;
+
+    const left =
+      Math.max(
+        0,
+        Math.floor(
+          geometry.sourceX * scaleX
+        )
+      );
+
+    const top =
+      Math.max(
+        0,
+        Math.floor(
+          geometry.sourceY * scaleY
+        )
+      );
+
+    const right =
+      Math.min(
+        selected.width,
+        Math.max(
+          left + 1,
+          Math.ceil(
+            (
+              geometry.sourceX
+              + geometry.sourceWidth
+            ) * scaleX
+          )
+        )
+      );
+
+    const bottom =
+      Math.min(
+        selected.height,
+        Math.max(
+          top + 1,
+          Math.ceil(
+            (
+              geometry.sourceY
+              + geometry.sourceHeight
+            ) * scaleY
+          )
+        )
+      );
+
+    const options = {
+      window: [
+        left,
+        top,
+        right,
+        bottom,
+      ],
+      width: geometry.outWidth,
+      height: geometry.outHeight,
+      resampleMethod: "bilinear",
+      interleave: true,
+    };
+
+    if (session.decoderPool) {
+      options.pool =
+        session.decoderPool;
+    }
+
+    if (signal) {
+      options.signal = signal;
+    }
+
+    const rgb =
+      await selected.image.readRGB(
+        options
+      );
+
+    return localTiffRgbToContext2D(
+      rgb,
+      geometry.outWidth,
+      geometry.outHeight
+    );
+  }
+
+  async function prepareOneLocalTile(
+    session,
+    level,
+    x,
+    y
+  ) {
+    const cached =
+      await readLocalCachedTile(
+        session,
+        level,
+        x,
+        y
+      );
+
+    if (cached) return;
+
+    if (session.directRgbLayout) {
+      const nativeTile =
+        await readNativeUncompressedRgbTile(
+          session,
+          level,
+          x,
+          y
+        );
+
+      if (nativeTile) {
+        await persistEncodedLocalTile(
+          session,
+          level,
+          x,
+          y,
+          nativeTile.dataBase64
+        );
+
+        return;
+      }
+    }
+
+    const context =
+      await renderGeoTiffTile(
+        session,
+        level,
+        x,
+        y
+      );
+
+    const dataBase64 =
+      await canvasToJpegBase64(
+        context.canvas,
+        0.88
+      );
+
+    await persistEncodedLocalTile(
+      session,
+      level,
+      x,
+      y,
+      dataBase64
+    );
+  }
+
+  function localOverviewPlan(info) {
+    const maxLevel =
+      info.levelCount - 1;
+
+    const candidates = [];
+
+    for (
+      let level = 0;
+      level <= maxLevel;
+      level += 1
+    ) {
+      const downsample =
+        2 ** Math.max(
+          0,
+          maxLevel - level
+        );
+
+      const width =
+        Math.ceil(
+          info.width / downsample
+        );
+
+      const height =
+        Math.ceil(
+          info.height / downsample
+        );
+
+      if (
+        Math.max(width, height)
+        > 2048
+      ) {
+        continue;
+      }
+
+      const columns =
+        Math.ceil(
+          width / info.tileSize
+        );
+
+      const rows =
+        Math.ceil(
+          height / info.tileSize
+        );
+
+      candidates.push({
+        level,
+        columns,
+        rows,
+        tiles:
+          columns * rows,
+      });
+    }
+
+    const selected = [];
+    let total = 0;
+
+    for (
+      let i = candidates.length - 1;
+      i >= 0;
+      i -= 1
+    ) {
+      const candidate =
+        candidates[i];
+
+      if (
+        total + candidate.tiles
+        > 64
+      ) {
+        continue;
+      }
+
+      selected.push(candidate);
+      total += candidate.tiles;
+
+      if (selected.length >= 4) {
+        break;
+      }
+    }
+
+    return selected;
+  }
+
+  async function prepareLocalFastOverview(
+    session
+  ) {
+    if (
+      session.optimizing
+      || session.optimized
+    ) {
+      return;
+    }
+
+    session.optimizing = true;
+
+    const plan =
+      localOverviewPlan(
+        session.info
+      );
+
+    const total =
+      plan.reduce(
+        (sum, item) =>
+          sum + item.tiles,
+        0
+      );
+
+    let completed = 0;
+
+    try {
+      for (const item of plan) {
+        for (
+          let y = 0;
+          y < item.rows;
+          y += 1
+        ) {
+          for (
+            let x = 0;
+            x < item.columns;
+            x += 1
+          ) {
+            if (
+              !currentImage
+              || currentImage.id
+                !== session.source.id
+            ) {
+              return;
+            }
+
+            await prepareOneLocalTile(
+              session,
+              item.level,
+              x,
+              y
+            );
+
+            completed += 1;
+
+            if (
+              completed === 1
+              || completed === total
+              || completed % 4 === 0
+            ) {
+              setStatus(
+                `${session.source.name} · optimizing local view ${completed}/${total}`,
+                "local"
+              );
+            }
+
+            await new Promise(
+              (resolve) =>
+                setTimeout(
+                  resolve,
+                  35
+                )
+            );
+          }
+        }
+      }
+
+      session.optimized = true;
+
+      const cacheInfo =
+        await getLocalTileCacheInfo(
+          session.source
+        );
+
+      setStatus(
+        `${session.source.name} · local view optimized · ${Number(cacheInfo?.tiles || 0)} prepared tiles`,
+        "saved"
+      );
+    } catch (error) {
+      console.warn(
+        "Automatic local TIFF optimization stopped",
+        error
+      );
+
+      setStatus(
+        `${session.source.name} · local optimization partial`,
+        "local"
+      );
+    } finally {
+      session.optimizing = false;
+    }
+  }
+
+  function localTiffTileDownloadStart(
+    context
+  ) {
+    (async () => {
+      try {
+        const abortController =
+          new AbortController();
+
+        context.userData.abortController =
+          abortController;
+
+        const match =
+          String(context.src).match(
+            /^histo-local-tiff:\/\/([^/]+)\/(\d+)\/(\d+)_(\d+)$/
+          );
+
+        if (!match) {
+          throw new Error(
+            "Invalid local TIFF tile URL"
+          );
+        }
+
+        const sessionId =
+          decodeURIComponent(match[1]);
+
+        const level =
+          Number(match[2]);
+
+        const x =
+          Number(match[3]);
+
+        const y =
+          Number(match[4]);
+
+        const session =
+          localTiffSessions.get(
+            sessionId
+          );
+
+        if (!session) {
+          throw new Error(
+            "Local TIFF session is no longer active"
+          );
+        }
+
+        const cached =
+          await readLocalCachedTile(
+            session,
+            level,
+            x,
+            y
+          );
+
+        if (cached) {
+          context.userData.histoTileSource =
+            "prepared-local-cache";
+
+          context.finish(
+            cached,
+            null,
+            "context2d"
+          );
+
+          return;
+        }
+
+        if (session.directRgbLayout) {
+          const nativeTile =
+            await readNativeUncompressedRgbTile(
+              session,
+              level,
+              x,
+              y
+            );
+
+          if (nativeTile) {
+            context.userData.histoTileSource =
+              "android-native-rgb";
+
+            context.finish(
+              nativeTile.context,
+              null,
+              "context2d"
+            );
+
+            window.setTimeout(
+              () => {
+                persistEncodedLocalTile(
+                  session,
+                  level,
+                  x,
+                  y,
+                  nativeTile.dataBase64
+                ).catch(() => {});
+              },
+              0
+            );
+
+            return;
+          }
+        }
+
+        const tileContext =
+          await renderGeoTiffTile(
+            session,
+            level,
+            x,
+            y,
+            abortController.signal
+          );
+
+        context.userData.histoTileSource =
+          "geotiff-fallback";
+
+        context.finish(
+          tileContext,
+          null,
+          "context2d"
+        );
+
+        window.setTimeout(
+          async () => {
+            try {
+              const dataBase64 =
+                await canvasToJpegBase64(
+                  tileContext.canvas,
+                  0.88
+                );
+
+              await persistEncodedLocalTile(
+                session,
+                level,
+                x,
+                y,
+                dataBase64
+              );
+            } catch (_) {}
+          },
+          0
+        );
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          context.fail(
+            "Local TIFF tile aborted",
+            null
+          );
+          return;
+        }
+
+        const message =
+          error?.message
+          || String(error)
+          || "Unknown local TIFF error";
+
+        console.error(
+          "HistoAnnotator local TIFF tile error",
+          {
+            src: context.src,
+            message,
+            error,
+          }
+        );
+
+        context.fail(
+          `Local TIFF tile unavailable: ${message}`,
+          null
+        );
+      }
+    })();
+  }
+
+  function buildLocalTiffViewerSource(
+    session
+  ) {
+    const info =
+      session.info;
+
+    return {
+      ready: true,
+      width: info.width,
+      height: info.height,
+      tileSize: info.tileSize,
+      tileOverlap: 0,
+      minLevel: 0,
+      maxLevel:
+        info.levelCount - 1,
+
+      getTileUrl(level, x, y) {
+        return (
+          "histo-local-tiff://"
+          + `${encodeURIComponent(
+              session.id
+            )}/${level}/${x}_${y}`
+        );
+      },
+
+      downloadTileStart:
+        localTiffTileDownloadStart,
+
+      downloadTileAbort(context) {
+        const controller =
+          context?.userData
+            ?.abortController;
+
+        if (controller) {
+          controller.abort();
+        }
+      },
+
+      hasTransparency() {
+        return false;
+      },
+    };
+  }
+
+
+  async function createNativeLocalTiffSession(
+    image
+  ) {
+    const plugin =
+      nativeLocalImagePlugin();
+
+    if (!plugin?.probeImage) {
+      throw new Error(
+        "Native LocalImage plugin is unavailable"
+      );
+    }
+
+    const probeResult =
+      await plugin.probeImage({
+        uri: image.uri,
+      });
+
+    const probe =
+      probeResult?.image
+      || {};
+
+    if (!probe.accessible) {
+      throw new Error(
+        "Android no longer grants access to this file"
+      );
+    }
+
+    if (!probe.seekable) {
+      throw new Error(
+        "This document provider does not offer random access"
+      );
+    }
+
+    const totalSize =
+      Number(probe.statSize) > 0
+        ? Number(probe.statSize)
+        : Number(image.sizeBytes);
+
+    if (!(totalSize > 0)) {
+      throw new Error(
+        "Android did not provide the TIFF file size"
+      );
+    }
+
+    // IMPORTANT:
+    // Inspect classic TIFF metadata natively FIRST.
+    // This completely bypasses GeoTIFF.js for standard
+    // uncompressed RGB strip TIFFs such as ID_2100_2.tif.
+    if (plugin?.inspectBasicTiff) {
+      try {
+        const nativeInspection =
+          await plugin.inspectBasicTiff({
+            uri: image.uri,
+          });
+
+        if (
+          nativeInspection?.recognized
+          && nativeInspection?.directRgbSupported
+        ) {
+          const width =
+            Number(
+              nativeInspection.width
+            );
+
+          const height =
+            Number(
+              nativeInspection.height
+            );
+
+          const stripOffsets =
+            Array.from(
+              nativeInspection.stripOffsets
+              || [],
+              Number
+            );
+
+          const rowsPerStrip =
+            Number(
+              nativeInspection.rowsPerStrip
+            );
+
+          if (
+            width > 0
+            && height > 0
+            && rowsPerStrip > 0
+            && stripOffsets.length > 0
+          ) {
+            const maxLevel =
+              Math.ceil(
+                Math.log2(
+                  Math.max(
+                    width,
+                    height
+                  )
+                )
+              );
+
+            const directRgbLayout = {
+              imageWidth: width,
+              imageHeight: height,
+              rowsPerStrip,
+              stripOffsets,
+              stripByteCounts:
+                Array.from(
+                  nativeInspection.stripByteCounts
+                  || [],
+                  Number
+                ),
+              strips:
+                Number(
+                  nativeInspection.strips
+                )
+                || stripOffsets.length,
+            };
+
+            const session = {
+              id: image.id,
+              source: image,
+              tiff: null,
+              levels: [],
+              full: null,
+              decoderPool: null,
+              directRgbLayout,
+              optimizing: false,
+              optimized: false,
+              nativeMetadata: true,
+              info: {
+                width,
+                height,
+                tileSize: 256,
+                tileOverlap: 0,
+                levelCount:
+                  maxLevel + 1,
+                directRaster: false,
+                sourceKind:
+                  "android-native-rgb-optimized",
+                localNative: true,
+                calibrationAvailable:
+                  false,
+                calibrationSource:
+                  null,
+                mppX: null,
+                mppY: null,
+                objectivePower:
+                  null,
+                multichannel: {
+                  scientificMultichannel:
+                    false,
+                },
+              },
+            };
+
+            writeLocalTiffInfo(
+              image.id,
+              {
+                width,
+                height,
+                storage:
+                  directRgbLayout.strips === 1
+                    ? "Single RGB strip"
+                    : `${directRgbLayout.strips} RGB strips`,
+                pyramidLevels: 1,
+                compression:
+                  "Uncompressed RGB",
+                fastPath:
+                  "Native TIFF header + direct Android optimization",
+              }
+            );
+
+            localTiffSessions.set(
+              image.id,
+              session
+            );
+
+            setStatus(
+              `${image.name} · native TIFF optimizer active`,
+              "local"
+            );
+
+            return session;
+          }
+        }
+      } catch (error) {
+        console.warn(
+          "Native TIFF inspection unavailable; trying general reader",
+          error
+        );
+      }
+    }
+
+    // General TIFF / OME-TIFF fallback.
+    if (
+      !window.GeoTIFF?.fromCustomClient
+    ) {
+      throw new Error(
+        "This TIFF is not supported by the native fast path and the general TIFF reader is unavailable"
+      );
+    }
+
+    const decoderPool =
+      createLocalTiffDecoderPool();
+
+    const client =
+      new NativeTiffRangeClient(
+        image.uri,
+        totalSize
+      );
+
+    const tiff =
+      await window.GeoTIFF.fromCustomClient(
+        client,
+        {
+          blockSize: 65536,
+          cacheSize: 128,
+        }
+      );
+
+    const imageCount =
+      await tiff.getImageCount();
+
+    if (!imageCount) {
+      throw new Error(
+        "No TIFF image directories were found"
+      );
+    }
+
+    const ifds = [];
+
+    for (
+      let index = 0;
+      index < Math.min(
+        imageCount,
+        64
+      );
+      index += 1
+    ) {
+      ifds.push(
+        await tiff.getImage(index)
+      );
+    }
+
+    const levels =
+      localTiffCandidateLevels(
+        ifds
+      );
+
+    if (!levels.length) {
+      throw new Error(
+        "No compatible TIFF image levels were found"
+      );
+    }
+
+    const full =
+      levels[
+        levels.length - 1
+      ];
+
+    const width =
+      full.width;
+
+    const height =
+      full.height;
+
+    const directRgbLayout =
+      detectNativeUncompressedRgbLayout(
+        full.image
+      );
+
+    const maxLevel =
+      Math.ceil(
+        Math.log2(
+          Math.max(
+            width,
+            height
+          )
+        )
+      );
+
+    const session = {
+      id: image.id,
+      source: image,
+      tiff,
+      levels,
+      full,
+      decoderPool,
+      directRgbLayout,
+      optimizing: false,
+      optimized: false,
+      nativeMetadata: false,
+      info: {
+        width,
+        height,
+        tileSize: 256,
+        tileOverlap: 0,
+        levelCount:
+          maxLevel + 1,
+        directRaster: false,
+        sourceKind:
+          directRgbLayout
+            ? "android-native-rgb-optimized"
+            : "android-local-tiff-cache",
+        localNative: true,
+        calibrationAvailable: false,
+        calibrationSource: null,
+        mppX: null,
+        mppY: null,
+        objectivePower: null,
+        multichannel: {
+          scientificMultichannel:
+            false,
+        },
+      },
+    };
+
+    writeLocalTiffInfo(
+      image.id,
+      {
+        width,
+        height,
+        storage:
+          directRgbLayout
+            ? (
+                directRgbLayout.strips === 1
+                  ? "Single RGB strip"
+                  : `${directRgbLayout.strips} RGB strips`
+              )
+            : (
+                levels.length > 1
+                  ? "Pyramidal TIFF"
+                  : "TIFF"
+              ),
+        pyramidLevels:
+          levels.length,
+        compression:
+          directRgbLayout
+            ? "Uncompressed RGB"
+            : "GeoTIFF-compatible",
+        fastPath:
+          directRgbLayout
+            ? "GeoTIFF metadata + native pixels"
+            : "Persistent local tile cache",
+      }
+    );
+
+    localTiffSessions.set(
+      image.id,
+      session
+    );
+
+    return session;
+  }
+
+
+  async function nativeLocalCatalogImages() {
+    const plugin =
+      nativeLocalImagePlugin();
+
+    if (!plugin?.listImages) {
+      return [];
+    }
+
+    try {
+      const payload =
+        await plugin.listImages();
+
+      return (
+        Array.isArray(
+          payload?.images
+        )
+          ? payload.images
+          : []
+      ).map(
+        (image) => ({
+          ...image,
+          localNative: true,
+          sourceKind: "android-local",
+          relativePath:
+            image.relativePath
+            || image.name
+            || "Local image",
+        })
+      );
+    } catch (error) {
+      console.warn(
+        "Could not read native local catalog",
+        error
+      );
+      return [];
+    }
+  }
+
+  async function openNativeLocalTiff(
+    sourceImage,
+    existingSequence = null
+  ) {
+    if (!sourceImage) return;
+
+    if (!isNativeLocalTiff(sourceImage)) {
+      throw new Error(
+        "Local optimizer currently supports TIFF/OME-TIFF."
+      );
+    }
+
+    if (reviewState.active) {
+      exitReviewMode();
+    }
+
+    const sequence =
+      existingSequence
+      ?? ++openSequence;
+
+    if (
+      existingSequence === null
+      && dirty
+    ) {
+      await saveAnnotations(false);
+    }
+
+    currentImage = {
+      ...deepClone(sourceImage),
+      localNative: true,
+      sourceKind:
+        "android-local-optimized",
+      relativePath:
+        sourceImage.relativePath
+        || sourceImage.name,
+    };
+
+    images =
+      mergeKnownImages(
+        images,
+        [currentImage]
+      );
+
+    els.inputGuide.hidden = true;
+    clearSelectedFeatures(false);
+
+    pathologistDraft = null;
+    polygonDraft = [];
+    activeDraft = null;
+    pointerState = null;
+    brushCursor = null;
+
+    updatePolygonActions();
+
+    undoStack = [];
+    redoStack = [];
+    dirty = false;
+
+    localDraftState =
+      "Opening optimized local TIFF";
+
+    tileStats = {
+      loaded: 0,
+      failed: 0,
+    };
+
+    els.emptyMessage.hidden = false;
+    els.emptyMessage.textContent =
+      "Preparing local image…";
+
+    const cacheInfo =
+      await getLocalTileCacheInfo(
+        currentImage
+      );
+
+    if (
+      Number(cacheInfo?.tiles) > 0
+    ) {
+      setStatus(
+        `Opening ${currentImage.name} · ${cacheInfo.tiles} prepared tiles available`,
+        "local"
+      );
+    } else {
+      setStatus(
+        `Opening ${currentImage.name} · preparing fast local view`,
+        "local"
+      );
+    }
+
+    configureLocalTiffViewer(true);
+    viewer.close();
+
+    try {
+      const session =
+        localTiffSessions.get(
+          currentImage.id
+        )
+        || await createNativeLocalTiffSession(
+          currentImage
+        );
+
+      if (sequence !== openSequence) {
+        return;
+      }
+
+      currentInfo = session.info;
+      imageType = "rgb";
+
+      if (els.imageTypeSelect) {
+        els.imageTypeSelect.value =
+          "rgb";
+      }
+
+      renderChannelControls();
+      saveDisplaySettings();
+
+      const draftRecords =
+        await idbGetAll(DB_STORE);
+
+      annotationFiles =
+        Array.from(
+          new Set([
+            "Default",
+            ...draftRecords
+              .filter(
+                (record) =>
+                  record?.sourceImageId
+                  === currentImage.id
+              )
+              .map(
+                (record) =>
+                  record.annotationFile
+                  || "Default"
+              ),
+          ])
+        );
+
+      if (
+        !annotationFiles.includes(
+          currentAnnotationFile
+        )
+      ) {
+        currentAnnotationFile =
+          "Default";
+      }
+
+      renderAnnotationFileOptions();
+
+      const localDraft =
+        await getLocalDraft(
+          currentImage.id,
+          currentAnnotationFile
+        );
+
+      if (
+        localDraft?.featureCollection?.type
+        === "FeatureCollection"
+      ) {
+        featureCollection =
+          normalizeFeatureCollectionClient(
+            localDraft.featureCollection
+          );
+
+        localDraftState =
+          "Local annotations";
+      } else {
+        featureCollection = {
+          type: "FeatureCollection",
+          features: [],
+        };
+
+        localDraftState =
+          "Local file";
+
+        await persistLocalDraft(
+          false,
+          currentImage,
+          featureCollection
+        );
+      }
+
+      featureCollection.features
+        .forEach(featureId);
+
+      restoreViewportState =
+        await getMeta(
+          `viewport:${currentImage.id}`
+        );
+
+      viewer.addOnceHandler(
+        "open",
+        () => {
+          if (sequence !== openSequence) {
+            return;
+          }
+
+          els.emptyMessage.hidden = true;
+          restoreViewportState = null;
+
+          applyBrightness();
+          drawAnnotations();
+          updateDiagnostics();
+
+          window.setTimeout(
+            () => {
+              prepareLocalFastOverview(
+                session
+              ).catch(() => {});
+            },
+            1800
+          );
+        }
+      );
+
+      viewer.open(
+        buildLocalTiffViewerSource(
+          session
+        )
+      );
+
+      els.dimensions.textContent =
+        `${currentInfo.width} × ${currentInfo.height}`;
+
+      await cacheCurrentImageMetadata();
+
+      updateControls();
+      updateDiagnostics();
+
+      const localState =
+        await collectLocalImageState();
+
+      renderImageOptions(
+        currentImage.id,
+        localState
+      );
+
+      els.imageSelect.value =
+        currentImage.id;
+
+    } catch (error) {
+      if (sequence !== openSequence) {
+        return;
+      }
+
+      els.emptyMessage.hidden = false;
+      els.emptyMessage.textContent =
+        error.message;
+
+      setStatus(
+        `Could not open local TIFF: ${error.message}`,
+        "error"
+      );
+
+      throw error;
+    }
+  }
+
   async function apiFetch(url, options = {}) {
     const { timeoutMs = 12000, ...requestOptions } = options || {};
     let timeoutId = null;
@@ -487,8 +3018,9 @@
       annotationFile: currentAnnotationFile,
       imageName: image.name,
       relativePath: image.relativePath,
+      localNative: Boolean(image.localNative),
       featureCollection: deepClone(payload),
-      pending,
+      pending: image.localNative ? false : pending,
       updatedAt: Date.now(),
     };
     const saved = await putLocalDraft(record);
@@ -824,6 +3356,16 @@
     for (const image of images) {
       const option = document.createElement("option");
       option.value = image.id;
+      const isNativeLocal = Boolean(image.localNative);
+      if (isNativeLocal) {
+        const nativeState = image.accessible
+          ? (image.seekable ? "Local device • random access" : "Local device • sequential access")
+          : "Local device • access unavailable";
+        option.textContent = `${image.relativePath || image.name} (${formatBytes(Number(image.sizeBytes))}) • ${nativeState}`;
+        option.disabled = !image.accessible || !isNativeLocalTiff(image);
+        els.imageSelect.append(option);
+        continue;
+      }
       const prep = image.prepared ? " • SSD ready" : (image.needsPreparation ? " • prepare on open" : "");
       const downloaded = localState.readyIds.has(image.id);
       const partial = localState.partialIds.has(image.id);
@@ -855,11 +3397,18 @@
   }
 
   async function syncAllPendingDrafts(showToast = true) {
+    if (IS_NATIVE && !API) {
+      if (showToast) {
+        setStatus("No server configured; pending annotations remain on this device", "local");
+      }
+      return { synced: 0, failed: 0 };
+    }
+
     if (!navigator.onLine) {
       if (showToast) setStatus("Offline: synchronization will resume when a connection is available", "local");
       return { synced: 0, failed: 0 };
     }
-    const drafts = (await idbGetAll(DB_STORE)).filter((record) => record?.pending && record?.sourceImageId && record?.featureCollection);
+    const drafts = (await idbGetAll(DB_STORE)).filter((record) => record?.pending && !record?.localNative && record?.sourceImageId && record?.featureCollection);
     let synced = 0; let failed = 0;
     for (const record of drafts) {
       try {
@@ -906,6 +3455,12 @@
 
   async function syncClassesToServer() {
     writeLocalClasses(true);
+
+    if (IS_NATIVE && !API) {
+      setStatus("Classes saved locally · no server configured", "local");
+      return;
+    }
+
     try {
       const response = await apiFetch(`${API}/classes`, {
         method: "PUT",
@@ -929,6 +3484,16 @@
       currentClass = classes[0];
       renderClassButtons();
     }
+
+    if (IS_NATIVE && !API) {
+      if (!local) {
+        classes = deepClone(DEFAULT_CLASSES);
+        currentClass = classes[0];
+        renderClassButtons();
+      }
+      return;
+    }
+
     try {
       if (local?.pending) {
         await syncClassesToServer();
@@ -2474,6 +5039,23 @@
 
   async function refreshImageDisplay() {
     if (!currentImage || !currentInfo || !viewer) { applyBrightness(); return; }
+    if (currentImage.localNative) {
+      const session = localTiffSessions.get(currentImage.id);
+      if (!session) return;
+      const center = viewer.world.getItemCount() ? viewer.viewport.getCenter() : null;
+      const zoom = viewer.world.getItemCount() ? viewer.viewport.getZoom() : null;
+      viewer.addOnceHandler("open", () => {
+        if (center && Number.isFinite(zoom)) {
+          viewer.viewport.panTo(center, true);
+          viewer.viewport.zoomTo(zoom, center, true);
+        }
+        applyBrightness();
+        drawAnnotations();
+      });
+      configureLocalTiffViewer(true);
+      viewer.open(buildLocalTiffViewerSource(session));
+      return;
+    }
     if (!navigator.onLine) {
       const packages = (await listOfflinePackages()).filter((item) => item.imageId === currentImage.id && item.displayQuery === displayQueryString());
       if (!packages.length) {
@@ -3468,7 +6050,12 @@
     updateControls();
     drawAnnotations();
     scheduleLocalDraft();
-    setStatus("Saving locally; server sync will follow automatically…", "local");
+    setStatus(
+      currentImage?.localNative
+        ? "Saving annotations locally…"
+        : "Saving locally; server sync will follow automatically…",
+      "local"
+    );
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => saveAnnotations(false), 1200);
   }
@@ -3486,6 +6073,27 @@
     const image = currentImage;
     const payload = deepClone(featureCollection);
     await persistLocalDraft(true, image, payload);
+
+    if (image.localNative) {
+      dirty = false;
+      localDraftState = "Saved locally";
+      updateControls();
+      updateDiagnostics();
+      setStatus(
+        `Saved locally: ${payload.features?.length || 0} annotations`,
+        "saved"
+      );
+      return;
+    }
+
+    if (IS_NATIVE && !API) {
+      dirty = false;
+      localDraftState = "Saved locally";
+      updateControls();
+      updateDiagnostics();
+      setStatus("Saved locally · no server configured", "local");
+      return;
+    }
 
     if (!navigator.onLine) {
       setStatus("Offline: annotations are safe on this device and waiting to sync", "local");
@@ -3525,10 +6133,10 @@
     els.exportButton.disabled = !enabled;
     if (els.shareGeoJsonButton) els.shareGeoJsonButton.disabled = !enabled;
     els.importGeoJsonButton.disabled = !enabled;
-    els.downloadOriginalButton.disabled = !enabled;
-    if (els.downloadOfflineButton) els.downloadOfflineButton.disabled = !enabled || !currentInfo;
+    els.downloadOriginalButton.disabled = !enabled || Boolean(currentImage?.localNative);
+    if (els.downloadOfflineButton) els.downloadOfflineButton.disabled = !enabled || !currentInfo || Boolean(currentImage?.localNative);
     els.imageInfoButton.disabled = !enabled;
-    if (els.annotationStatsButton) els.annotationStatsButton.disabled = !enabled || featureCollection.features.length === 0;
+    if (els.annotationStatsButton) els.annotationStatsButton.disabled = !enabled || featureCollection.features.length === 0 || Boolean(currentImage?.localNative);
     if (els.reviewModeButton) els.reviewModeButton.disabled = !enabled || featureCollection.features.length === 0;
     if (els.imageTypeSelect) els.imageTypeSelect.disabled = !enabled;
     if (els.eyeButton) els.eyeButton.disabled = !enabled;
@@ -3604,10 +6212,12 @@
     clearSelectedFeatures(false); undoStack = []; redoStack = []; pathologistDraft = null; activeDraft = null; pointerState = null;
     const localDraft = await getLocalDraft(currentImage.id, currentAnnotationFile);
     let serverCollection = null;
-    try {
-      const response = await apiFetch(`${API}/annotations/${currentImage.id}?file=${encodeURIComponent(currentAnnotationFile)}`);
-      serverCollection = normalizeFeatureCollectionClient(await response.json());
-    } catch (_) { /* offline or VPN unavailable */ }
+    if (!currentImage.localNative) {
+      try {
+        const response = await apiFetch(`${API}/annotations/${currentImage.id}?file=${encodeURIComponent(currentAnnotationFile)}`);
+        serverCollection = normalizeFeatureCollectionClient(await response.json());
+      } catch (_) { /* offline or VPN unavailable */ }
+    }
     if (localDraft?.pending && localDraft.featureCollection?.type === "FeatureCollection") {
       featureCollection = normalizeFeatureCollectionClient(localDraft.featureCollection); dirty = true; localDraftState = "Recovered locally";
     } else if (serverCollection) {
@@ -3640,7 +6250,7 @@
     dirty = false; localDraftState = navigator.onLine ? "New local file" : "Offline local file";
     await persistLocalDraft(false, currentImage, featureCollection);
     drawAnnotations(); updateControls(); updateDiagnostics();
-    if (navigator.onLine) {
+    if (navigator.onLine && API && !currentImage.localNative) {
       try {
         const response = await apiFetch(`${API}/annotations/${currentImage.id}/files`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name })
@@ -3672,6 +6282,7 @@
 
     let offlineRecords = [];
     let catalog = [];
+    let nativeLocalImages = [];
 
     // ---------------------------------------------------------
     // 1. LOCAL FIRST
@@ -3688,7 +6299,8 @@
         .map((item) => item.image)
         .filter(Boolean);
 
-      images = mergeKnownImages(catalog, packageImages);
+      nativeLocalImages = await nativeLocalCatalogImages();
+      images = mergeKnownImages(catalog, packageImages, nativeLocalImages);
 
       localState = await collectLocalImageState(offlineRecords);
 
@@ -3710,6 +6322,17 @@
         "Could not restore local image catalog",
         error
       );
+    }
+
+    if (IS_NATIVE && !API) {
+      serverReachable = false;
+      setStatus(
+        images.length
+          ? `${images.length} cached/offline file${images.length === 1 ? "" : "s"} available · no server configured`
+          : "No server configured · use File → Connection settings",
+        "local"
+      );
+      return;
     }
 
     // navigator.onLine is useful in a browser, but Android
@@ -3804,7 +6427,8 @@
 
       images = mergeKnownImages(
         packageImages,
-        remoteImages
+        remoteImages,
+        nativeLocalImages
       );
 
       diagnosticStage = "rendering Files";
@@ -3995,6 +6619,11 @@
       return;
     }
 
+    if (currentImage?.localNative) {
+      await openNativeLocalTiff(currentImage, sequence);
+      return;
+    }
+    configureLocalTiffViewer(false);
     els.imageSelect.value = imageId;
     els.inputGuide.hidden = true;
     loadDisplaySettings();
@@ -5811,7 +8440,7 @@
 
     // Prefer server validation when available, but export/share
     // must remain available offline.
-    if (navigator.onLine || IS_NATIVE) {
+    if (API && (navigator.onLine || IS_NATIVE)) {
       try {
         const response = await apiFetch(
           `${API}/geojson/qupath-export`,
@@ -6080,7 +8709,8 @@
       else if (dirty) state = "Saving";
       else state = localDraftState === "Ready" ? "Synced" : localDraftState;
     }
-    els.diagnostics.textContent = `v${VERSION} · ${state}`;
+    const source = IS_NATIVE ? (NATIVE_SERVER ? "Server" : "Local") : "Web";
+    els.diagnostics.textContent = `v${VERSION} · ${source} · ${state}`;
   }
 
   async function removeLegacyServiceWorker() {
@@ -6139,6 +8769,19 @@
     els.downloadOfflineButton?.addEventListener("click", showOfflineDownload);
     els.offlineFilesButton?.addEventListener("click", showOfflineFiles);
     els.syncNowButton?.addEventListener("click", () => { toggleFileMenu(false); syncAllPendingDrafts(true); });
+    els.connectionSettingsButton?.addEventListener("click", () => openConnectionSettings(false));
+    els.openLocalImageButton?.addEventListener("click", pickNativeLocalImage);
+    organizeNativeLocalFileMenu();
+    els.addLocalImageButton?.addEventListener("click", pickNativeLocalImage);
+    els.localImagesButton?.addEventListener("click", showNativeLocalImages);
+    simplifyNativeFileMenu();
+    els.closeLocalImagesButton?.addEventListener("click", () => {
+      if (els.localImagesOverlay) els.localImagesOverlay.hidden = true;
+    });
+    els.testConnectionButton?.addEventListener("click", testNativeServerCandidate);
+    els.saveConnectionButton?.addEventListener("click", saveNativeServerCandidate);
+    els.clearConnectionButton?.addEventListener("click", clearNativeServerCandidate);
+    els.closeConnectionButton?.addEventListener("click", closeConnectionSettings);
     els.offlineQuality?.addEventListener("change", updateOfflineEstimate);
     els.startOfflineDownload?.addEventListener("click", downloadCurrentImageOffline);
     els.cancelOfflineDownload?.addEventListener("click", () => { offlineDownloadAbort = true; els.offlineOverlay.hidden = true; });
@@ -6225,7 +8868,7 @@
     els.imageTypeSelect?.addEventListener("change", async () => {
       imageType = els.imageTypeSelect.value;
       saveDisplaySettings(); renderChannelControls(); refreshImageDisplay();
-      if (currentImage) {
+      if (currentImage && API) {
         try {
           await apiFetch(`${API}/images/${currentImage.id}/display-config`, {
             method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageType }),

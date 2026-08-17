@@ -74,3 +74,8 @@ android-app/android/app/src/main/assets/public/
 
 # Local Android deployment overlay (private CA / environment-specific trust)
 android-app/android/app/src/debug/res/
+
+# HistoAnnotator Desktop development environment
+.venv-desktop/
+/build/
+/dist/

@@ -1,0 +1,1 @@
+"""HistoAnnotator Desktop."""

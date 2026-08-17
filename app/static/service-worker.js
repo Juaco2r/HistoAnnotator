@@ -1,12 +1,12 @@
-const VERSION = "1.1.0";
+const VERSION = "1.2.0-dev5b";
 const SHELL_CACHE = `histoannotator-shell-${VERSION}`;
 const OFFLINE_CACHE = "histoannotator-offline-v0.8";
 
 const SCOPE_PATH = new URL(self.registration.scope).pathname;
 const shellUrls = [
   SCOPE_PATH,
-  `${SCOPE_PATH}static/styles.css?v=1.1.0`,
-  `${SCOPE_PATH}static/app.js?v=1.1.0`,
+  `${SCOPE_PATH}static/styles.css?v=1.2.0-dev5b`,
+  `${SCOPE_PATH}static/app.js?v=1.2.0-dev5b`,
   `${SCOPE_PATH}static/manifest.webmanifest`,
   `${SCOPE_PATH}static/vendor/openseadragon/openseadragon.min.js`,
 ];
