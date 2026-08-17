@@ -37,5 +37,5 @@ for filename, url in assets.items():
             f"ERROR: invalid downloaded Desktop asset: {destination}"
         )
 
-print(f"✓ OpenSeadragon {OSD_VERSION} prepared for Desktop")
-print(f"✓ {TARGET / 'openseadragon.min.js'}")
+print(f"OK: OpenSeadragon {OSD_VERSION} prepared for Desktop")
+print(f"OK: {TARGET / 'openseadragon.min.js'}")
