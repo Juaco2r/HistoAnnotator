@@ -1,6 +1,6 @@
 {
   "name": "android-app",
-  "version": "1.2.0-dev5b",
+  "version": "1.2.0-dev7",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -11,6 +11,7 @@
   "license": "ISC",
   "dependencies": {
     "@capacitor/android": "^8.5.0",
+    "@capacitor/barcode-scanner": "3.1.0",
     "@capacitor/core": "^8.5.0",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/network": "^8.0.1",

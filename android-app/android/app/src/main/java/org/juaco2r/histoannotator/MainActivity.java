@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(LocalImagePlugin.class);
+        registerPlugin(ServerHttpPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

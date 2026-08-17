@@ -45,7 +45,7 @@ from .server_control import (
     ServerController,
 )
 
-DESKTOP_VERSION = "0.1.0-dev1b"
+DESKTOP_VERSION = "1.2.0-dev7"
 
 
 def project_root() -> Path:
@@ -205,7 +205,7 @@ class ServerPanel(QFrame):
 
         discovery_note = QLabel(
             "No automatic discovery is used. "
-            "Connect with the QR or explicit URL."
+            "Android: File → Connection settings → Scan QR. Browsers can use the explicit URL."
         )
         discovery_note.setWordWrap(
             True

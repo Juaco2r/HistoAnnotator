@@ -102,3 +102,35 @@ runtime use the accompanying files.
 The current HistoAnnotator research pre-release has no individual user
 authentication. Server mode should therefore be used only on a trusted
 LAN/VPN during development.
+
+
+## QR pairing
+
+When **Start Server** is enabled, HistoAnnotator Desktop shows the current LAN
+URL as both text and a QR code.
+
+On Android:
+
+1. Open **File → Connection settings**.
+2. Tap **Scan QR**.
+3. Point the camera at the QR shown by HistoAnnotator Desktop.
+4. HistoAnnotator validates `/api/images`, stores the server URL and loads the
+   remote image catalog automatically.
+
+The QR contains only the runtime LAN URL. No private IP is committed to the
+repository.
+
+The Android QR scanner uses the official Capacitor Barcode Scanner plugin.
+This raises the Android minimum SDK to 26 (Android 8.0).
+
+## Desktop build targets
+
+The development workflow builds portable PyInstaller artifacts for:
+
+- Windows x64
+- Linux x64
+- macOS Apple Silicon
+- macOS Intel
+
+macOS artifacts are currently unsigned development builds. Signing and
+notarization can be added for a later public release.

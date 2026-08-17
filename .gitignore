@@ -10,6 +10,8 @@
 # Certificates / signing keys
 *.key
 *.pem
+*.crt
+*.cer
 *.p12
 *.pfx
 *.jks

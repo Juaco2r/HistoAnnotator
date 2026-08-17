@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.2.0-dev5b";
+  const VERSION = "1.2.0-dev7";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -9,6 +9,7 @@
   // Browser uses its own origin. Android selects a server at runtime.
   const BASE = window.location.pathname.startsWith("/annotator") ? "/annotator" : "";
   const NATIVE_SERVER_STORAGE_KEY = "histoannotator.nativeServer.v2";
+  const NATIVE_RUNTIME_MIGRATION_KEY = "histoannotator.nativeRuntimeMigration.dev6";
   const DEFAULT_NATIVE_SERVER_RAW = "__HISTOANNOTATOR_NATIVE_SERVER__";
 
   function normalizeServerBase(value) {
@@ -181,6 +182,7 @@
     connectionServerInput: document.getElementById("connectionServerInput"),
     connectionCurrentServer: document.getElementById("connectionCurrentServer"),
     connectionTestResult: document.getElementById("connectionTestResult"),
+    scanConnectionQrButton: document.getElementById("scanConnectionQrButton"),
     testConnectionButton: document.getElementById("testConnectionButton"),
     saveConnectionButton: document.getElementById("saveConnectionButton"),
     clearConnectionButton: document.getElementById("clearConnectionButton"),
@@ -425,6 +427,10 @@
         : "The web version uses the server that served this page.";
     }
 
+    if (els.scanConnectionQrButton) {
+      els.scanConnectionQrButton.hidden = !IS_NATIVE;
+      els.scanConnectionQrButton.disabled = !IS_NATIVE;
+    }
     if (els.testConnectionButton) els.testConnectionButton.disabled = !IS_NATIVE;
     if (els.saveConnectionButton) els.saveConnectionButton.disabled = !IS_NATIVE;
     if (els.clearConnectionButton) {
@@ -450,6 +456,115 @@
     }
   }
 
+  function nativeBarcodeScannerPlugin() {
+    if (!IS_NATIVE) return null;
+    return (
+      window.Capacitor?.Plugins?.CapacitorBarcodeScanner
+      || null
+    );
+  }
+
+  function serverFromPairingQr(rawValue) {
+    const raw = String(rawValue || "").trim();
+    if (!raw) {
+      throw new Error("The QR code was empty");
+    }
+
+    let candidate = raw;
+
+    if (raw.toLowerCase().startsWith("histoannotator://connect")) {
+      const parsed = new URL(raw);
+      candidate = parsed.searchParams.get("server") || "";
+    }
+
+    if (!/^https?:\/\//i.test(candidate)) {
+      throw new Error(
+        "This QR code does not contain a HistoAnnotator server URL"
+      );
+    }
+
+    return normalizeServerBase(candidate);
+  }
+
+  async function scanConnectionQr() {
+    if (!IS_NATIVE) return;
+
+    const plugin = nativeBarcodeScannerPlugin();
+    if (!plugin?.scanBarcode) {
+      els.connectionTestResult.textContent =
+        "QR scanner is unavailable in this Android build.";
+      return;
+    }
+
+    els.connectionTestResult.textContent =
+      "Opening camera…";
+
+    try {
+      const result = await plugin.scanBarcode({
+        hint: 0,
+        scanInstructions: "Scan the QR shown by HistoAnnotator Desktop",
+        scanButton: false,
+        cameraDirection: 1,
+        scanOrientation: 3,
+        android: {
+          scanningLibrary: "zxing",
+        },
+      });
+
+      const candidate = serverFromPairingQr(
+        result?.ScanResult || ""
+      );
+
+      if (els.connectionServerInput) {
+        els.connectionServerInput.value = candidate;
+      }
+
+      els.connectionTestResult.textContent =
+        `QR read · testing ${candidate}…`;
+
+      const response = await apiFetch(
+        `${candidate}/api/images`,
+        { timeoutMs: 10000 }
+      );
+      const payload = await response.json();
+
+      if (!payload || !Array.isArray(payload.images)) {
+        throw new Error(
+          "The server did not return a valid HistoAnnotator image catalog"
+        );
+      }
+
+      setNativeServerBase(candidate);
+      renderConnectionSettings();
+
+      els.connectionTestResult.textContent =
+        `QR connected · ${payload.images.length} image${
+          payload.images.length === 1 ? "" : "s"
+        } available`;
+
+      closeConnectionSettings();
+
+      await Promise.all([
+        loadClasses(),
+        loadImages(false),
+      ]);
+
+      setStatus(
+        `Connected by QR · ${candidate}`,
+        "saved"
+      );
+
+    } catch (error) {
+      const message =
+        error?.message
+        || String(error)
+        || "Unknown QR scanner error";
+
+      els.connectionTestResult.textContent =
+        `QR connection failed: ${message}`;
+    }
+  }
+
   async function testNativeServerCandidate() {
     if (!IS_NATIVE) return;
 
@@ -466,21 +581,47 @@
       return;
     }
 
-    els.connectionTestResult.textContent = `Testing ${candidate}…`;
+    const transport = nativeServerHttpPlugin()?.request
+      ? "Android native transport"
+      : "WebView fallback";
+
+    els.connectionTestResult.textContent =
+      `Testing ${candidate} · ${transport}…`;
 
     try {
-      const response = await apiFetch(`${candidate}/api/images`, { timeoutMs: 7000 });
+      const response = await apiFetch(
+        `${candidate}/api/images`,
+        { timeoutMs: 10000 }
+      );
+
       const payload = await response.json();
+
       if (!payload || !Array.isArray(payload.images)) {
-        throw new Error("The server did not return a valid HistoAnnotator image catalog");
+        throw new Error(
+          "The server did not return a valid HistoAnnotator image catalog"
+        );
       }
+
       els.connectionTestResult.textContent =
-        `Connected successfully · ${payload.images.length} image${payload.images.length === 1 ? "" : "s"} available`;
+        `Connected successfully · ${payload.images.length} image${
+          payload.images.length === 1 ? "" : "s"
+        } available · ${transport}`;
+
     } catch (error) {
-      els.connectionTestResult.textContent = `Connection failed: ${error.message}`;
+      const message = error?.message || String(error) || "Unknown connection error";
+
+      els.connectionTestResult.textContent =
+        `Connection failed during HistoAnnotator API: ${message}`;
+
+      console.error("HistoAnnotator connection test failed", {
+        candidate,
+        transport,
+        origin: window.location.origin,
+        native: IS_NATIVE,
+        error,
+      });
     }
   }
-
   async function saveNativeServerCandidate() {
     if (!IS_NATIVE) return;
 
@@ -2859,38 +3000,350 @@
     }
   }
 
-  async function apiFetch(url, options = {}) {
-    const { timeoutMs = 12000, ...requestOptions } = options || {};
-    let timeoutId = null;
-    let controller = null;
-    const fetchOptions = { cache: "no-store", credentials: "same-origin", ...requestOptions };
-    if (!fetchOptions.signal && typeof AbortController !== "undefined" && Number(timeoutMs) > 0) {
-      controller = new AbortController();
-      fetchOptions.signal = controller.signal;
-      timeoutId = setTimeout(() => controller.abort(), Number(timeoutMs));
-    }
-    let response;
-    try {
-      response = await fetch(url, fetchOptions);
-    } catch (error) {
-      if (error?.name === "AbortError") {
-        throw new Error(`Request timed out after ${Math.max(1, Math.round(Number(timeoutMs) / 1000))}s`);
-      }
-      throw error;
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
-    if (!response.ok) {
-      let detail = `${response.status} ${response.statusText}`;
-      try {
-        const payload = await response.json();
-        detail = payload.detail || detail;
-      } catch (_) { /* response not JSON */ }
-      throw new Error(detail);
-    }
-    return response;
+  function nativeServerHttpPlugin() {
+    if (!IS_NATIVE) return null;
+    return window.Capacitor?.Plugins?.ServerHttp || null;
   }
 
+  function normalizeRequestUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return raw;
+
+    try {
+      const absolute = new URL(raw, window.location.href);
+
+      if (
+        absolute.protocol === "http:"
+        || absolute.protocol === "https:"
+      ) {
+        absolute.pathname =
+          absolute.pathname.replace(/\/{2,}/g, "/");
+
+        if (/^https?:\/\//i.test(raw)) {
+          return absolute.href;
+        }
+
+        return `${absolute.pathname}${absolute.search}${absolute.hash}`;
+      }
+    } catch (_) {
+      // The transport will report malformed URLs.
+    }
+
+    return raw;
+  }
+
+  function requestHeadersObject(headers) {
+    const output = {};
+
+    if (!headers) return output;
+
+    if (
+      typeof Headers !== "undefined"
+      && headers instanceof Headers
+    ) {
+      headers.forEach((value, key) => {
+        output[key] = value;
+      });
+      return output;
+    }
+
+    if (Array.isArray(headers)) {
+      for (const pair of headers) {
+        if (Array.isArray(pair) && pair.length >= 2) {
+          output[String(pair[0])] = String(pair[1]);
+        }
+      }
+      return output;
+    }
+
+    for (const [key, value] of Object.entries(headers)) {
+      if (value !== undefined && value !== null) {
+        output[key] = String(value);
+      }
+    }
+
+    return output;
+  }
+
+  function base64ToBlob(base64, type = "") {
+    const binary = atob(String(base64 || ""));
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    return new Blob(
+      [bytes],
+      { type: type || "application/octet-stream" }
+    );
+  }
+
+  function nativeHeaders(headers = {}) {
+    const lower = {};
+
+    for (const [key, value] of Object.entries(headers || {})) {
+      lower[String(key).toLowerCase()] = String(value);
+    }
+
+    return {
+      get(name) {
+        return lower[String(name || "").toLowerCase()] ?? null;
+      },
+      has(name) {
+        return String(name || "").toLowerCase() in lower;
+      },
+      forEach(callback) {
+        for (const [key, value] of Object.entries(lower)) {
+          callback(value, key);
+        }
+      },
+    };
+  }
+
+  function nativeResponse(result) {
+    const headers = nativeHeaders(result?.headers || {});
+    const contentType =
+      result?.contentType
+      || headers.get("content-type")
+      || "";
+
+    async function responseText() {
+      if (typeof result?.body === "string") {
+        return result.body;
+      }
+
+      if (result?.bodyBase64) {
+        return await base64ToBlob(
+          result.bodyBase64,
+          contentType
+        ).text();
+      }
+
+      return "";
+    }
+
+    return {
+      ok:
+        Number(result?.status || 0) >= 200
+        && Number(result?.status || 0) < 300,
+      status: Number(result?.status || 0),
+      statusText: String(result?.statusText || ""),
+      url: String(result?.url || ""),
+      headers,
+      async text() {
+        return responseText();
+      },
+      async json() {
+        const text = await responseText();
+        return text ? JSON.parse(text) : null;
+      },
+      async blob() {
+        if (result?.bodyBase64) {
+          return base64ToBlob(
+            result.bodyBase64,
+            contentType
+          );
+        }
+
+        return new Blob(
+          [String(result?.body || "")],
+          { type: contentType || "text/plain;charset=utf-8" }
+        );
+      },
+    };
+  }
+
+  function canUseNativeServerHttp(url, options = {}) {
+    if (!IS_NATIVE) return false;
+
+    const plugin = nativeServerHttpPlugin();
+    if (!plugin?.request) return false;
+
+    let parsed;
+    try {
+      parsed = new URL(url, window.location.href);
+    } catch (_) {
+      return false;
+    }
+
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return false;
+    }
+
+    if (parsed.origin === window.location.origin) {
+      return false;
+    }
+
+    const body = options?.body;
+
+    return (
+      body === undefined
+      || body === null
+      || typeof body === "string"
+      || body instanceof URLSearchParams
+    );
+  }
+
+  async function nativeServerRequest(
+    url,
+    options = {},
+    timeoutMs = 12000
+  ) {
+    const plugin = nativeServerHttpPlugin();
+
+    if (!plugin?.request) {
+      throw new Error(
+        "Android native server transport is unavailable"
+      );
+    }
+
+    if (options?.signal?.aborted) {
+      const aborted = new Error("Request aborted");
+      aborted.name = "AbortError";
+      throw aborted;
+    }
+
+    const body =
+      options?.body instanceof URLSearchParams
+        ? options.body.toString()
+        : (
+            typeof options?.body === "string"
+              ? options.body
+              : undefined
+          );
+
+    const request = plugin.request({
+      url,
+      method: String(options?.method || "GET").toUpperCase(),
+      headers: requestHeadersObject(options?.headers),
+      body,
+      connectTimeout: Math.max(
+        1000,
+        Math.round(Number(timeoutMs) || 12000)
+      ),
+      readTimeout: Math.max(
+        1000,
+        Math.round(Number(timeoutMs) || 12000)
+      ),
+    });
+
+    if (!options?.signal) {
+      return nativeResponse(await request);
+    }
+
+    const abort = new Promise((_, reject) => {
+      options.signal.addEventListener(
+        "abort",
+        () => {
+          const error = new Error("Request aborted");
+          error.name = "AbortError";
+          reject(error);
+        },
+        { once: true }
+      );
+    });
+
+    return nativeResponse(
+      await Promise.race([request, abort])
+    );
+  }
+
+  async function serverRequest(url, options = {}) {
+    const {
+      timeoutMs = 12000,
+      ...requestOptions
+    } = options || {};
+
+    const normalizedUrl =
+      normalizeRequestUrl(url);
+
+    if (
+      canUseNativeServerHttp(
+        normalizedUrl,
+        requestOptions
+      )
+    ) {
+      return nativeServerRequest(
+        normalizedUrl,
+        requestOptions,
+        timeoutMs
+      );
+    }
+
+    let timeoutId = null;
+    let controller = null;
+
+    const fetchOptions = {
+      cache: "no-store",
+      credentials: "same-origin",
+      ...requestOptions,
+    };
+
+    if (
+      !fetchOptions.signal
+      && typeof AbortController !== "undefined"
+      && Number(timeoutMs) > 0
+    ) {
+      controller = new AbortController();
+      fetchOptions.signal = controller.signal;
+
+      timeoutId = setTimeout(
+        () => controller.abort(),
+        Number(timeoutMs)
+      );
+    }
+
+    try {
+      return await fetch(
+        normalizedUrl,
+        fetchOptions
+      );
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(
+          `Request timed out after ${
+            Math.max(
+              1,
+              Math.round(Number(timeoutMs) / 1000)
+            )
+          }s`
+        );
+      }
+
+      throw error;
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  async function apiFetch(url, options = {}) {
+    const response =
+      await serverRequest(
+        url,
+        options
+      );
+
+    if (!response.ok) {
+      let detail =
+        `${response.status} ${response.statusText}`.trim();
+
+      try {
+        const payload = await response.json();
+        detail = payload?.detail || detail;
+      } catch (_) {
+        // Response is not JSON.
+      }
+
+      throw new Error(
+        detail || `HTTP ${response.status}`
+      );
+    }
+
+    return response;
+  }
   function openDraftDb() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
@@ -3111,24 +3564,110 @@
   }
 
   async function cacheUrl(cache, url, timeoutMs = 20000) {
-    const request = new Request(url, { credentials: "same-origin", cache: "no-store" });
-    const existing = await cache.match(request);
-    if (existing) return "cached";
-    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const request =
+      new Request(
+        url,
+        {
+          credentials: "same-origin",
+          cache: "no-store",
+        }
+      );
+
+    const existing =
+      await cache.match(request);
+
+    if (existing) {
+      return "cached";
+    }
+
+    const controller =
+      typeof AbortController !== "undefined"
+        ? new AbortController()
+        : null;
+
+    const timeoutId =
+      controller
+        ? setTimeout(
+            () => controller.abort(),
+            timeoutMs
+          )
+        : null;
+
     try {
-      const response = await fetch(request, controller ? { signal: controller.signal } : undefined);
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      await cache.put(request, response.clone());
+      const response =
+        await serverRequest(
+          url,
+          {
+            timeoutMs,
+            cache: "no-store",
+            credentials: "same-origin",
+            ...(controller
+              ? { signal: controller.signal }
+              : {}),
+          }
+        );
+
+      if (!response.ok) {
+        let detail =
+          `${response.status} ${response.statusText}`.trim();
+
+        try {
+          const payload =
+            await response.json();
+
+          detail =
+            payload?.detail
+            || detail;
+        } catch (_) {}
+
+        throw new Error(detail);
+      }
+
+      const blob =
+        await response.blob();
+
+      if (!blob.size) {
+        throw new Error(
+          "Empty offline response"
+        );
+      }
+
+      const cacheResponse =
+        new Response(
+          blob,
+          {
+            status: 200,
+            headers: {
+              "Content-Type":
+                response.headers?.get?.("content-type")
+                || blob.type
+                || "application/octet-stream",
+            },
+          }
+        );
+
+      await cache.put(
+        request,
+        cacheResponse
+      );
+
       return "downloaded";
+
     } catch (error) {
-      if (error?.name === "AbortError") throw new Error("Tile download timed out");
+      if (error?.name === "AbortError") {
+        throw new Error(
+          "Tile download timed out"
+        );
+      }
+
       throw error;
+
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }
-
   async function downloadCurrentImageOffline() {
     if (!currentImage || !currentInfo) return;
     if (!("caches" in window)) {
@@ -4940,9 +5479,10 @@
         let source = "local";
 
         if (!response) {
-          source = "network";
+          source = IS_NATIVE ? "android-native" : "network";
 
-          response = await fetch(context.src, {
+          response = await serverRequest(context.src, {
+            timeoutMs: 15000,
             cache: "no-store",
             credentials: "same-origin",
             ...(controller ? { signal: controller.signal } : {}),
@@ -4950,8 +5490,20 @@
         }
 
         if (!response.ok) {
+          let detail =
+            `${response.status} ${response.statusText}`.trim();
+
+          try {
+            const payload = await response.json();
+            detail =
+              payload?.detail
+              || detail;
+          } catch (_) {
+            // Non-JSON server error.
+          }
+
           throw new Error(
-            `${response.status} ${response.statusText}`.trim()
+            `${detail} · ${context.src}`
           );
         }
 
@@ -5006,9 +5558,39 @@
         info.multichannel?.scientificMultichannel
       )
     ) {
+      if (!IS_NATIVE) {
+        return {
+          type: "image",
+          url: `${API}/images/${imageId}/original`
+        };
+      }
+
       return {
-        type: "image",
-        url: `${API}/images/${imageId}/original`
+        width: info.width,
+        height: info.height,
+        tileSize:
+          Math.max(
+            1,
+            info.width,
+            info.height
+          ),
+        tileOverlap: 0,
+        minLevel: 0,
+        maxLevel: 0,
+
+        getTileUrl() {
+          return `${API}/images/${imageId}/original`;
+        },
+
+        downloadTileStart:
+          localFirstTileDownloadStart,
+
+        downloadTileAbort:
+          localFirstTileDownloadAbort,
+
+        hasTransparency() {
+          return false;
+        },
       };
     }
 
@@ -8714,18 +9296,109 @@
   }
 
   async function removeLegacyServiceWorker() {
+    const result = {
+      registrations: 0,
+      shellCaches: 0,
+      hadController: false,
+    };
+
+    if (!IS_NATIVE) {
+      return result;
+    }
+
     try {
+      result.hadController =
+        Boolean(
+          navigator.serviceWorker?.controller
+        );
+
       if ("serviceWorker" in navigator) {
-        const registrations = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(registrations.map((registration) => registration.unregister()));
+        const registrations =
+          await navigator.serviceWorker.getRegistrations();
+
+        result.registrations =
+          registrations.length;
+
+        await Promise.all(
+          registrations.map(
+            (registration) =>
+              registration.unregister()
+          )
+        );
       }
+
       if ("caches" in window) {
-        const keys = await caches.keys();
-        await Promise.all(keys.filter((key) => key.startsWith("histoannotator-")).map((key) => caches.delete(key)));
+        const keys =
+          await caches.keys();
+
+        const shellKeys =
+          keys.filter(
+            (key) =>
+              key.startsWith(
+                "histoannotator-shell-"
+              )
+          );
+
+        result.shellCaches =
+          shellKeys.length;
+
+        await Promise.all(
+          shellKeys.map(
+            (key) =>
+              caches.delete(key)
+          )
+        );
       }
-    } catch (_) { /* best effort */ }
+
+      if (
+        result.registrations
+        || result.shellCaches
+      ) {
+        console.info(
+          "HistoAnnotator native runtime cleanup",
+          result
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "Native runtime cleanup failed",
+        error
+      );
+    }
+
+    return result;
   }
 
+  async function prepareNativeRuntime() {
+    if (!IS_NATIVE) {
+      return false;
+    }
+
+    const cleanup =
+      await removeLegacyServiceWorker();
+
+    if (
+      cleanup.hadController
+      && sessionStorage.getItem(
+        NATIVE_RUNTIME_MIGRATION_KEY
+      ) !== VERSION
+    ) {
+      sessionStorage.setItem(
+        NATIVE_RUNTIME_MIGRATION_KEY,
+        VERSION
+      );
+
+      window.location.reload();
+      return true;
+    }
+
+    sessionStorage.setItem(
+      NATIVE_RUNTIME_MIGRATION_KEY,
+      VERSION
+    );
+
+    return false;
+  }
   function setDrawingProfile(profile) {
     drawingProfile = profile === "pathologist" ? "pathologist" : "default";
     if (els.drawingProfileSelect) els.drawingProfileSelect.value = drawingProfile;
@@ -8778,6 +9451,7 @@
     els.closeLocalImagesButton?.addEventListener("click", () => {
       if (els.localImagesOverlay) els.localImagesOverlay.hidden = true;
     });
+    els.scanConnectionQrButton?.addEventListener("click", scanConnectionQr);
     els.testConnectionButton?.addEventListener("click", testNativeServerCandidate);
     els.saveConnectionButton?.addEventListener("click", saveNativeServerCandidate);
     els.clearConnectionButton?.addEventListener("click", clearNativeServerCandidate);
@@ -8939,6 +9613,13 @@
   }
 
   async function start() {
+    if (
+      IS_NATIVE
+      && await prepareNativeRuntime()
+    ) {
+      return;
+    }
+
     // Bring up the UI and local catalog first. Storage persistence and service
     // worker setup are best-effort background tasks and must never hold Files
     // on the initial “Loading…” option.

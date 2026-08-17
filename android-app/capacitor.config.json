@@ -11,5 +11,12 @@
       "style": "DEFAULT",
       "hidden": false
     }
+  },
+  "server": {
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "resolveServiceWorkerRequests": false
   }
 }

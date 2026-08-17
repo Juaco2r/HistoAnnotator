@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 
-DESKTOP_VERSION = "0.1.0-dev1b"
+DESKTOP_VERSION = "1.2.0-dev7"
 
 
 def bundled_root() -> Path:
