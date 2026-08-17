@@ -105,6 +105,13 @@ def self_test() -> int:
                 static_dir
                 / "index.html"
             ).is_file(),
+        "openseadragon_asset":
+            (
+                static_dir
+                / "vendor"
+                / "openseadragon"
+                / "openseadragon.min.js"
+            ).is_file(),
         "bundled_root":
             str(
                 bundled_root()
@@ -120,6 +127,9 @@ def self_test() -> int:
 
     if not result["static_index"]:
         return 3
+
+    if not result["openseadragon_asset"]:
+        return 6
 
     if not result["desktop_import"]:
         return 4

@@ -44,6 +44,14 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-desktop.txt
 
+      - name: Prepare Desktop web assets
+        shell: pwsh
+        run: |
+          python scripts/prepare_desktop_web_assets.py
+          if (!(Test-Path "app\static\vendor\openseadragon\openseadragon.min.js")) {
+            throw "OpenSeadragon Desktop asset was not prepared"
+          }
+
       - name: Verify OpenSlide before packaging
         shell: pwsh
         run: |
