@@ -90,9 +90,29 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path ".\verify" | Out-Null
           Expand-Archive ".\${{ matrix.archive }}" ".\verify"
-          & ".\verify\HistoAnnotatorDesktop\HistoAnnotatorDesktop.exe" --self-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "Extracted Windows self-test failed"
+          $exe = ".\verify\HistoAnnotatorDesktop\HistoAnnotatorDesktop.exe"
+          $stdout = ".\verify\windows-self-test.stdout.txt"
+          $stderr = ".\verify\windows-self-test.stderr.txt"
+
+          $process = Start-Process `
+            -FilePath $exe `
+            -ArgumentList "--self-test" `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+
+          if (Test-Path $stdout) {
+            Get-Content $stdout
+          }
+          if (Test-Path $stderr) {
+            Get-Content $stderr
+          }
+
+          Write-Host "Extracted Windows self-test exit code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+            throw "Extracted Windows self-test failed with exit code $($process.ExitCode)"
           }
 
       - name: Archive Unix
