@@ -81,3 +81,7 @@ android-app/android/app/src/debug/res/
 .venv-desktop/
 /build/
 /dist/
+
+# Local Python virtual environments used by packaging/tests
+.venv*/
+venv*/

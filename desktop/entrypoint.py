@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 
-DESKTOP_VERSION = "1.2.0-dev7"
+DESKTOP_VERSION = "1.2.0-rc1"
 
 
 def bundled_root() -> Path:
@@ -68,6 +68,7 @@ def self_test() -> int:
     )
 
     import openslide
+    import pyvips
     import app.main as backend
     import desktop.server_runner as server_runner
     import desktop.desktop_app as desktop_app
@@ -78,6 +79,21 @@ def self_test() -> int:
         .parent
         / "static"
     )
+
+    pyvips_test_file = test_root / "pyvips-self-test.tif"
+    try:
+        pyvips.Image.black(32, 32).tiffsave(
+            str(pyvips_test_file),
+            tile=True,
+            pyramid=True,
+            bigtiff=True,
+        )
+        pyvips_runtime_ok = (
+            pyvips_test_file.is_file()
+            and pyvips_test_file.stat().st_size > 0
+        )
+    except Exception:
+        pyvips_runtime_ok = False
 
     result = {
         "desktop_version":
@@ -94,6 +110,7 @@ def self_test() -> int:
                 "__library_version__",
                 "unknown",
             ),
+        "pyvips_runtime": pyvips_runtime_ok,
         "backend_title":
             backend.app.title,
         "desktop_import":
@@ -124,6 +141,9 @@ def self_test() -> int:
             indent=2,
         )
     )
+
+    if not result["pyvips_runtime"]:
+        return 7
 
     if not result["static_index"]:
         return 3

@@ -397,6 +397,83 @@ def set_job(image_id: str, **updates: Any) -> None:
         job["updatedAtUnix"] = int(time.time())
 
 
+
+def convert_to_pyramidal_tiff(source: Path, destination: Path) -> str:
+    # Convert a non-pyramidal/generic image to a tiled pyramidal TIFF.
+    try:
+        destination.unlink()
+    except FileNotFoundError:
+        pass
+
+    pyvips_error: Exception | None = None
+    try:
+        import pyvips
+
+        image = pyvips.Image.new_from_file(
+            str(source),
+            access="sequential",
+        )
+        image.tiffsave(
+            str(destination),
+            tile=True,
+            pyramid=True,
+            bigtiff=True,
+            compression="deflate",
+            tile_width=TILE_SIZE,
+            tile_height=TILE_SIZE,
+        )
+        if destination.is_file() and destination.stat().st_size > 0:
+            return "pyvips"
+        raise RuntimeError("pyvips did not create the output TIFF")
+    except Exception as exc:  # noqa: BLE001
+        pyvips_error = exc
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+
+    vips_cli = shutil.which("vips")
+    if vips_cli:
+        command = [
+            vips_cli,
+            "tiffsave",
+            str(source),
+            str(destination),
+            "--tile",
+            "--pyramid",
+            "--bigtiff",
+            "--compression",
+            "deflate",
+            "--tile-width",
+            str(TILE_SIZE),
+            "--tile-height",
+            str(TILE_SIZE),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=None,
+            check=False,
+        )
+        if result.returncode == 0 and destination.is_file():
+            return "vips-cli"
+        detail = (
+            result.stderr
+            or result.stdout
+            or "unknown libvips command error"
+        ).strip()[-1200:]
+        raise RuntimeError(
+            f"libvips could not convert the image: {detail}"
+        )
+
+    detail = str(pyvips_error or "pyvips is unavailable")
+    raise RuntimeError(
+        "Could not prepare this image. "
+        "The Desktop package needs its bundled pyvips/libvips runtime, "
+        f"but conversion failed: {detail}"
+    )
+
 def prepare_image_worker(image_id: str, source: Path, relative: str) -> None:
     prep_dir = preparation_dir(source, relative)
     prep_dir.mkdir(parents=True, exist_ok=True)
@@ -454,28 +531,21 @@ def prepare_image_worker(image_id: str, source: Path, relative: str) -> None:
         except Exception:  # noqa: BLE001
             vendor = None
 
-        if vendor:
+        if vendor and str(vendor).lower() not in {"generic-tiff", "generic tiff"}:
             render_path = local_source
             source_kind = f"openslide:{vendor}"
             message = "WSI copied to the local SSD"
         else:
-            if shutil.which("vips") is None:
-                raise RuntimeError("libvips is not installed inside the container")
             set_job(
                 image_id,
                 state="converting",
                 progress=62,
                 message="Converting to pyramidal TIFF; this may take several minutes…",
             )
-            command = [
-                "vips", "tiffsave", str(local_source), str(pyramid_part),
-                "--tile", "--pyramid", "--bigtiff", "--compression", "deflate",
-                "--tile-width", str(TILE_SIZE), "--tile-height", str(TILE_SIZE),
-            ]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=None, check=False)
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout or "unknown error").strip()[-1200:]
-                raise RuntimeError(f"libvips could not convert the image: {detail}")
+            conversion_engine = convert_to_pyramidal_tiff(
+                local_source,
+                pyramid_part,
+            )
             os.replace(pyramid_part, pyramid_path)
             try:
                 vendor = openslide.OpenSlide.detect_format(str(pyramid_path))
@@ -485,7 +555,7 @@ def prepare_image_worker(image_id: str, source: Path, relative: str) -> None:
                 raise RuntimeError("The converted TIFF is still not recognized by OpenSlide")
             render_path = pyramid_path
             source_kind = f"openslide:{vendor}"
-            message = "Image converted and prepared on the local SSD"
+            message = f"Image converted and prepared on the local SSD ({conversion_engine})"
             try:
                 local_source.unlink()
             except OSError:
@@ -790,7 +860,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.2.0-dev7"}
+    return {"status": "ok", "version": "1.2.0-rc1"}
 
 
 @app.get("/health")

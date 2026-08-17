@@ -1,0 +1,203 @@
+name: Release v1.2.0
+
+on:
+  push:
+    tags:
+      - "v1.2.0"
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    name: Desktop ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows-x64
+            archive: HistoAnnotator-v1.2.0-Windows-x64.zip
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop.exe
+
+          - os: ubuntu-latest
+            label: Linux-x64
+            archive: HistoAnnotator-v1.2.0-Linux-x64.tar.gz
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
+
+          - os: macos-latest
+            label: macOS-AppleSilicon
+            archive: HistoAnnotator-v1.2.0-macOS-AppleSilicon.tar.gz
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
+
+          - os: macos-15-intel
+            label: macOS-Intel
+            archive: HistoAnnotator-v1.2.0-macOS-Intel.tar.gz
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Linux GUI runtime libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2t64 libdbus-1-3 libegl1 libgl1 libnss3 \
+            libxcomposite1 libxdamage1 libxkbcommon-x11-0 libxrandr2
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-desktop.txt
+
+      - name: Prepare and build
+        shell: bash
+        run: |
+          python scripts/prepare_desktop_web_assets.py
+          python -m PyInstaller --clean --noconfirm HistoAnnotatorDesktop.spec
+          "${{ matrix.executable }}" --self-test
+
+      - name: Preserve Shiboken directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = ".\dist\HistoAnnotatorDesktop\shiboken6\libshiboken"
+          if (!(Test-Path $runtime -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          }
+          New-Item -ItemType File -Force -Path (Join-Path $runtime ".histoannotator-keep") | Out-Null
+
+      - name: Archive Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path ".\dist\HistoAnnotatorDesktop" `
+            -DestinationPath ".\${{ matrix.archive }}" `
+            -CompressionLevel Optimal
+
+          New-Item -ItemType Directory -Force -Path ".\verify" | Out-Null
+          Expand-Archive ".\${{ matrix.archive }}" ".\verify"
+          & ".\verify\HistoAnnotatorDesktop\HistoAnnotatorDesktop.exe" --self-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "Extracted Windows self-test failed"
+          }
+
+      - name: Archive Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          tar -czf "${{ matrix.archive }}" -C dist HistoAnnotatorDesktop
+          rm -rf verify
+          mkdir verify
+          tar -xzf "${{ matrix.archive }}" -C verify
+          verify/HistoAnnotatorDesktop/HistoAnnotatorDesktop --self-test
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.label }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: android-app/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install dependencies
+        working-directory: android-app
+        run: npm ci
+
+      - name: Build generic Android assets
+        shell: bash
+        run: |
+          unset HISTOANNOTATOR_NATIVE_SERVER
+          rm -rf android-app/android/app/src/debug/res
+          bash scripts/build_android_web.sh
+
+      - name: Build APK
+        shell: bash
+        run: |
+          cd android-app
+          npx cap sync android
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Prepare APK
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp android-app/android/app/build/outputs/apk/debug/app-debug.apk \
+            release-assets/HistoAnnotator-v1.2.0-Android.apk
+          sha256sum release-assets/HistoAnnotator-v1.2.0-Android.apk \
+            > release-assets/HistoAnnotator-v1.2.0-Android.apk.sha256
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-release
+          path: release-assets/
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - desktop
+      - android
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd release-assets
+          find . -maxdepth 1 -type f \
+            ! -name SHA256SUMS.txt \
+            -printf '%f\n' \
+            | sort \
+            | xargs sha256sum \
+            > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            release-assets/* \
+            --verify-tag \
+            --title "HistoAnnotator v1.2.0" \
+            --notes-file RELEASE_NOTES_v1.2.0.md

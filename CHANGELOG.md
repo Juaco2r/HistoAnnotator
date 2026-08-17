@@ -1,62 +1,34 @@
 # Changelog
 
-## [1.1.0] - 2026-08-17
-
-### Added
-- Review Mode with per-class/all-annotation review queues, progress tracking, class reassignment, and geometry editing during review.
-- Review decisions: Correct, Maybe, Review Later, and Delete.
-- Resume behavior for partial reviews and an optional full re-review when a scope is already complete.
-- Automatic Review Mode exit 30 seconds after a completed review session.
-- Review-specific framing that shows only the current annotation and keeps at least a 1024 × 1024 level-0 pixel field of view for small annotations.
-- Annotation Statistics with per-class annotation count, geometric union area in px², and percentage of full image area.
-- Automatic physical calibration reading from OpenSlide, OME-TIFF, and TIFF resolution metadata.
-- On-screen physical scale bar and approximate digital magnification display.
-- Manual per-image calibration override for µm/px and source magnification.
-
-### Changed
-- Image Information now presents one symmetric resolution value in µm/px and separates source magnification from current approximate display magnification.
-- Scale-bar placement was adjusted to avoid overlap with synchronization/status information.
-
-### Notes
-- Manual calibration is stored locally per image/device and does not modify the source image.
-- The Android APK remains a debug-signed research/testing build and is not clinically validated.
-
-## [1.0.0] - Pre-release
-
-First public HistoAnnotator pre-release.
+## 1.2.0 - 2026-08-18
 
 ### Added
 
-- Capacitor Android application
-- Tablet-oriented annotation interface
-- Local-first offline image viewing
-- Offline annotation persistence and synchronization
-- Local geometry operations using polygon-clipping
-- GeoJSON sharing on Android
-- Improved QuPath GeoJSON import/export
-- Multi-object selection
-- Merge, intersection and subtraction
-- Circle annotation tool
-- Unified Brush behavior
-- Shift-assisted additive drawing and multi-selection
-- Portrait tablet layout improvements
-- Increased high-resolution zoom capability
-- Scientific multichannel TIFF fluorescence support
-- Per-channel visibility, false colors, Min/Max, gamma and brightness
-- Automatic fluorescence display ranges
-- OME channel-name support when metadata is available
+- Standalone HistoAnnotator Desktop for Windows, Linux and macOS.
+- Desktop local backend with independent image, annotation, cache and prepared
+  data directories.
+- Desktop LAN server mode with explicit address and QR code.
+- Android QR pairing from Connection settings.
+- Android runtime server selection without a private server IP embedded in the
+  public APK.
+- Android native HTTP transport for reliable remote API and tile requests.
+- Android local TIFF/image workflow with persistent local-image access.
+- Multi-platform Desktop GitHub Actions builds.
+- Bundled pyvips/libvips runtime for Desktop large-image preparation.
 
-### Changed
+### Improved
 
-- Application version standardized as 1.0.0
-- Android web assets are generated from the main frontend source
-- Display settings can persist per image
+- Large generic TIFF files are converted to a known tiled pyramidal TIFF before
+  Deep Zoom viewing.
+- Windows/Linux/macOS artifacts are archived before upload and validated after
+  extraction.
+- Generic Android APK supports trusted-LAN HTTP and Android user-installed CAs.
+- QuPath-compatible GeoJSON workflows, review mode, statistics, calibration and
+  image display controls remain available.
 
-### Known limitations
+### Security / scope
 
-- Research/testing pre-release; not clinically validated
-- No individual authentication or audit trail
-- Offline IF currently caches rendered display variants rather than raw channels
-- Some image-aware tools may require the backend while offline
-- Complex T/Z/C scientific datasets are not fully supported yet
-- Development APK is debug-signed
+- No deployment-specific server IP is committed to the public repository.
+- No institutional/private CA is included in the public release APK.
+- HistoAnnotator remains research software without individual authentication,
+  complete audit trails or clinical validation.

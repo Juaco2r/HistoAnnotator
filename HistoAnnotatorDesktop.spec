@@ -29,10 +29,12 @@ hiddenimports = [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
+    "_libvips",
 ]
 
 for package_name in (
     "openslide_bin",
+    "pyvips",
 ):
     package_datas, package_binaries, package_hidden = (
         collect_all(

@@ -45,7 +45,7 @@ from .server_control import (
     ServerController,
 )
 
-DESKTOP_VERSION = "1.2.0-dev7"
+DESKTOP_VERSION = "1.2.0-rc1"
 
 
 def project_root() -> Path:

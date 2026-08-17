@@ -1,136 +1,89 @@
-# HistoAnnotator Desktop
+# HistoAnnotator Desktop v1.2.0
 
-HistoAnnotator Desktop is an experimental desktop host for the existing
-HistoAnnotator backend and web interface.
+HistoAnnotator Desktop is a standalone host for the HistoAnnotator backend and
+web interface.
 
-## Desktop dev1b scope
+## Platforms
 
-The first packaged target is Windows x64.
-
-The Windows build is designed to be an independent HistoAnnotator session:
-
-- images are selected from a folder on the Windows computer;
-- annotations/cache/prepared data are stored on that Windows computer;
-- the embedded HistoAnnotator UI connects to `127.0.0.1`;
-- **Start Server** changes the backend binding to all network interfaces;
-- the panel displays an explicit LAN URL and a QR code;
-- Android or another browser can use that URL;
-- no automatic LAN discovery is implemented;
-- if **Keep server running...** is enabled, closing the Desktop window does
-  not stop the detached backend process;
-- reopening Desktop reconnects to the running backend.
-
-The current dev1b does **not** automatically start the backend after a Windows
-reboot. Boot persistence is a later milestone.
-
-## Windows data
-
-Default writable data directory:
-
-```text
-%USERPROFILE%\HistoAnnotatorData\
-├── annotations\
-├── cache\
-├── prepared\
-└── uploads\
-```
-
-The source image directory is chosen independently.
-
-## Windows firewall
-
-When Server mode first binds to the network, Windows may ask whether
-HistoAnnotator may communicate through the firewall. For a trusted local
-network test, allow it on **Private networks**.
-
-## Multiple adapters / VPN
-
-The app detects a likely local IPv4 address, but a Windows computer can have
-Wi-Fi, Ethernet, VPN and virtual adapters simultaneously. The address shown
-in the QR is therefore editable. Server mode still binds to all interfaces;
-the editable address only determines what is advertised/coded in the QR.
-
-## Build
-
-The workflow:
-
-```text
-.github/workflows/desktop-windows-dev.yml
-```
-
-builds a portable Windows x64 folder with PyInstaller and uploads it as a
-GitHub Actions artifact.
-
-The workflow runs automatically when `v1.2.0-local-mode` is pushed and
-Desktop/backend build inputs changed.
-
-The artifact is:
-
-```text
-HistoAnnotator-Desktop-Windows-x64-dev1b.zip
-```
-
-Extract the whole ZIP before running:
-
-```text
-HistoAnnotatorDesktop.exe
-```
-
-Do not move the EXE out of its extracted folder; Qt WebEngine and the Python
-runtime use the accompanying files.
-
-## First Windows test
-
-1. Extract the artifact.
-2. Run `HistoAnnotatorDesktop.exe`.
-3. Choose a Windows image folder.
-4. Confirm HistoAnnotator loads in the Desktop window.
-5. Open an image.
-6. Click **Start Server**.
-7. If Windows Firewall asks, allow **Private networks**.
-8. Confirm the LAN URL and QR are shown.
-9. Open the URL in a browser on the same reachable network.
-10. In Android HistoAnnotator, enter that URL manually in Connection settings.
-11. Confirm Android sees the Windows-hosted image list.
-12. Enable **Keep server running when HistoAnnotator Desktop closes**.
-13. Close the Desktop window.
-14. Verify the browser/Android connection still works.
-15. Reopen Desktop and confirm it reconnects.
-
-## Security
-
-The current HistoAnnotator research pre-release has no individual user
-authentication. Server mode should therefore be used only on a trusted
-LAN/VPN during development.
-
-
-## QR pairing
-
-When **Start Server** is enabled, HistoAnnotator Desktop shows the current LAN
-URL as both text and a QR code.
-
-On Android:
-
-1. Open **File → Connection settings**.
-2. Tap **Scan QR**.
-3. Point the camera at the QR shown by HistoAnnotator Desktop.
-4. HistoAnnotator validates `/api/images`, stores the server URL and loads the
-   remote image catalog automatically.
-
-The QR contains only the runtime LAN URL. No private IP is committed to the
-repository.
-
-The Android QR scanner uses the official Capacitor Barcode Scanner plugin.
-This raises the Android minimum SDK to 26 (Android 8.0).
-
-## Desktop build targets
-
-The development workflow builds portable PyInstaller artifacts for:
+Release builds are provided for:
 
 - Windows x64
 - Linux x64
 - macOS Apple Silicon
 - macOS Intel
 
-macOS artifacts are currently unsigned development builds. Signing and
-notarization can be added for a later public release.
+macOS builds are currently unsigned research builds.
+
+## First start
+
+1. Extract the entire archive.
+2. Start `HistoAnnotatorDesktop`.
+3. Choose the folder containing your images.
+4. Choose the writable data folder if you do not want the default.
+5. HistoAnnotator starts a private local backend on `127.0.0.1`.
+
+Do not move only the executable out of the extracted directory. Qt, OpenSlide,
+libvips and the Python runtime use accompanying files.
+
+## Large TIFF preparation
+
+Large generic TIFF files may need preparation before Deep Zoom viewing.
+
+v1.2.0 bundles `pyvips/libvips` inside Desktop builds. Generic TIFF images that
+OpenSlide identifies only as `generic-tiff` are converted to a tiled pyramidal
+TIFF in the Desktop data directory before viewing. The source file is never
+modified.
+
+The first preparation can take several minutes for multi-gigabyte images.
+Prepared files are reused on later openings.
+
+## Data directory
+
+The Desktop data directory contains:
+
+```text
+annotations/
+cache/
+prepared/
+uploads/
+```
+
+Source images stay in the image folder you selected.
+
+## Share with Android/browser
+
+Press **Start Server**.
+
+Desktop binds the backend to the LAN and displays an explicit URL plus QR code.
+
+On Android:
+
+```text
+File → Connection settings → Scan QR
+```
+
+The Android app validates `/api/images`, saves the server URL and loads the
+image catalog.
+
+If Windows Firewall asks, allow HistoAnnotator on **Private networks** only
+when using a trusted LAN.
+
+## Multiple network adapters
+
+The advertised address is editable. This is useful when the computer has
+Wi-Fi, Ethernet, VPN or virtual adapters. The QR uses the address shown in the
+Desktop panel.
+
+## Security
+
+HistoAnnotator v1.2.0 is research software and currently has no individual
+authentication or complete audit trail. Use Desktop server mode only on a
+trusted LAN/VPN.
+
+## Troubleshooting
+
+If an image cannot be prepared, confirm you are using the complete extracted
+release archive. v1.2.0 includes its own pyvips/libvips runtime.
+
+If tile requests fail, restart HistoAnnotator Desktop and retry the image after
+preparation completes.
