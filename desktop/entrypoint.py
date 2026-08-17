@@ -69,6 +69,8 @@ def self_test() -> int:
 
     import openslide
     import app.main as backend
+    import desktop.server_runner as server_runner
+    import desktop.desktop_app as desktop_app
 
     static_dir = (
         Path(backend.__file__)
@@ -94,6 +96,10 @@ def self_test() -> int:
             ),
         "backend_title":
             backend.app.title,
+        "desktop_import":
+            callable(desktop_app.run_desktop),
+        "server_import":
+            callable(server_runner.run_server),
         "static_index":
             (
                 static_dir
@@ -114,6 +120,12 @@ def self_test() -> int:
 
     if not result["static_index"]:
         return 3
+
+    if not result["desktop_import"]:
+        return 4
+
+    if not result["server_import"]:
+        return 5
 
     return 0
 
@@ -139,7 +151,7 @@ def main() -> int:
         return self_test()
 
     if args.server_runtime:
-        from .server_runner import (
+        from desktop.server_runner import (
             run_server,
         )
 
@@ -147,7 +159,7 @@ def main() -> int:
             args.server_runtime
         )
 
-    from .desktop_app import (
+    from desktop.desktop_app import (
         run_desktop,
     )
 
