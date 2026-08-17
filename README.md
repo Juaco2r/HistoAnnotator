@@ -2,16 +2,16 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21941344.svg)](https://doi.org/10.5281/zenodo.21941344)
 
-HistoAnnotator is a web and Android application for interactive annotation
+HistoAnnotator is a web, Android and desktop application for interactive annotation
 of histology and microscopy images.
 
 It is designed for research workflows involving whole-slide images,
 standard raster images, scientific multichannel fluorescence TIFF files,
 and QuPath-compatible GeoJSON annotations.
 
-> **Pre-release software**
+> **Research software**
 >
-> HistoAnnotator v1.0.0 is intended for research and testing.
+> HistoAnnotator v1.2.0 is a public research-software release intended for research and testing.
 > It is not clinically validated medical software and currently does not
 > provide individual authentication, audit trails, or regulatory controls.
 
@@ -53,7 +53,7 @@ not modified.
 
 OME metadata and channel names are used when available.
 
-The initial v1.0 implementation primarily supports three-dimensional
+The current multichannel implementation primarily supports three-dimensional
 multichannel TIFF datasets with spatial Y/X axes and 2-16 channels.
 
 Some non-OME TIFF files may expose a small leading dimension as Z even when
@@ -62,6 +62,24 @@ that leading axis as channels when the image is explicitly configured as
 **Fluorescence**.
 
 See [Multichannel fluorescence](docs/MULTICHANNEL_IF.md).
+
+## Download v1.2.0
+
+The GitHub v1.2.0 release provides:
+
+- `HistoAnnotator-v1.2.0-Windows-x64.zip`
+- `HistoAnnotator-v1.2.0-Linux-x64.tar.gz`
+- `HistoAnnotator-v1.2.0-macOS-AppleSilicon.tar.gz`
+- `HistoAnnotator-v1.2.0-macOS-Intel.tar.gz`
+- `HistoAnnotator-v1.2.0-Android.apk`
+- `SHA256SUMS.txt`
+
+Windows and Linux Desktop builds were manually tested in the v1.2.0 release
+candidate. macOS builds are produced and packaged-self-tested in CI but remain
+unsigned. The Android APK is a debug-signed research/testing build.
+
+For local standalone use, Desktop is the simplest option. Docker remains
+available for server/browser deployments.
 
 ## Quick start with Docker
 
@@ -132,40 +150,59 @@ Images, annotations and cache data remain in the local `data/` directory.
 For detailed configuration see
 [Installation](docs/INSTALLATION.md).
 
-## Android
+## Desktop
 
-The Android application is built using Capacitor.
+HistoAnnotator v1.2.0 provides standalone Desktop builds for Windows, Linux,
+and macOS.
 
-The backend address is intentionally not stored in the public source code.
-It must be supplied when generating Android web assets:
+Desktop mode runs its own local HistoAnnotator backend. Choose an image folder,
+then optionally press **Start Server** to share that session over a trusted
+LAN/VPN. The panel shows the LAN URL and a QR code.
 
-```bash
-HISTOANNOTATOR_NATIVE_SERVER="https://your-server.example/annotator" \
-  bash scripts/build_android_web.sh
-```
-
-Install the JavaScript dependencies and synchronize Capacitor:
-
-```bash
-cd android-app
-npm ci
-npx cap sync android
-```
-
-Build a development APK:
-
-```bash
-cd android
-./gradlew assembleDebug
-```
-
-The APK is generated at:
+On Android use:
 
 ```text
-android-app/android/app/build/outputs/apk/debug/app-debug.apk
+File → Connection settings → Scan QR
 ```
 
-See [Android build](docs/ANDROID.md).
+Large generic TIFF files are prepared with the bundled pyvips/libvips runtime
+before Deep Zoom viewing.
+
+Release assets:
+
+- `HistoAnnotator-v1.2.0-Windows-x64.zip`
+- `HistoAnnotator-v1.2.0-Linux-x64.tar.gz`
+- `HistoAnnotator-v1.2.0-macOS-AppleSilicon.tar.gz`
+- `HistoAnnotator-v1.2.0-macOS-Intel.tar.gz`
+
+See [Desktop](docs/DESKTOP.md).
+
+## Android
+
+HistoAnnotator v1.2.0 uses a generic Android APK: no private server address is
+embedded in the public build.
+
+After installing the APK, open:
+
+```text
+File → Connection settings
+```
+
+Enter an `http://` or `https://` server URL manually, or use **Scan QR** with a
+HistoAnnotator Desktop server.
+
+The generic APK supports trusted-LAN HTTP for Desktop server mode and trusts
+Android system/user certificate authorities. Institutional/private CA files are
+never committed to the public repository.
+
+Release asset:
+
+```text
+HistoAnnotator-v1.2.0-Android.apk
+```
+
+For local development and optional institutional CA configuration see
+[Android build](docs/ANDROID.md).
 
 ## QuPath interoperability
 
@@ -180,7 +217,7 @@ including annotation classification information.
 Downloaded images can be opened using locally cached tiles and annotations.
 Local changes can later synchronize with the server.
 
-The initial v1.0 multichannel fluorescence implementation caches rendered
+The current multichannel fluorescence implementation caches rendered
 display variants. It does not yet download every raw scientific channel
 for unrestricted offline recomposition.
 
@@ -191,6 +228,7 @@ See [Offline mode](docs/OFFLINE_MODE.md).
 - [Installation](docs/INSTALLATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Android](docs/ANDROID.md)
+- [Desktop](docs/DESKTOP.md)
 - [Offline mode](docs/OFFLINE_MODE.md)
 - [Multichannel fluorescence](docs/MULTICHANNEL_IF.md)
 - [Annotation tools](docs/ANNOTATION_TOOLS.md)
@@ -215,7 +253,7 @@ security and ethics requirements of the institution using it.
 
 ## Current limitations
 
-HistoAnnotator v1.0.0 is a research/testing pre-release.
+HistoAnnotator v1.2.0 is research software.
 
 Current limitations include:
 
@@ -229,7 +267,7 @@ Current limitations include:
 
 ## Project status
 
-**v1.0.0** is the first public pre-release of HistoAnnotator.
+**v1.2.0** adds Android local-image mode, runtime server pairing, QR pairing, and standalone Desktop builds.
 
-The Android APK distributed with this pre-release is provided for research,
+The Android APK distributed with this release is provided for research,
 development and testing purposes.

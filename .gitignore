@@ -10,6 +10,8 @@
 # Certificates / signing keys
 *.key
 *.pem
+*.crt
+*.cer
 *.p12
 *.pfx
 *.jks
@@ -74,3 +76,12 @@ android-app/android/app/src/main/assets/public/
 
 # Local Android deployment overlay (private CA / environment-specific trust)
 android-app/android/app/src/debug/res/
+
+# HistoAnnotator Desktop development environment
+.venv-desktop/
+/build/
+/dist/
+
+# Local Python virtual environments used by packaging/tests
+.venv*/
+venv*/

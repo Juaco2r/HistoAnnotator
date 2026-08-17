@@ -1,6 +1,6 @@
 {
   "name": "android-app",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -11,11 +11,13 @@
   "license": "ISC",
   "dependencies": {
     "@capacitor/android": "^8.5.0",
+    "@capacitor/barcode-scanner": "3.1.0",
     "@capacitor/core": "^8.5.0",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/network": "^8.0.1",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/share": "^8.0.1",
+    "geotiff": "3.0.5",
     "openseadragon": "^6.0.2",
     "polygon-clipping": "^0.15.7"
   },

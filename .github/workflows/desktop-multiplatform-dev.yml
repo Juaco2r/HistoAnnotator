@@ -1,0 +1,170 @@
+name: Desktop RC Build
+
+on:
+  push:
+    branches:
+      - v1.2.0-local-mode
+    paths:
+      - "app/**"
+      - "desktop/**"
+      - "requirements.txt"
+      - "requirements-desktop.txt"
+      - "HistoAnnotatorDesktop.spec"
+      - "scripts/prepare_desktop_web_assets.py"
+      - ".github/workflows/desktop-multiplatform-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-rc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x64
+            archive: HistoAnnotator-v1.2.0-rc1-Windows-x64.zip
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop.exe
+
+          - os: ubuntu-latest
+            label: Linux x64
+            archive: HistoAnnotator-v1.2.0-rc1-Linux-x64.tar.gz
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
+
+          - os: macos-latest
+            label: macOS Apple Silicon
+            archive: HistoAnnotator-v1.2.0-rc1-macOS-AppleSilicon.tar.gz
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
+
+          - os: macos-15-intel
+            label: macOS Intel
+            archive: HistoAnnotator-v1.2.0-rc1-macOS-Intel.tar.gz
+            executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Linux GUI runtime libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2t64 libdbus-1-3 libegl1 libgl1 libnss3 \
+            libxcomposite1 libxdamage1 libxkbcommon-x11-0 libxrandr2
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-desktop.txt
+          python - <<'PY'
+          import pyvips
+          print("pyvips:", pyvips.__version__)
+          print("libvips:", pyvips.version(0), pyvips.version(1), pyvips.version(2))
+          PY
+
+      - name: Prepare assets
+        shell: bash
+        run: |
+          python scripts/prepare_desktop_web_assets.py
+          test -f app/static/vendor/openseadragon/openseadragon.min.js
+
+      - name: Build
+        shell: bash
+        run: |
+          python -m PyInstaller --clean --noconfirm HistoAnnotatorDesktop.spec
+
+      - name: Frozen self-test
+        shell: bash
+        run: |
+          "${{ matrix.executable }}" --self-test
+
+      - name: Preserve required Shiboken directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = ".\dist\HistoAnnotatorDesktop\shiboken6\libshiboken"
+          if (!(Test-Path $runtime -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          }
+          New-Item -ItemType File -Force -Path (Join-Path $runtime ".histoannotator-keep") | Out-Null
+
+      - name: Archive Windows and re-test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path ".\dist\HistoAnnotatorDesktop" `
+            -DestinationPath ".\${{ matrix.archive }}" `
+            -CompressionLevel Optimal
+
+          New-Item -ItemType Directory -Force -Path ".\verify" | Out-Null
+          Expand-Archive ".\${{ matrix.archive }}" ".\verify"
+
+          $runtime = ".\verify\HistoAnnotatorDesktop\shiboken6\libshiboken"
+          if (!(Test-Path $runtime -PathType Container)) {
+            throw "libshiboken directory lost from archive"
+          }
+
+          $exe = ".\verify\HistoAnnotatorDesktop\HistoAnnotatorDesktop.exe"
+          $stdout = ".\verify\windows-self-test.stdout.txt"
+          $stderr = ".\verify\windows-self-test.stderr.txt"
+
+          $process = Start-Process `
+            -FilePath $exe `
+            -ArgumentList "--self-test" `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+
+          if (Test-Path $stdout) {
+            Get-Content $stdout
+          }
+          if (Test-Path $stderr) {
+            Get-Content $stderr
+          }
+
+          Write-Host "Extracted Windows self-test exit code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+            throw "Extracted Windows self-test failed with exit code $($process.ExitCode)"
+          }
+
+      - name: Archive Unix and re-test
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          tar -czf "${{ matrix.archive }}" -C dist HistoAnnotatorDesktop
+          rm -rf verify
+          mkdir verify
+          tar -xzf "${{ matrix.archive }}" -C verify
+          verify/HistoAnnotatorDesktop/HistoAnnotatorDesktop --self-test
+
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ matrix.archive }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
