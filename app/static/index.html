@@ -74,6 +74,15 @@
         <p id="displayHint" class="display-hint">Image display only. Annotations and original pixels are unchanged.</p>
       </div>
     </div>
+    <div class="phase-b-settings-menu">
+      <button id="phaseBSettingsButton" class="top-icon-button" type="button"
+              title="Settings" aria-label="Settings"
+              aria-expanded="false">⚙</button>
+      <div id="phaseBSettingsPanel" class="phase-b-settings-panel" hidden>
+        <button id="phaseBFocusMenuButton" class="menu-item" type="button">Focus Mode</button>
+        <button id="phaseBShortcutsMenuButton" class="menu-item" type="button">Keyboard shortcuts</button>
+      </div>
+    </div>
 
   </header>
 
@@ -87,20 +96,7 @@
         <input id="brushSize" type="range" min="12" max="100" step="2" value="42">
         <output id="brushSizeValue" for="brushSize">42 px</output>
       </div>
-      <button class="tool" data-mode="wand" type="button">Wand</button>
-      <div id="wandControls" class="wand-controls" hidden>
-        <label for="wandTolerance">Similarity</label>
-        <input id="wandTolerance" type="range" min="6" max="100" step="2" value="38">
-        <output id="wandToleranceValue" for="wandTolerance">38</output>
-        <label for="wandRadius">Search area</label>
-        <input id="wandRadius" type="range" min="70" max="260" step="10" value="150">
-        <output id="wandRadiusValue" for="wandRadius">150 px</output>
-        <label for="wandMetric">Compare</label>
-        <select id="wandMetric">
-          <option value="color">Visible color</option>
-          <option value="brightness">Brightness</option>
-        </select>
-      </div>
+
       <button class="tool" data-mode="polygon" type="button">Polygon</button>
       <button class="tool" data-mode="rectangle" type="button">Rectangle</button>
       <button class="tool" data-mode="circle" type="button">Circle</button>
@@ -114,6 +110,21 @@
         <input id="circleWidthScale" type="range" min="40" max="220" step="5" value="100">
         <label for="circleHeightScale">Height <output id="circleHeightValue">100%</output></label>
         <input id="circleHeightScale" type="range" min="40" max="220" step="5" value="100">
+      </div>
+      <!-- data-phase-b-order="1" -->
+      <button class="tool" data-mode="wand" type="button">Wand</button>
+      <div id="wandControls" class="wand-controls" hidden>
+        <label for="wandTolerance">Similarity</label>
+        <input id="wandTolerance" type="range" min="6" max="100" step="2" value="38">
+        <output id="wandToleranceValue" for="wandTolerance">38</output>
+        <label for="wandRadius">Search area</label>
+        <input id="wandRadius" type="range" min="70" max="260" step="10" value="150">
+        <output id="wandRadiusValue" for="wandRadius">150 px</output>
+        <label for="wandMetric">Compare</label>
+        <select id="wandMetric">
+          <option value="color">Visible color</option>
+          <option value="brightness">Brightness</option>
+        </select>
       </div>
       <button class="tool" data-mode="select" type="button">Select</button>
       <div id="editOperationControls" class="edit-operation-controls" hidden>
@@ -130,6 +141,14 @@
     </aside>
 
     <section class="viewer-shell">
+      <div id="phaseBFocusControls" class="phase-b-focus-controls" hidden>
+        <div class="phase-b-focus-class-wrap">
+          <button id="phaseBFocusClassesButton" class="phase-b-focus-button" type="button"
+                  aria-expanded="false">Classes ▾</button>
+          <div id="phaseBFocusClassStrip" class="phase-b-focus-class-strip" hidden></div>
+        </div>
+        <button id="phaseBExitFocusButton" class="phase-b-focus-button" type="button">Exit</button>
+      </div>
       <div id="viewer"></div>
       <canvas id="annotationCanvas" aria-label="Annotation layer"></canvas>
       <div id="emptyMessage" class="empty-message">Select an image</div>
@@ -158,6 +177,9 @@
         <button id="intersectSelection" type="button" hidden>Intersect</button>
         <button id="subtractSelection" type="button" hidden>Subtract</button>
         <button id="clearSelection" type="button">Clear</button>
+      </div>
+      <div id="phaseBRectangleAction" class="context-actions phase-b-rectangle-action" hidden>
+        <button id="phaseBRectangleInfoButton" type="button">ⓘ Rectangle</button>
       </div>
       <div id="reviewDecisionBar" class="context-actions review-decision-bar" hidden>
         <button id="reviewCorrectButton" class="review-correct" type="button">✓ Correct</button>
@@ -379,6 +401,31 @@
       <button id="closeInfoButton" type="button">Close</button>
     </section>
   </div>
+  <div id="phaseBShortcutOverlay" class="modal-overlay" hidden>
+    <section class="modal-card phase-b-shortcut-card" role="dialog" aria-modal="true">
+      <h2>Keyboard shortcuts</h2>
+      <p class="modal-note">Choose an action, then press a new key. Backspace clears it. Duplicate shortcuts are blocked.</p>
+      <div id="phaseBShortcutList" class="phase-b-shortcut-list"></div>
+      <p id="phaseBShortcutMessage" class="phase-b-shortcut-message" aria-live="polite"></p>
+      <div class="modal-actions">
+        <button id="phaseBResetShortcutsButton" type="button">Reset defaults</button>
+        <button id="phaseBCloseShortcutsButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="phaseBRectangleOverlay" class="modal-overlay" hidden>
+    <section class="modal-card phase-b-rectangle-card" role="dialog" aria-modal="true">
+      <h2>Rectangle geometry</h2>
+      <div id="phaseBRectangleContent" class="phase-b-rectangle-grid"></div>
+      <p class="modal-note">Level-0 image coordinates.</p>
+      <div class="modal-actions">
+        <button id="phaseBCloseRectangleButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
+
 
   <script src="./static/app.js?v=1.2.0"></script>
 </body>

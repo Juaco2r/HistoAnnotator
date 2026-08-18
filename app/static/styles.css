@@ -1007,3 +1007,165 @@ html {
   flex-wrap: wrap;
   flex: 0 0 auto;
 }
+
+/* ==========================================================================
+   Phase B — Interaction
+   ========================================================================== */
+.phase-b-settings-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+.phase-b-settings-panel {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 160;
+  min-width: 205px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111a2a;
+  box-shadow: 0 14px 38px rgba(0,0,0,.45);
+}
+.phase-b-focus-controls {
+  position: absolute;
+  z-index: 90;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  right: max(10px, env(safe-area-inset-right));
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+}
+.phase-b-focus-controls > * { pointer-events: auto; }
+.phase-b-focus-class-wrap {
+  min-width: 0;
+  max-width: calc(100vw - 92px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+.phase-b-focus-button {
+  min-height: 36px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  background: rgba(17, 26, 42, .90);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 18px rgba(0,0,0,.30);
+}
+.phase-b-focus-class-strip {
+  max-width: min(82vw, 900px);
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  scrollbar-width: thin;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(17, 26, 42, .93);
+  box-shadow: 0 8px 24px rgba(0,0,0,.34);
+}
+.phase-b-focus-class {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.phase-b-focus-class.active { outline: 2px solid var(--accent); }
+.phase-b-focus-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+body.phase-b-focus-mode .topbar { display: none !important; }
+body.phase-b-focus-mode #workspace {
+  display: block !important;
+  height: 100vh !important;
+}
+body.phase-b-focus-mode #workspace > *:not(.viewer-shell) {
+  display: none !important;
+}
+body.phase-b-focus-mode .viewer-shell {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-width: 0 !important;
+}
+body.phase-b-focus-mode .input-guide { display: none !important; }
+
+.phase-b-shortcut-card {
+  width: min(620px, calc(100vw - 28px));
+}
+.phase-b-shortcut-list {
+  display: grid;
+  gap: 6px;
+  max-height: min(62vh, 560px);
+  overflow-y: auto;
+  margin: 14px 0;
+}
+.phase-b-shortcut-group {
+  padding: 9px 8px 2px;
+  color: var(--accent);
+}
+.phase-b-shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.phase-b-shortcut-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.phase-b-shortcut-label small { color: var(--muted); }
+.phase-b-shortcut-key {
+  min-width: 90px;
+  min-height: 36px;
+}
+.phase-b-shortcut-key.capturing { outline: 2px solid var(--accent); }
+.phase-b-shortcut-message {
+  min-height: 1.2em;
+  color: var(--muted);
+}
+.phase-b-shortcut-message.error { color: var(--danger); }
+
+.phase-b-rectangle-action {
+  left: auto;
+  right: 14px;
+  bottom: 66px;
+}
+.phase-b-rectangle-grid {
+  display: grid;
+  grid-template-columns: auto minmax(120px,1fr);
+  gap: 10px 18px;
+  margin: 14px 0;
+}
+.phase-b-rectangle-grid span { color: var(--muted); }
+.phase-b-rectangle-grid strong {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 760px) {
+  .phase-b-focus-class-strip {
+    max-width: calc(100vw - 92px);
+  }
+  .phase-b-shortcut-row {
+    grid-template-columns: minmax(0,1fr) 84px;
+  }
+  .phase-b-shortcut-key {
+    min-width: 80px;
+  }
+}
+

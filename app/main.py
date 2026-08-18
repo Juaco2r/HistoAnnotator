@@ -2736,8 +2736,9 @@ def select_geometries(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             continue
         if geometry.is_empty:
             continue
-        # covers() includes objects whose boundary touches the selection lasso.
-        if region.covers(geometry):
+        # Select annotations with any geometric intersection, including
+        # partial overlap and boundary contact.
+        if region.intersects(geometry):
             ids.append(str(item.get("id", "")))
     return {"ids": ids}
 

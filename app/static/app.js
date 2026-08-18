@@ -6036,6 +6036,609 @@
     return true;
   }
 
+
+  // ========================================================================
+  // Phase B — compact Settings, Focus Mode, shortcuts, rectangle information.
+  // ========================================================================
+  let phaseBFocusActive = false;
+  let phaseBShortcutCapture = null;
+
+  const PHASE_B_SHORTCUT_STORAGE = "histoannotator.shortcuts.v1";
+  const PHASE_B_SHORTCUT_ACTIONS = [
+    { id: "tool.navigate", label: "Move", group: "Tools", defaultKey: "1" },
+    { id: "tool.freehand", label: "Freehand", group: "Tools", defaultKey: "2" },
+    { id: "tool.brush", label: "Brush", group: "Tools", defaultKey: "3" },
+    { id: "tool.polygon", label: "Polygon", group: "Tools", defaultKey: "4" },
+    { id: "tool.rectangle", label: "Rectangle", group: "Tools", defaultKey: "5" },
+    { id: "tool.circle", label: "Circle", group: "Tools", defaultKey: "6" },
+    { id: "tool.wand", label: "Wand", group: "Tools", defaultKey: "7" },
+    { id: "tool.select", label: "Select", group: "Tools", defaultKey: "8" },
+    { id: "review.correct", label: "Correct", group: "Review Mode", defaultKey: "Z" },
+    { id: "review.maybe", label: "Maybe", group: "Review Mode", defaultKey: "X" },
+    { id: "review.later", label: "Review later", group: "Review Mode", defaultKey: "C" },
+    { id: "review.delete", label: "Delete", group: "Review Mode", defaultKey: "V" },
+    { id: "general.escape", label: "Exit / cancel", group: "General", defaultKey: "Escape" },
+    { id: "polygon.finish", label: "Finish Polygon", group: "General", defaultKey: "Enter" },
+    { id: "focus.toggle", label: "Toggle Focus Mode", group: "General", defaultKey: "" },
+  ];
+
+  function phaseBRefs() {
+    return {
+      settingsButton: document.getElementById("phaseBSettingsButton"),
+      settingsPanel: document.getElementById("phaseBSettingsPanel"),
+      focusMenuButton: document.getElementById("phaseBFocusMenuButton"),
+      shortcutsMenuButton: document.getElementById("phaseBShortcutsMenuButton"),
+      focusControls: document.getElementById("phaseBFocusControls"),
+      focusClassesButton: document.getElementById("phaseBFocusClassesButton"),
+      focusClassStrip: document.getElementById("phaseBFocusClassStrip"),
+      exitFocusButton: document.getElementById("phaseBExitFocusButton"),
+      shortcutOverlay: document.getElementById("phaseBShortcutOverlay"),
+      shortcutList: document.getElementById("phaseBShortcutList"),
+      shortcutMessage: document.getElementById("phaseBShortcutMessage"),
+      resetShortcutsButton: document.getElementById("phaseBResetShortcutsButton"),
+      closeShortcutsButton: document.getElementById("phaseBCloseShortcutsButton"),
+      rectangleAction: document.getElementById("phaseBRectangleAction"),
+      rectangleInfoButton: document.getElementById("phaseBRectangleInfoButton"),
+      rectangleOverlay: document.getElementById("phaseBRectangleOverlay"),
+      rectangleContent: document.getElementById("phaseBRectangleContent"),
+      closeRectangleButton: document.getElementById("phaseBCloseRectangleButton"),
+    };
+  }
+
+  function phaseBShortcutDefaults() {
+    return Object.fromEntries(
+      PHASE_B_SHORTCUT_ACTIONS.map((action) => [action.id, action.defaultKey])
+    );
+  }
+
+  function phaseBLoadShortcutBindings() {
+    const result = phaseBShortcutDefaults();
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem(PHASE_B_SHORTCUT_STORAGE) || "{}"
+      );
+      if (saved && typeof saved === "object") {
+        for (const action of PHASE_B_SHORTCUT_ACTIONS) {
+          if (typeof saved[action.id] === "string") {
+            result[action.id] = saved[action.id];
+          }
+        }
+      }
+    } catch (_) { /* defaults */ }
+    return result;
+  }
+
+  let phaseBShortcutBindings = phaseBLoadShortcutBindings();
+
+  function phaseBSaveShortcutBindings() {
+    localStorage.setItem(
+      PHASE_B_SHORTCUT_STORAGE,
+      JSON.stringify(phaseBShortcutBindings)
+    );
+  }
+
+  function phaseBNormalizeKey(event) {
+    let key = String(event.key || "");
+    if (!key) return "";
+    if (key.length === 1) key = key.toUpperCase();
+    if (key === "Esc") key = "Escape";
+    if (key === " ") key = "Space";
+
+    const modifiers = [];
+    if (event.ctrlKey) modifiers.push("Ctrl");
+    if (event.altKey) modifiers.push("Alt");
+    if (event.metaKey) modifiers.push("Meta");
+    if (event.shiftKey && key.length > 1) modifiers.push("Shift");
+    return [...modifiers, key].join("+");
+  }
+
+  function phaseBTypingTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest("input, textarea, select, [contenteditable='true']")
+    );
+  }
+
+  function phaseBActionForKey(key) {
+    if (!key) return null;
+    return PHASE_B_SHORTCUT_ACTIONS.find(
+      (action) => phaseBShortcutBindings[action.id] === key
+    ) || null;
+  }
+
+  function phaseBSetShortcutMessage(message = "", error = false) {
+    const refs = phaseBRefs();
+    if (!refs.shortcutMessage) return;
+    refs.shortcutMessage.textContent = message;
+    refs.shortcutMessage.classList.toggle("error", Boolean(error));
+  }
+
+  function phaseBRenderShortcutSettings() {
+    const refs = phaseBRefs();
+    if (!refs.shortcutList) return;
+
+    refs.shortcutList.innerHTML = "";
+    let group = null;
+
+    for (const action of PHASE_B_SHORTCUT_ACTIONS) {
+      if (action.group !== group) {
+        group = action.group;
+        const heading = document.createElement("strong");
+        heading.className = "phase-b-shortcut-group";
+        heading.textContent = group;
+        refs.shortcutList.append(heading);
+      }
+
+      const row = document.createElement("div");
+      row.className = "phase-b-shortcut-row";
+
+      const label = document.createElement("div");
+      label.className = "phase-b-shortcut-label";
+
+      const title = document.createElement("strong");
+      title.textContent = action.label;
+
+      const id = document.createElement("small");
+      id.textContent = action.id;
+
+      label.append(title, id);
+
+      const keyButton = document.createElement("button");
+      keyButton.type = "button";
+      keyButton.className = "phase-b-shortcut-key";
+      keyButton.textContent = phaseBShortcutBindings[action.id] || "—";
+
+      if (phaseBShortcutCapture === action.id) {
+        keyButton.classList.add("capturing");
+      }
+
+      keyButton.addEventListener("click", () => {
+        phaseBShortcutCapture = action.id;
+        phaseBSetShortcutMessage(
+          `Press a key for ${action.label}. Backspace clears it.`
+        );
+        phaseBRenderShortcutSettings();
+      });
+
+      row.append(label, keyButton);
+      refs.shortcutList.append(row);
+    }
+  }
+
+  function phaseBOpenShortcutSettings() {
+    const refs = phaseBRefs();
+    phaseBShortcutCapture = null;
+    phaseBSetShortcutMessage("");
+    phaseBRenderShortcutSettings();
+    if (refs.shortcutOverlay) refs.shortcutOverlay.hidden = false;
+  }
+
+  function phaseBCloseShortcutSettings() {
+    const refs = phaseBRefs();
+    phaseBShortcutCapture = null;
+    if (refs.shortcutOverlay) refs.shortcutOverlay.hidden = true;
+    phaseBSetShortcutMessage("");
+  }
+
+  function phaseBCaptureShortcut(event) {
+    if (!phaseBShortcutCapture) return false;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Backspace" || event.key === "Delete") {
+      phaseBShortcutBindings[phaseBShortcutCapture] = "";
+      phaseBSaveShortcutBindings();
+      phaseBShortcutCapture = null;
+      phaseBSetShortcutMessage("Shortcut cleared.");
+      phaseBRenderShortcutSettings();
+      return true;
+    }
+
+    if (event.key === "Escape") {
+      phaseBShortcutCapture = null;
+      phaseBSetShortcutMessage("Shortcut change cancelled.");
+      phaseBRenderShortcutSettings();
+      return true;
+    }
+
+    const key = phaseBNormalizeKey(event);
+    if (!key) return true;
+
+    const conflict = PHASE_B_SHORTCUT_ACTIONS.find(
+      (action) =>
+        action.id !== phaseBShortcutCapture
+        && phaseBShortcutBindings[action.id] === key
+    );
+
+    if (conflict) {
+      phaseBSetShortcutMessage(
+        `${key} is already assigned to ${conflict.label}.`,
+        true
+      );
+      return true;
+    }
+
+    const actionId = phaseBShortcutCapture;
+    phaseBShortcutBindings[actionId] = key;
+    phaseBSaveShortcutBindings();
+    phaseBShortcutCapture = null;
+
+    const action = PHASE_B_SHORTCUT_ACTIONS.find(
+      (item) => item.id === actionId
+    );
+    phaseBSetShortcutMessage(`${action?.label || "Action"} → ${key}`);
+    phaseBRenderShortcutSettings();
+    return true;
+  }
+
+  function phaseBToggleSettings(force = null) {
+    const refs = phaseBRefs();
+    if (!refs.settingsButton || !refs.settingsPanel) return;
+
+    const open =
+      force === null
+        ? refs.settingsPanel.hidden
+        : Boolean(force);
+
+    refs.settingsPanel.hidden = !open;
+    refs.settingsButton.setAttribute("aria-expanded", String(open));
+  }
+
+  function phaseBRenderFocusClasses() {
+    const refs = phaseBRefs();
+    if (!refs.focusClassStrip) return;
+
+    refs.focusClassStrip.innerHTML = "";
+    const regularButtons =
+      [...document.querySelectorAll("#classList .class-main")];
+
+    classes.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "phase-b-focus-class";
+
+      if (regularButtons[index]?.classList.contains("active")) {
+        button.classList.add("active");
+      }
+
+      const dot = document.createElement("span");
+      dot.className = "phase-b-focus-dot";
+      dot.style.background = item.color;
+
+      const label = document.createElement("span");
+      label.textContent = item.name;
+
+      button.append(dot, label);
+      button.addEventListener("click", () => {
+        regularButtons[index]?.click();
+        phaseBRenderFocusClasses();
+      });
+      refs.focusClassStrip.append(button);
+    });
+  }
+
+  function phaseBSetFocusClassesOpen(open) {
+    const refs = phaseBRefs();
+    if (!refs.focusClassesButton || !refs.focusClassStrip) return;
+
+    refs.focusClassStrip.hidden = !open;
+    refs.focusClassesButton.setAttribute("aria-expanded", String(open));
+    refs.focusClassesButton.textContent = open ? "Classes ▴" : "Classes ▾";
+
+    if (open) phaseBRenderFocusClasses();
+  }
+
+  function phaseBSetFocusMode(active) {
+    const refs = phaseBRefs();
+
+    phaseBFocusActive = Boolean(active);
+    document.body.classList.toggle("phase-b-focus-mode", phaseBFocusActive);
+
+    if (refs.focusControls) refs.focusControls.hidden = !phaseBFocusActive;
+    if (refs.focusMenuButton) {
+      refs.focusMenuButton.textContent =
+        phaseBFocusActive ? "Exit Focus Mode" : "Focus Mode";
+    }
+
+    phaseBToggleSettings(false);
+    phaseBSetFocusClassesOpen(false);
+    if (phaseBFocusActive) phaseBRenderFocusClasses();
+
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new Event("resize"));
+      drawAnnotations();
+    });
+  }
+
+  function phaseBRectangleBounds(feature) {
+    const geometry = feature?.geometry;
+    if (
+      !geometry
+      || geometry.type !== "Polygon"
+      || !Array.isArray(geometry.coordinates)
+      || geometry.coordinates.length !== 1
+    ) return null;
+
+    let points = (geometry.coordinates[0] || []).map((point) => [
+      Number(point?.[0]),
+      Number(point?.[1]),
+    ]);
+
+    if (
+      points.length === 5
+      && Math.hypot(
+        points[0][0] - points[4][0],
+        points[0][1] - points[4][1]
+      ) < 1e-6
+    ) {
+      points = points.slice(0, -1);
+    }
+
+    if (
+      points.length !== 4
+      || points.some((p) => !Number.isFinite(p[0]) || !Number.isFinite(p[1]))
+    ) return null;
+
+    const vectors = [];
+    for (let i = 0; i < 4; i += 1) {
+      const a = points[i];
+      const b = points[(i + 1) % 4];
+      vectors.push([b[0] - a[0], b[1] - a[1]]);
+    }
+
+    for (let i = 0; i < 4; i += 1) {
+      const a = vectors[i];
+      const b = vectors[(i + 1) % 4];
+      const lenA = Math.hypot(a[0], a[1]);
+      const lenB = Math.hypot(b[0], b[1]);
+      if (lenA < 1e-6 || lenB < 1e-6) return null;
+
+      const normalizedDot =
+        Math.abs(a[0] * b[0] + a[1] * b[1])
+        / (lenA * lenB);
+
+      if (normalizedDot > 1e-4) return null;
+    }
+
+    const xs = points.map((p) => p[0]);
+    const ys = points.map((p) => p[1]);
+
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    return {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    };
+  }
+
+  function phaseBSelectedRectangle() {
+    if (selectedIds.size !== 1 || !selectedId) return null;
+    const feature = findFeature(selectedId);
+    const bounds = phaseBRectangleBounds(feature);
+    return bounds ? { feature, bounds } : null;
+  }
+
+  function phaseBUpdateRectangleAction() {
+    const refs = phaseBRefs();
+    if (!refs.rectangleAction) return;
+    refs.rectangleAction.hidden = !phaseBSelectedRectangle();
+  }
+
+  function phaseBFormatNumber(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "—";
+    return Math.abs(number - Math.round(number)) < 1e-6
+      ? String(Math.round(number))
+      : number.toFixed(2);
+  }
+
+  function phaseBShowRectangleInfo() {
+    const refs = phaseBRefs();
+    const selected = phaseBSelectedRectangle();
+    if (!selected || !refs.rectangleContent) return;
+
+    const rows = [
+      ["X", `${phaseBFormatNumber(selected.bounds.x)} px`],
+      ["Y", `${phaseBFormatNumber(selected.bounds.y)} px`],
+      ["Width", `${phaseBFormatNumber(selected.bounds.width)} px`],
+      ["Height", `${phaseBFormatNumber(selected.bounds.height)} px`],
+    ];
+
+    refs.rectangleContent.innerHTML = "";
+    for (const [label, value] of rows) {
+      const labelElement = document.createElement("span");
+      labelElement.textContent = label;
+      const valueElement = document.createElement("strong");
+      valueElement.textContent = value;
+      refs.rectangleContent.append(labelElement, valueElement);
+    }
+
+    if (refs.rectangleOverlay) refs.rectangleOverlay.hidden = false;
+  }
+
+  function phaseBDispatchShortcut(actionId) {
+    const toolMap = {
+      "tool.navigate": "navigate",
+      "tool.freehand": "freehand",
+      "tool.brush": "brush",
+      "tool.polygon": "polygon",
+      "tool.rectangle": "rectangle",
+      "tool.circle": "circle",
+      "tool.wand": "wand",
+      "tool.select": "select",
+    };
+
+    if (toolMap[actionId]) {
+      setMode(toolMap[actionId]);
+      return true;
+    }
+
+    const reviewButtons = {
+      "review.correct": "reviewCorrectButton",
+      "review.maybe": "reviewMaybeButton",
+      "review.later": "reviewLaterButton",
+      "review.delete": "reviewDeleteButton",
+    };
+
+    if (reviewButtons[actionId]) {
+      if (!reviewState.active) return false;
+      document.getElementById(reviewButtons[actionId])?.click();
+      return true;
+    }
+
+    if (actionId === "polygon.finish") {
+      if (mode !== "polygon" || polygonDraft.length < 3) return false;
+      finishPolygon();
+      return true;
+    }
+
+    if (actionId === "focus.toggle") {
+      phaseBSetFocusMode(!phaseBFocusActive);
+      return true;
+    }
+
+    if (actionId === "general.escape") {
+      const refs = phaseBRefs();
+
+      toggleFileMenu(false);
+      phaseBToggleSettings(false);
+
+      if (refs.shortcutOverlay && !refs.shortcutOverlay.hidden) {
+        phaseBCloseShortcutSettings();
+        return true;
+      }
+
+      if (refs.rectangleOverlay && !refs.rectangleOverlay.hidden) {
+        refs.rectangleOverlay.hidden = true;
+        return true;
+      }
+
+      if (reviewState.active) {
+        exitReviewMode();
+        return true;
+      }
+
+      if (phaseBFocusActive) {
+        phaseBSetFocusMode(false);
+        return true;
+      }
+
+      if (polygonDraft.length) {
+        cancelPolygon();
+        return true;
+      }
+
+      if (circleDraft) {
+        cancelCircleDraft();
+        return true;
+      }
+
+      if (els.infoOverlay) els.infoOverlay.hidden = true;
+      return true;
+    }
+
+    return false;
+  }
+
+  function phaseBHandleKeydown(event) {
+    if (phaseBShortcutCapture) {
+      phaseBCaptureShortcut(event);
+      return;
+    }
+
+    if (phaseBTypingTarget(event.target)) return;
+
+    const action =
+      phaseBActionForKey(
+        phaseBNormalizeKey(event)
+      );
+
+    if (!action) return;
+
+    if (phaseBDispatchShortcut(action.id)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function phaseBBindEvents() {
+    const refs = phaseBRefs();
+
+    refs.settingsButton?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      phaseBToggleSettings();
+    });
+
+    refs.settingsPanel?.addEventListener(
+      "click",
+      (event) => event.stopPropagation()
+    );
+
+    refs.focusMenuButton?.addEventListener(
+      "click",
+      () => phaseBSetFocusMode(!phaseBFocusActive)
+    );
+
+    refs.shortcutsMenuButton?.addEventListener("click", () => {
+      phaseBToggleSettings(false);
+      phaseBOpenShortcutSettings();
+    });
+
+    refs.focusClassesButton?.addEventListener("click", () => {
+      phaseBSetFocusClassesOpen(refs.focusClassStrip?.hidden !== false);
+    });
+
+    refs.exitFocusButton?.addEventListener(
+      "click",
+      () => phaseBSetFocusMode(false)
+    );
+
+    refs.closeShortcutsButton?.addEventListener(
+      "click",
+      phaseBCloseShortcutSettings
+    );
+
+    refs.resetShortcutsButton?.addEventListener("click", () => {
+      phaseBShortcutBindings = phaseBShortcutDefaults();
+      phaseBSaveShortcutBindings();
+      phaseBShortcutCapture = null;
+      phaseBSetShortcutMessage("Default shortcuts restored.");
+      phaseBRenderShortcutSettings();
+    });
+
+    refs.shortcutOverlay?.addEventListener("click", (event) => {
+      if (event.target === refs.shortcutOverlay) {
+        phaseBCloseShortcutSettings();
+      }
+    });
+
+    refs.rectangleInfoButton?.addEventListener(
+      "click",
+      phaseBShowRectangleInfo
+    );
+
+    refs.closeRectangleButton?.addEventListener("click", () => {
+      if (refs.rectangleOverlay) refs.rectangleOverlay.hidden = true;
+    });
+
+    refs.rectangleOverlay?.addEventListener("click", (event) => {
+      if (event.target === refs.rectangleOverlay) {
+        refs.rectangleOverlay.hidden = true;
+      }
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!event.target?.closest?.(".phase-b-settings-menu")) {
+        phaseBToggleSettings(false);
+      }
+    });
+  }
+
   function setMode(nextMode) {
     mode = nextMode;
     activeDraft = null;
@@ -6069,6 +6672,7 @@
     updatePathologistActions();
     updateCircleActions();
     updateSelectionActions();
+    phaseBUpdateRectangleAction();
     drawAnnotations();
     updateDiagnostics();
   }
@@ -6455,7 +7059,7 @@
         else setMultiSelection(ids);
         const feature = selectedId ? findFeature(selectedId) : null;
         syncCurrentClassFromFeature(feature);
-        setStatus(ids.length ? `${ids.length} annotations selected` : "No annotations fully inside the selection area", ids.length ? "saved" : "local");
+        setStatus(ids.length ? `${ids.length} annotations selected` : "No annotations intersect the selection area", ids.length ? "saved" : "local");
       } catch (error) { setStatus(`Selection error: ${error.message}`, "error"); }
       finally { geometryBusy = false; updateControls(); drawAnnotations(); }
       return;
@@ -6780,6 +7384,76 @@
     }
   }
 
+  function phaseBGeometryRings(geometry) {
+    if (!geometry) return [];
+    if (geometry.type === "Polygon") return geometry.coordinates || [];
+    if (geometry.type === "MultiPolygon") {
+      return (geometry.coordinates || []).flatMap((polygon) => polygon || []);
+    }
+    return [];
+  }
+
+  function phaseBPointOnSegment(point, a, b, epsilon = 1e-7) {
+    const [px, py] = point;
+    const [ax, ay] = a;
+    const [bx, by] = b;
+    const cross = (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+    if (Math.abs(cross) > epsilon) return false;
+    const dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay);
+    if (dot < -epsilon) return false;
+    const lengthSq = (bx - ax) ** 2 + (by - ay) ** 2;
+    if (dot - lengthSq > epsilon) return false;
+    return true;
+  }
+
+  function phaseBSegmentsTouch(a, b, c, d, epsilon = 1e-7) {
+    const orient = (p, q, r) =>
+      (q[0] - p[0]) * (r[1] - p[1])
+      - (q[1] - p[1]) * (r[0] - p[0]);
+
+    const o1 = orient(a, b, c);
+    const o2 = orient(a, b, d);
+    const o3 = orient(c, d, a);
+    const o4 = orient(c, d, b);
+
+    if (
+      ((o1 > epsilon && o2 < -epsilon) || (o1 < -epsilon && o2 > epsilon))
+      && ((o3 > epsilon && o4 < -epsilon) || (o3 < -epsilon && o4 > epsilon))
+    ) {
+      return true;
+    }
+
+    return (
+      (Math.abs(o1) <= epsilon && phaseBPointOnSegment(c, a, b, epsilon))
+      || (Math.abs(o2) <= epsilon && phaseBPointOnSegment(d, a, b, epsilon))
+      || (Math.abs(o3) <= epsilon && phaseBPointOnSegment(a, c, d, epsilon))
+      || (Math.abs(o4) <= epsilon && phaseBPointOnSegment(b, c, d, epsilon))
+    );
+  }
+
+  function phaseBBoundariesTouch(geometryA, geometryB) {
+    const ringsA = phaseBGeometryRings(geometryA);
+    const ringsB = phaseBGeometryRings(geometryB);
+
+    for (const ringA of ringsA) {
+      if (!Array.isArray(ringA) || ringA.length < 2) continue;
+      for (let i = 0; i < ringA.length - 1; i += 1) {
+        const a = ringA[i];
+        const b = ringA[i + 1];
+
+        for (const ringB of ringsB) {
+          if (!Array.isArray(ringB) || ringB.length < 2) continue;
+          for (let j = 0; j < ringB.length - 1; j += 1) {
+            if (phaseBSegmentsTouch(a, b, ringB[j], ringB[j + 1])) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   function localSelectGeometries(region, features) {
     const engine = window.polygonClipping;
 
@@ -6803,28 +7477,24 @@
             item.geometry
           );
 
-        /*
-         * We want the same concept as:
-         *
-         *     selectionRegion.covers(annotation)
-         *
-         * If:
-         *
-         *     annotation - selectionRegion
-         *
-         * produces nothing, the annotation is fully inside
-         * the selection region.
-         */
-        const outside =
-          engine.difference(
+        const overlap =
+          engine.intersection(
             geometryInput,
             regionInput
           );
 
-        if (
-          Array.isArray(outside) &&
-          outside.length === 0
-        ) {
+        const hasAreaIntersection =
+          Array.isArray(overlap)
+          && overlap.length > 0;
+
+        const touchesBoundary =
+          !hasAreaIntersection
+          && phaseBBoundariesTouch(
+            item.geometry,
+            region
+          );
+
+        if (hasAreaIntersection || touchesBoundary) {
           ids.push(String(item.id));
         }
 
@@ -7196,6 +7866,7 @@
     updatePolygonActions();
     updateCircleActions();
     updateSelectionActions();
+    phaseBUpdateRectangleAction();
   }
 
   function formatBytes(bytes) {
@@ -10132,6 +10803,7 @@
   }
 
   function bindEvents() {
+    phaseBBindEvents();
     document.querySelectorAll(".tool").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
     document.querySelectorAll("[data-edit-operation]").forEach((button) => {
       button.addEventListener("click", () => setEditOperation(button.dataset.editOperation));
@@ -10298,16 +10970,7 @@
       if (event.key === "Enter") saveClassEditor();
       if (event.key === "Escape") closeClassEditor();
     });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        toggleFileMenu(false);
-        if (polygonDraft.length) cancelPolygon();
-        if (circleDraft) cancelCircleDraft();
-        els.infoOverlay.hidden = true;
-      } else if (event.key === "Enter" && mode === "polygon" && polygonDraft.length >= 3) {
-        finishPolygon();
-      }
-    });
+    document.addEventListener("keydown", phaseBHandleKeydown);
     window.addEventListener("resize", drawAnnotations);
     window.addEventListener("offline", () => {
       setStatus("Connection lost: changes will continue to be saved on this device", "local");
