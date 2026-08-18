@@ -1625,3 +1625,179 @@ body.phase-d-roi-mode #phaseDRoiModeAction {
   }
 }
 
+/* ========================================================================
+   Phase D7.1 v2 — compact annotation-file controls + floating Fill preview
+   ======================================================================== */
+
+/* Annotation file: large dropdown plus a tiny vertical +/- action rail. */
+.phase-d7-1-v2-annotation-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 7px;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.phase-d7-1-v2-annotation-file-row > #annotationFileSelect {
+  width: 100%;
+  min-width: 0;
+}
+
+.phase-d7-1-v2-file-actions {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 4px;
+  align-self: stretch;
+  min-width: 30px;
+  width: 30px;
+}
+
+.phase-d7-1-v2-file-actions > button {
+  width: 30px !important;
+  min-width: 30px !important;
+  max-width: 30px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 8px !important;
+  font-size: 16px !important;
+  line-height: 1 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+.phase-d7-1-v2-settings-separator {
+  height: 1px;
+  margin: 5px 0;
+  background: rgba(255, 255, 255, 0.10);
+}
+
+/* Existing D7 modal becomes a non-blocking positioning layer. */
+#fillUnannotatedModal {
+  position: fixed !important;
+  inset: 0 !important;
+  display: block !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  pointer-events: none !important;
+  z-index: 1250 !important;
+}
+
+/* Preserve native hidden semantics even though display is overridden above. */
+#fillUnannotatedModal[hidden] {
+  display: none !important;
+}
+
+/* Only the compact card itself intercepts pointer events.
+   The image viewer remains fully pannable/zoomable everywhere else. */
+#fillUnannotatedModal > .modal-card,
+#fillUnannotatedModal .modal-card {
+  position: absolute !important;
+  top: calc(70px + env(safe-area-inset-top, 0px)) !important;
+  right: max(14px, env(safe-area-inset-right, 0px)) !important;
+  left: auto !important;
+  bottom: auto !important;
+  width: min(300px, calc(100vw - 28px)) !important;
+  max-width: 300px !important;
+  max-height: min(430px, calc(100vh - 100px)) !important;
+  overflow: auto !important;
+  margin: 0 !important;
+  padding: 12px !important;
+  box-sizing: border-box;
+  pointer-events: auto !important;
+  border-radius: 14px !important;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34) !important;
+}
+
+#fillUnannotatedModal h2 {
+  margin: 0 0 4px !important;
+  font-size: 15px !important;
+}
+
+#fillUnannotatedModal .modal-note {
+  margin: 4px 0 8px !important;
+  font-size: 11px !important;
+  line-height: 1.3 !important;
+}
+
+#fillUnannotatedModal .menu-field {
+  margin: 7px 0 !important;
+}
+
+#fillUnannotatedModal select {
+  min-height: 32px !important;
+}
+
+#fillUnannotatedModal .stats-summary {
+  margin: 6px 0 !important;
+  gap: 2px !important;
+  font-size: 11px !important;
+}
+
+#fillUnannotatedModal .stats-summary p,
+#fillUnannotatedModal .stats-summary span {
+  margin: 2px 0 !important;
+}
+
+#fillUnannotatedModal .modal-actions {
+  display: flex !important;
+  gap: 6px !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  margin-top: 8px !important;
+}
+
+#fillUnannotatedModal .modal-actions button {
+  min-height: 30px !important;
+  padding: 4px 9px !important;
+  font-size: 11px !important;
+}
+
+/* On tablets/phones keep it compact and away from gesture edges. */
+@media (max-width: 700px) {
+  #fillUnannotatedModal > .modal-card,
+  #fillUnannotatedModal .modal-card {
+    top: calc(62px + env(safe-area-inset-top, 0px)) !important;
+    right: max(8px, env(safe-area-inset-right, 0px)) !important;
+    width: min(270px, calc(100vw - 16px)) !important;
+    max-width: 270px !important;
+    max-height: min(380px, calc(100vh - 86px)) !important;
+    padding: 10px !important;
+  }
+}
+
+/* Phase D7.1.1 — slightly wider annotation-file dropdown */
+.phase-d7-1-v2-annotation-file-row {
+  grid-template-columns: minmax(0, 1fr) 27px !important;
+  gap: 5px !important;
+}
+
+.phase-d7-1-v2-file-actions {
+  width: 27px !important;
+  min-width: 27px !important;
+}
+
+.phase-d7-1-v2-file-actions > button {
+  width: 27px !important;
+  min-width: 27px !important;
+  max-width: 27px !important;
+}
+
+/* Phase D7.1.2 — wider annotation-file selector
+   Reclaim ~10 px of the sidebar's right-side breathing room while keeping
+   the compact +/- buttons at their current comfortable 27 px size. */
+.phase-d7-1-v2-annotation-file-row {
+  width: calc(100% + 10px) !important;
+  max-width: calc(100% + 10px) !important;
+}
+
+/* Phase D7.1.3 — final wider annotation-file selector
+   Final requested width: +20 px versus the original D7.1 compact row. */
+.phase-d7-1-v2-annotation-file-row {
+  width: calc(100% + 20px) !important;
+  max-width: calc(100% + 20px) !important;
+}
+

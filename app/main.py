@@ -188,26 +188,83 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 
 def validate_classes(payload: Any) -> list[dict[str, str]]:
     classes = payload.get("classes") if isinstance(payload, dict) else payload
+
     if not isinstance(classes, list) or not classes:
-        raise HTTPException(status_code=422, detail="At least one class is required")
+        raise HTTPException(
+            status_code=422,
+            detail="At least one class is required",
+        )
+
     if len(classes) > 100:
-        raise HTTPException(status_code=422, detail="A maximum of 100 classes is allowed")
+        raise HTTPException(
+            status_code=422,
+            detail="A maximum of 100 classes is allowed",
+        )
+
+    artifact_name = "Artifact"
+    artifact_color = "#69db7c"
+
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
+    artifact_seen = False
+
     for index, item in enumerate(classes):
         if not isinstance(item, dict):
-            raise HTTPException(status_code=422, detail=f"Invalid class at index {index}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid class at index {index}",
+            )
+
         name = str(item.get("name", "")).strip()
         color = str(item.get("color", "")).strip()
-        if not name or len(name) > 80:
-            raise HTTPException(status_code=422, detail=f"Invalid class name at index {index}")
+
+        if not name:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Class name is required at index {index}",
+            )
+
+        if name.casefold() == artifact_name.casefold():
+            if not artifact_seen:
+                normalized.append({
+                    "name": artifact_name,
+                    "color": artifact_color,
+                })
+                artifact_seen = True
+                seen.add(artifact_name.casefold())
+            continue
+
         key = name.casefold()
         if key in seen:
-            raise HTTPException(status_code=422, detail=f"Duplicate class: {name}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Duplicate class name: {name}",
+            )
+
         if not COLOR_RE.fullmatch(color):
-            raise HTTPException(status_code=422, detail=f"Invalid color for {name}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid color for class: {name}",
+            )
+
         seen.add(key)
-        normalized.append({"name": name, "color": color.lower()})
+        normalized.append({
+            "name": name,
+            "color": color.lower(),
+        })
+
+    if not artifact_seen:
+        normalized.append({
+            "name": artifact_name,
+            "color": artifact_color,
+        })
+
+    if len(normalized) > 100:
+        raise HTTPException(
+            status_code=422,
+            detail="A maximum of 100 classes is allowed including Artifact",
+        )
+
     return normalized
 
 
@@ -821,6 +878,22 @@ def _qupath_properties(source_properties: dict[str, Any]) -> dict[str, Any]:
         else "annotation"
     )
 
+    # Phase D4 Artifact classification-role synchronization
+    classification_name = str(
+        properties.get("classification", {}).get("name", "")
+    ).strip()
+
+    current_role = str(
+        histo.get("role") or "annotation"
+    ).strip().lower()
+
+    if current_role == "roi":
+        histo["role"] = "roi"
+    elif classification_name.casefold() == "artifact":
+        histo["role"] = "artifact"
+    else:
+        histo["role"] = "annotation"
+
     workflow_source = histo.get("workflow")
     workflow_source = (
         dict(workflow_source)
@@ -1014,7 +1087,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.3.0-dev-D3.3"}
+    return {"status": "ok", "version": "1.3.0-alpha.3"}
 
 
 @app.get("/health")
@@ -3717,16 +3790,28 @@ def geojson_statistics(
         ])
 
     tissue_geometries: list[Any] = []
+    artifact_geometries: list[Any] = []
+    artifact_count = 0
+
     border_enabled = False
     border_percent = 0.0
+
     annotation_records: list[tuple[str, Any]] = []
 
     for feature in collection.get("features", []):
         properties = feature.get("properties", {})
         histo = properties.get("histoannotator", {})
+
         role = str(
             histo.get("role", "annotation")
         ).strip().lower()
+
+        classification_name = str(
+            properties
+            .get("classification", {})
+            .get("name")
+            or "Unclassified"
+        ).strip()
 
         geometry_payload = feature.get("geometry")
         if not isinstance(geometry_payload, dict):
@@ -3751,7 +3836,9 @@ def geojson_statistics(
             tissue_geometries.append(geometry)
 
             if isinstance(roi_meta, dict):
-                border_meta = roi_meta.get("externalBorderExclusion")
+                border_meta = roi_meta.get(
+                    "externalBorderExclusion"
+                )
 
                 if isinstance(border_meta, dict):
                     border_enabled = bool(
@@ -3762,7 +3849,13 @@ def geojson_statistics(
                             0.0,
                             min(
                                 50.0,
-                                float(border_meta.get("percent", 0) or 0),
+                                float(
+                                    border_meta.get(
+                                        "percent",
+                                        0,
+                                    )
+                                    or 0
+                                ),
                             ),
                         )
                     except (TypeError, ValueError):
@@ -3770,18 +3863,22 @@ def geojson_statistics(
 
             continue
 
+        is_artifact = (
+            role == "artifact"
+            or classification_name.casefold()
+            == "artifact"
+        )
+
+        if is_artifact:
+            artifact_count += 1
+            artifact_geometries.append(geometry)
+            continue
+
         if role != "annotation":
             continue
 
-        class_name = (
-            properties
-            .get("classification", {})
-            .get("name")
-            or "Unclassified"
-        )
-
         annotation_records.append(
-            (str(class_name), geometry)
+            (classification_name or "Unclassified", geometry)
         )
 
     tissue_roi = (
@@ -3808,7 +3905,9 @@ def geojson_statistics(
         analysis_base = tissue_roi
 
         if not image_region.is_empty:
-            clipped = analysis_base.intersection(image_region)
+            clipped = analysis_base.intersection(
+                image_region
+            )
             analysis_base = (
                 _polygonal_only(clipped)
                 or GeometryCollection()
@@ -3836,19 +3935,83 @@ def geojson_statistics(
         else 0.0
     )
 
-    valid_region, actual_border, border_width = (
+    post_border_region, actual_border, border_width = (
         _stats_exclude_external_border(
             analysis_base,
             requested_border,
         )
     )
 
-    if valid_region.is_empty:
+    if post_border_region.is_empty:
         raise HTTPException(
             status_code=422,
             detail=(
                 "The Tissue ROI external-border exclusion removed "
                 "the complete analysis region"
+            ),
+        )
+
+    post_border_area = float(
+        post_border_region.area
+    )
+
+    artifact_union = GeometryCollection()
+
+    if artifact_geometries:
+        artifact_union = unary_union(
+            artifact_geometries
+        )
+
+        if (
+            not artifact_union.is_empty
+            and not artifact_union.is_valid
+        ):
+            artifact_union = make_valid(
+                artifact_union
+            )
+
+        artifact_union = (
+            _polygonal_only(artifact_union)
+            or GeometryCollection()
+        )
+
+        if not artifact_union.is_empty:
+            artifact_union = artifact_union.intersection(
+                post_border_region
+            )
+            artifact_union = (
+                _polygonal_only(artifact_union)
+                or GeometryCollection()
+            )
+
+    artifact_area = (
+        float(artifact_union.area)
+        if not artifact_union.is_empty
+        else 0.0
+    )
+
+    valid_region = (
+        post_border_region.difference(
+            artifact_union
+        )
+        if not artifact_union.is_empty
+        else post_border_region
+    )
+
+    if not valid_region.is_valid:
+        valid_region = make_valid(valid_region)
+
+    valid_region = (
+        _polygonal_only(valid_region)
+        or GeometryCollection()
+    )
+
+    if valid_region.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Artifact exclusion removed the complete "
+                "analysis region"
             ),
         )
 
@@ -3862,10 +4025,17 @@ def geojson_statistics(
     for class_name, geometry in annotation_records:
         class_names.add(class_name)
 
-        effective = geometry.intersection(valid_region)
-        effective = _polygonal_only(effective)
+        effective = geometry.intersection(
+            valid_region
+        )
+        effective = _polygonal_only(
+            effective
+        )
 
-        if effective is None or effective.is_empty:
+        if (
+            effective is None
+            or effective.is_empty
+        ):
             continue
 
         grouped_valid.setdefault(
@@ -3874,26 +4044,43 @@ def geojson_statistics(
         ).append(effective)
 
         grouped_counts[class_name] = (
-            grouped_counts.get(class_name, 0) + 1
+            grouped_counts.get(class_name, 0)
+            + 1
         )
 
         all_valid.append(effective)
 
     rows = []
 
-    for class_name in sorted(class_names, key=str.casefold):
-        items = grouped_valid.get(class_name, [])
+    for class_name in sorted(
+        class_names,
+        key=str.casefold,
+    ):
+        items = grouped_valid.get(
+            class_name,
+            [],
+        )
+
         merged = (
             unary_union(items)
             if items
             else GeometryCollection()
         )
 
-        area = float(merged.area) if not merged.is_empty else 0.0
+        area = (
+            float(merged.area)
+            if not merged.is_empty
+            else 0.0
+        )
 
         rows.append({
             "className": class_name,
-            "count": int(grouped_counts.get(class_name, 0)),
+            "count": int(
+                grouped_counts.get(
+                    class_name,
+                    0,
+                )
+            ),
             "areaPx2": area,
             "percentValid": (
                 100.0 * area / valid_area
@@ -3914,9 +4101,19 @@ def geojson_statistics(
         else 0.0
     )
 
+    artifact_percent = (
+        100.0
+        * artifact_area
+        / post_border_area
+        if post_border_area > 0
+        else 0.0
+    )
+
     return {
         "rows": rows,
-        "totalAnnotations": int(sum(grouped_counts.values())),
+        "totalAnnotations": int(
+            sum(grouped_counts.values())
+        ),
         "totalUnionAreaPx2": total_area,
         "totalPercentValid": (
             100.0 * total_area / valid_area
@@ -3925,20 +4122,216 @@ def geojson_statistics(
         ),
         "analysis": {
             "source": analysis_source,
-            "roiPresent": bool(has_tissue_roi),
+            "roiPresent": bool(
+                has_tissue_roi
+            ),
             "imageAreaPx2": (
                 float(image_region.area)
                 if not image_region.is_empty
                 else 0.0
             ),
             "baseAreaPx2": base_area,
-            "validAreaPx2": valid_area,
+            "postBorderAreaPx2": post_border_area,
             "externalBorderEnabled": bool(
-                has_tissue_roi and border_enabled
+                has_tissue_roi
+                and border_enabled
             ),
+            "externalBorderRequestedPct": float(
+                requested_border
+            ),
+            "externalBorderActualPct": float(
+                actual_border
+            ),
+            "externalBorderWidthPx": float(
+                border_width
+            ),
+            "artifactCount": int(
+                artifact_count
+            ),
+            "artifactAreaPx2": artifact_area,
+            "artifactPercentPostBorder": float(
+                artifact_percent
+            ),
+            "validAreaPx2": valid_area,
+        },
+        "report": report,
+    }
+
+
+@app.post("/api/geojson/fill-unannotated")
+def geojson_fill_unannotated(
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    collection_payload = payload.get("featureCollection")
+    if not isinstance(collection_payload, dict):
+        raise HTTPException(status_code=422, detail="featureCollection is required")
+
+    image_width = max(0.0, float(payload.get("imageWidth", 0) or 0))
+    image_height = max(0.0, float(payload.get("imageHeight", 0) or 0))
+    collection, report = sanitize_qupath_feature_collection(collection_payload)
+
+    image_region = GeometryCollection()
+    if image_width > 0 and image_height > 0:
+        image_region = Polygon([
+            (0.0, 0.0),
+            (image_width, 0.0),
+            (image_width, image_height),
+            (0.0, image_height),
+        ])
+
+    tissue_geometries: list[Any] = []
+    artifact_geometries: list[Any] = []
+    annotation_geometries: list[Any] = []
+    border_enabled = False
+    border_percent = 0.0
+
+    for feature in collection.get("features", []):
+        properties = feature.get("properties", {})
+        histo = properties.get("histoannotator", {})
+        role = str(histo.get("role", "annotation")).strip().lower()
+        class_name = str(
+            properties.get("classification", {}).get("name") or "Unclassified"
+        ).strip()
+
+        geometry_payload = feature.get("geometry")
+        if not isinstance(geometry_payload, dict):
+            continue
+        try:
+            geometry = _polygonal_geometry(geometry_payload)
+        except HTTPException:
+            continue
+        if geometry.is_empty:
+            continue
+
+        roi_meta = histo.get("roi", {})
+        roi_kind = (
+            str(roi_meta.get("kind", "tissue")).strip().lower()
+            if isinstance(roi_meta, dict)
+            else "tissue"
+        )
+
+        if role == "roi" and roi_kind == "tissue":
+            tissue_geometries.append(geometry)
+            if isinstance(roi_meta, dict):
+                border_meta = roi_meta.get("externalBorderExclusion")
+                if isinstance(border_meta, dict):
+                    border_enabled = bool(border_meta.get("enabled", False))
+                    try:
+                        border_percent = max(
+                            0.0,
+                            min(50.0, float(border_meta.get("percent", 0) or 0)),
+                        )
+                    except (TypeError, ValueError):
+                        border_percent = 0.0
+            continue
+
+        if role == "artifact" or class_name.casefold() == "artifact":
+            artifact_geometries.append(geometry)
+            continue
+
+        if role == "annotation":
+            annotation_geometries.append(geometry)
+
+    tissue_roi = unary_union(tissue_geometries) if tissue_geometries else GeometryCollection()
+    if not tissue_roi.is_empty and not tissue_roi.is_valid:
+        tissue_roi = make_valid(tissue_roi)
+    tissue_polygonal = _polygonal_only(tissue_roi) if not tissue_roi.is_empty else None
+    has_tissue_roi = tissue_polygonal is not None and not tissue_polygonal.is_empty
+
+    if has_tissue_roi:
+        analysis_base = tissue_polygonal
+        if not image_region.is_empty:
+            clipped = analysis_base.intersection(image_region)
+            clipped_polygonal = _polygonal_only(clipped)
+            analysis_base = clipped_polygonal if clipped_polygonal is not None else GeometryCollection()
+        analysis_source = "tissue-roi"
+    else:
+        analysis_base = image_region
+        analysis_source = "full-image"
+
+    if analysis_base.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail="Fill unannotated tissue requires a valid Tissue ROI or valid image dimensions",
+        )
+
+    requested_border = border_percent if has_tissue_roi and border_enabled else 0.0
+    post_border_region, actual_border, border_width = _stats_exclude_external_border(
+        analysis_base,
+        requested_border,
+    )
+    if post_border_region.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail="The external-border exclusion removed the complete analysis region",
+        )
+
+    artifact_union = GeometryCollection()
+    if artifact_geometries:
+        artifact_union = unary_union(artifact_geometries)
+        if not artifact_union.is_empty and not artifact_union.is_valid:
+            artifact_union = make_valid(artifact_union)
+        artifact_polygonal = _polygonal_only(artifact_union)
+        artifact_union = artifact_polygonal if artifact_polygonal is not None else GeometryCollection()
+        if not artifact_union.is_empty:
+            artifact_union = artifact_union.intersection(post_border_region)
+            artifact_polygonal = _polygonal_only(artifact_union)
+            artifact_union = artifact_polygonal if artifact_polygonal is not None else GeometryCollection()
+
+    valid_region = (
+        post_border_region.difference(artifact_union)
+        if not artifact_union.is_empty
+        else post_border_region
+    )
+    if not valid_region.is_empty and not valid_region.is_valid:
+        valid_region = make_valid(valid_region)
+    valid_polygonal = _polygonal_only(valid_region)
+    valid_region = valid_polygonal if valid_polygonal is not None else GeometryCollection()
+    if valid_region.is_empty:
+        raise HTTPException(status_code=422, detail="Artifact exclusion removed the complete valid tissue region")
+
+    annotated_union = GeometryCollection()
+    if annotation_geometries:
+        annotated_union = unary_union(annotation_geometries)
+        if not annotated_union.is_empty and not annotated_union.is_valid:
+            annotated_union = make_valid(annotated_union)
+        annotated_polygonal = _polygonal_only(annotated_union)
+        annotated_union = annotated_polygonal if annotated_polygonal is not None else GeometryCollection()
+        if not annotated_union.is_empty:
+            annotated_union = annotated_union.intersection(valid_region)
+            annotated_polygonal = _polygonal_only(annotated_union)
+            annotated_union = annotated_polygonal if annotated_polygonal is not None else GeometryCollection()
+
+    remaining = (
+        valid_region.difference(annotated_union)
+        if not annotated_union.is_empty
+        else valid_region
+    )
+    if not remaining.is_empty and not remaining.is_valid:
+        remaining = make_valid(remaining)
+    remaining_polygonal = _polygonal_only(remaining)
+    remaining = remaining_polygonal if remaining_polygonal is not None else GeometryCollection()
+
+    valid_area = float(valid_region.area)
+    annotated_area = float(annotated_union.area) if not annotated_union.is_empty else 0.0
+    remaining_area = float(remaining.area) if not remaining.is_empty else 0.0
+    artifact_area = float(artifact_union.area) if not artifact_union.is_empty else 0.0
+
+    return {
+        "geometry": mapping(remaining) if not remaining.is_empty else None,
+        "validAreaPx2": valid_area,
+        "annotatedAreaPx2": annotated_area,
+        "remainingAreaPx2": remaining_area,
+        "remainingPercentValid": 100.0 * remaining_area / valid_area if valid_area > 0 else 0.0,
+        "annotationCount": len(annotation_geometries),
+        "analysis": {
+            "source": analysis_source,
+            "roiPresent": bool(has_tissue_roi),
+            "externalBorderEnabled": bool(has_tissue_roi and border_enabled),
             "externalBorderRequestedPct": float(requested_border),
             "externalBorderActualPct": float(actual_border),
             "externalBorderWidthPx": float(border_width),
+            "artifactAreaPx2": artifact_area,
         },
         "report": report,
     }
@@ -3967,6 +4360,46 @@ def create_annotation_file(image_id: str, payload: dict[str, Any] = Body(...)) -
         raise HTTPException(status_code=409, detail="An annotation file with this name already exists")
     atomic_write_json(path, empty_feature_collection(relative))
     return {"created": True, "name": name, "files": annotation_files(relative)}
+
+
+@app.delete("/api/annotations/{image_id}/files")
+def delete_annotation_file(
+    image_id: str,
+    file: str = Query(...),
+) -> dict[str, Any]:
+    _, relative = safe_image_path(image_id)
+    name = normalize_annotation_file(file)
+
+    if name.casefold() == "default":
+        raise HTTPException(status_code=409, detail="The Default annotation file cannot be deleted")
+
+    path = annotation_path(relative, name)
+    deleted = False
+    if path.exists():
+        try:
+            path.unlink()
+            deleted = True
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not delete annotation file: {exc}") from exc
+
+    backup = path.with_suffix(path.suffix + ".bak")
+    if backup.exists():
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+
+    try:
+        if path.parent != ANNOTATION_ROOT and path.parent.is_dir() and not any(path.parent.iterdir()):
+            path.parent.rmdir()
+    except OSError:
+        pass
+
+    return {
+        "deleted": deleted,
+        "name": name,
+        "files": annotation_files(relative),
+    }
 
 
 @app.get("/api/annotations/{image_id}")

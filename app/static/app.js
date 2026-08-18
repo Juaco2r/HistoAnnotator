@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.3.0-dev-D3.3";
+  const VERSION = "1.3.0-alpha.3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -107,6 +107,7 @@
     classPanel: document.getElementById("classPanel"),
     annotationFileSelect: document.getElementById("annotationFileSelect"),
     newAnnotationFileButton: document.getElementById("newAnnotationFileButton"),
+    deleteAnnotationFileButton: document.getElementById("deleteAnnotationFileButton"),
     toggleClassManager: document.getElementById("toggleClassManager"),
     annotationSummary: document.getElementById("annotationSummary"),
     classList: document.getElementById("classList"),
@@ -201,6 +202,13 @@
     closeOfflineFiles: document.getElementById("closeOfflineFiles"),
     imageInfoButton: document.getElementById("imageInfoButton"),
     annotationStatsButton: document.getElementById("annotationStatsButton"),
+    fillUnannotatedButton: document.getElementById("fillUnannotatedButton"),
+    fillUnannotatedModal: document.getElementById("fillUnannotatedModal"),
+    fillUnannotatedClassSelect: document.getElementById("fillUnannotatedClassSelect"),
+    fillUnannotatedSummary: document.getElementById("fillUnannotatedSummary"),
+    fillUnannotatedRefreshButton: document.getElementById("fillUnannotatedRefreshButton"),
+    fillUnannotatedCancelButton: document.getElementById("fillUnannotatedCancelButton"),
+    fillUnannotatedCreateButton: document.getElementById("fillUnannotatedCreateButton"),
     annotationStatsModal: document.getElementById("annotationStatsModal"),
     annotationStatsContent: document.getElementById("annotationStatsContent"),
     annotationStatsCloseButton: document.getElementById("annotationStatsCloseButton"),
@@ -4455,6 +4463,21 @@
   }
 
   function openClassEditor(index = null) {
+    // Phase D4 guard openClassEditor
+    if (
+      index !== null
+      && index !== undefined
+      && phaseDIsArtifactClassName(
+        classes[index]?.name
+      )
+    ) {
+      setStatus(
+        "Artifact is a built-in class and cannot be renamed or recolored",
+        "local"
+      );
+      return;
+    }
+
     setClassManagerOpen(true);
     classEditIndex = index;
     const item = index === null ? { name: "", color: "#ff6b6b" } : classes[index];
@@ -4472,6 +4495,24 @@
 
   function saveClassEditor() {
     const name = els.classNameInput.value.trim();
+    // Phase D4 reserved Artifact name
+    if (
+      phaseDIsArtifactClassName(name)
+      && (
+        classEditIndex === null
+        || classEditIndex === undefined
+        || !phaseDIsArtifactClassName(
+          classes[classEditIndex]?.name
+        )
+      )
+    ) {
+      setStatus(
+        "Artifact is a reserved built-in class",
+        "error"
+      );
+      return;
+    }
+
     const color = els.classColorInput.value.toLowerCase();
     if (!name) {
       setStatus("Enter a class name", "error");
@@ -4500,6 +4541,21 @@
   }
 
   function deleteClass(index) {
+    // Phase D4 guard deleteClass
+    if (
+      index !== null
+      && index !== undefined
+      && phaseDIsArtifactClassName(
+        classes[index]?.name
+      )
+    ) {
+      setStatus(
+        "Artifact is a built-in class and cannot be removed",
+        "local"
+      );
+      return;
+    }
+
     if (classes.length <= 1) {
       setStatus("At least one class must remain", "error");
       return;
@@ -4519,10 +4575,15 @@
   }
 
   function renderClassButtons() {
+    // Phase D4 reserved Artifact class
+    phaseDEnsureArtifactClassList(classes);
     els.classList.innerHTML = "";
     for (const [index, item] of classes.entries()) {
       const row = document.createElement("div");
       row.className = "class-row";
+
+      const reservedArtifactClass =
+        phaseDIsArtifactClassName(item.name);
 
       const main = document.createElement("button");
       main.type = "button";
@@ -4586,14 +4647,24 @@
       edit.type = "button";
       edit.className = "class-edit management-only";
       edit.textContent = "✎";
-      edit.title = `Edit ${item.name}`;
+      edit.title =
+        reservedArtifactClass
+          ? "Artifact is a built-in class"
+          : `Edit ${item.name}`;
+      edit.hidden = reservedArtifactClass;
+      edit.disabled = reservedArtifactClass;
       edit.addEventListener("click", () => openClassEditor(index));
 
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "class-delete management-only";
       remove.textContent = "×";
-      remove.title = `Delete ${item.name}`;
+      remove.title =
+        reservedArtifactClass
+          ? "Artifact is a built-in class"
+          : `Delete ${item.name}`;
+      remove.hidden = reservedArtifactClass;
+      remove.disabled = reservedArtifactClass;
       remove.addEventListener("click", () => deleteClass(index));
 
       const count = document.createElement("span");
@@ -6228,11 +6299,126 @@
   const PHASE_D_TISSUE_ROI_COLOR =
     "#22c7ad";
 
+  const PHASE_D_ARTIFACT_NAME =
+    "Artifact";
+
+  const PHASE_D_ARTIFACT_COLOR =
+    "#69db7c";
+
+  function phaseDIsArtifactClassName(value) {
+    return (
+      String(value || "")
+        .trim()
+        .toLowerCase()
+      === PHASE_D_ARTIFACT_NAME.toLowerCase()
+    );
+  }
+
+  function phaseDEnsureArtifactClassList(items = classes) {
+    if (!Array.isArray(items)) return items;
+
+    let artifact = null;
+
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+
+      if (!phaseDIsArtifactClassName(item?.name)) {
+        continue;
+      }
+
+      if (!artifact) {
+        artifact = item;
+        artifact.name =
+          PHASE_D_ARTIFACT_NAME;
+        artifact.color =
+          PHASE_D_ARTIFACT_COLOR;
+      } else {
+        items.splice(index, 1);
+      }
+    }
+
+    if (!artifact) {
+      items.push({
+        name: PHASE_D_ARTIFACT_NAME,
+        color: PHASE_D_ARTIFACT_COLOR,
+      });
+    }
+
+    return items;
+  }
+
+  function phaseDSyncArtifactRole(feature) {
+    if (!feature) return false;
+
+    feature.properties ||= {};
+
+    let histo =
+      feature.properties.histoannotator;
+
+    if (
+      !histo
+      || typeof histo !== "object"
+    ) {
+      histo =
+        phaseCCreateMetadata();
+
+      feature.properties.histoannotator =
+        histo;
+    }
+
+    const currentRole =
+      phaseDCanonicalRole(
+        histo.role
+      );
+
+    if (currentRole === "roi") {
+      histo.role = "roi";
+      return false;
+    }
+
+    const desiredRole =
+      phaseDIsArtifactClassName(
+        feature.properties
+          ?.classification
+          ?.name
+      )
+        ? "artifact"
+        : "annotation";
+
+    const changed =
+      currentRole !== desiredRole
+      || histo.role !== desiredRole;
+
+    histo.role = desiredRole;
+    return changed;
+  }
+
+  function phaseDSyncArtifactRoles() {
+    let changed = false;
+
+    for (
+      const feature
+      of featureCollection.features || []
+    ) {
+      if (phaseDSyncArtifactRole(feature)) {
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+
   let phaseDActiveRole =
     "annotation";
 
   let phaseDDetectBusy =
     false;
+
+  // Phase D7 — temporary server-derived preview of remaining Valid Tissue.
+  let phaseDFillUnannotatedPreview = null;
+  let phaseDFillUnannotatedBusy = false;
+
 
   function phaseDCanonicalRole(value) {
     const role =
@@ -6259,9 +6445,11 @@
   }
 
   function phaseDIsAnnotationFeature(feature) {
-    return (
+    return [
+      "annotation",
+      "artifact",
+    ].includes(
       phaseDFeatureRole(feature)
-      === "annotation"
     );
   }
 
@@ -10745,6 +10933,7 @@
   }
 
   function markChanged() {
+    phaseDSyncArtifactRoles();
     phaseCApplySemanticChanges();
     if (!currentImage) return;
 
@@ -10907,6 +11096,7 @@
     if (els.downloadOfflineButton) els.downloadOfflineButton.disabled = !enabled || !currentInfo || Boolean(currentImage?.localNative);
     els.imageInfoButton.disabled = !enabled;
     if (els.annotationStatsButton) els.annotationStatsButton.disabled = !enabled || featureCollection.features.length === 0 || Boolean(currentImage?.localNative);
+    if (els.fillUnannotatedButton) els.fillUnannotatedButton.disabled = !enabled || !currentInfo || geometryBusy || Boolean(currentImage?.localNative);
     if (els.reviewModeButton) els.reviewModeButton.disabled = !enabled || featureCollection.features.length === 0;
     const phaseCWorkflowSummaryButton = document.getElementById("phaseCWorkflowSummaryButton");
     if (phaseCWorkflowSummaryButton) phaseCWorkflowSummaryButton.disabled = !enabled || featureCollection.features.length === 0;
@@ -10965,6 +11155,11 @@
     els.annotationFileSelect.value = currentAnnotationFile;
     els.annotationFileSelect.disabled = !currentImage;
     els.newAnnotationFileButton.disabled = !currentImage;
+    if (els.deleteAnnotationFileButton) {
+      els.deleteAnnotationFileButton.disabled =
+        !currentImage
+        || String(currentAnnotationFile || "Default").toLowerCase() === "default";
+    }
   }
 
   async function loadAnnotationFiles(imageId = currentImage?.id, preserve = true) {
@@ -10978,8 +11173,17 @@
       renderAnnotationFileOptions();
     } catch (error) {
       const cached = await getMeta(`files:${imageId}`);
-      const drafts = (await idbGetAll(DB_STORE)).filter((record) => record?.sourceImageId === imageId).map((record) => record.annotationFile || "Default");
-      annotationFiles = Array.from(new Set(["Default", ...(Array.isArray(cached) ? cached : []), ...drafts]));
+      const deletedMeta = await getMeta(`deletedAnnotationFiles:${imageId}`);
+      const deletedNames = new Set(Array.isArray(deletedMeta) ? deletedMeta : []);
+      const drafts = (await idbGetAll(DB_STORE))
+        .filter((record) => record?.sourceImageId === imageId)
+        .map((record) => record.annotationFile || "Default")
+        .filter((name) => !deletedNames.has(name));
+      annotationFiles = Array.from(
+        new Set(["Default", ...(Array.isArray(cached) ? cached : []), ...drafts])
+      ).filter(
+        (name) => String(name).toLowerCase() === "default" || !deletedNames.has(name)
+      );
       if (!preserve || !annotationFiles.includes(currentAnnotationFile)) currentAnnotationFile = "Default";
       renderAnnotationFileOptions();
       if (navigator.onLine) setStatus(`Annotation-file list unavailable; using the local copy: ${error.message}`, "local");
@@ -11025,6 +11229,14 @@
     if (!/^[A-Za-z0-9 _.-]{1,80}$/.test(name) || name === "." || name === "..") {
       setStatus("Invalid annotation file name", "error"); return;
     }
+    const deletedFileMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+    const deletedFileNames = Array.isArray(deletedFileMeta) ? deletedFileMeta : [];
+    if (deletedFileNames.includes(name)) {
+      await putMeta(
+        `deletedAnnotationFiles:${currentImage.id}`,
+        deletedFileNames.filter((item) => item !== name)
+      );
+    }
     if (!annotationFiles.includes(name)) annotationFiles.push(name);
     currentAnnotationFile = name;
     await putMeta(`files:${currentImage.id}`, annotationFiles);
@@ -11050,6 +11262,65 @@
       }
     } else {
       setStatus("Annotation file created locally", "local");
+    }
+  }
+
+
+  async function deleteCurrentAnnotationFile() {
+    if (!currentImage) return;
+
+    const name = String(currentAnnotationFile || "Default").trim() || "Default";
+    if (name.toLowerCase() === "default") {
+      setStatus("The Default annotation file cannot be deleted", "error");
+      return;
+    }
+
+    if (dirty || Number(currentPendingChangeCount || 0) > 0) {
+      setStatus(
+        "Sync/save this annotation file before deleting it, so a pending background save cannot recreate it.",
+        "error"
+      );
+      return;
+    }
+
+    if (!currentImage.localNative && !navigator.onLine) {
+      setStatus("Server connection is required to delete a synced annotation file", "error");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete annotation file "${name}"?\n\n`
+      + "This removes the GeoJSON annotation file and its server backup. This action is not part of annotation Undo."
+    );
+    if (!confirmed) return;
+
+    clearTimeout(saveTimer);
+
+    try {
+      let filesAfterDelete = annotationFiles.filter((item) => item !== name);
+
+      if (!currentImage.localNative) {
+        const response = await apiFetch(
+          `${API}/annotations/${currentImage.id}/files?file=${encodeURIComponent(name)}`,
+          { method: "DELETE", timeoutMs: 30000 }
+        );
+        const payload = await response.json();
+        if (Array.isArray(payload.files)) filesAfterDelete = payload.files;
+      }
+
+      const deletedMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+      const deletedNames = Array.isArray(deletedMeta) ? deletedMeta : [];
+      if (!deletedNames.includes(name)) deletedNames.push(name);
+      await putMeta(`deletedAnnotationFiles:${currentImage.id}`, deletedNames);
+
+      annotationFiles = Array.from(new Set(["Default", ...filesAfterDelete]));
+      await putMeta(`files:${currentImage.id}`, annotationFiles);
+      currentAnnotationFile = "Default";
+      renderAnnotationFileOptions();
+      await loadSelectedAnnotationFile("Default");
+      setStatus(`Annotation file "${name}" deleted`, "saved");
+    } catch (error) {
+      setStatus(`Could not delete annotation file: ${error.message}`, "error");
     }
   }
 
@@ -12055,6 +12326,7 @@
       if (geometry?.type === "Polygon") drawPolygonRings(geometry.coordinates, drawingColor(circleDraft.operation), false);
     }
     if (activeDraft?.type === "selection" && activeDraft.points.length > 1) drawRing(activeDraft.points, "#65b8ff", false, true);
+    phaseDDrawFillUnannotatedPreview();
     drawBrushCursor();
     drawWandCursor();
   }
@@ -12969,7 +13241,7 @@
     clearSelectedFeatures(false);
     updateControls();
     drawAnnotations();
-  
+
     // Phase C6.1: completing/exiting review should lead naturally to the
     // batch summary instead of requiring per-annotation Workflow clicks.
     const phaseCReviewExitSummaryScheduled = true;
@@ -13042,6 +13314,218 @@
     }).format(Number(value) || 0);
   }
 
+
+  function phaseDFillUnannotatedTargetClass() {
+    const requested = String(els.fillUnannotatedClassSelect?.value || "");
+    return classes.find((item) => item.name === requested) || currentClass || classes[0] || null;
+  }
+
+  function phaseDPopulateFillUnannotatedClasses() {
+    if (!els.fillUnannotatedClassSelect) return;
+    const previous = els.fillUnannotatedClassSelect.value;
+    els.fillUnannotatedClassSelect.innerHTML = "";
+    for (const item of classes) {
+      const option = document.createElement("option");
+      option.value = item.name;
+      option.textContent = item.name;
+      els.fillUnannotatedClassSelect.append(option);
+    }
+    const preferred = classes.some((item) => item.name === previous)
+      ? previous
+      : (currentClass?.name || classes[0]?.name || "");
+    els.fillUnannotatedClassSelect.value = preferred;
+  }
+
+  function phaseDFormatArea(value) {
+    return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+
+  function phaseDRenderFillUnannotatedSummary(payload = null) {
+    if (!els.fillUnannotatedSummary) return;
+    if (!payload) {
+      els.fillUnannotatedSummary.innerHTML = '<p class="modal-note">Calculating preview…</p>';
+      return;
+    }
+
+    const valid = Number(payload.validAreaPx2 || 0);
+    const annotated = Number(payload.annotatedAreaPx2 || 0);
+    const remaining = Number(payload.remainingAreaPx2 || 0);
+    const percent = Number(payload.remainingPercentValid || 0);
+    const source = payload.analysis?.source === "tissue-roi" ? "Tissue ROI" : "Full image";
+    const target = phaseDFillUnannotatedTargetClass();
+    const artifactWarning = phaseDIsArtifactClassName(target?.name)
+      ? '<p class="modal-note"><strong>Artifact:</strong> creating the remainder as Artifact will exclude that new area from Valid Tissue.</p>'
+      : "";
+
+    els.fillUnannotatedSummary.innerHTML = `
+      <div class="stats-summary">
+        <p><strong>Analysis region:</strong> ${source}</p>
+        <p><strong>Valid tissue:</strong> ${phaseDFormatArea(valid)} px² · 100%</p>
+        <p><strong>Already annotated:</strong> ${phaseDFormatArea(annotated)} px²</p>
+        <p><strong>Remaining:</strong> ${phaseDFormatArea(remaining)} px² · ${percent.toFixed(2)}%</p>
+      </div>
+      ${artifactWarning}
+    `;
+  }
+
+  function phaseDDrawFillUnannotatedPreview() {
+    const geometry = phaseDFillUnannotatedPreview?.geometry;
+    if (!geometry || reviewState.active) return;
+    const target = phaseDFillUnannotatedTargetClass();
+    if (!target) return;
+
+    const previewFeature = {
+      type: "Feature",
+      id: "__fill_unannotated_preview__",
+      geometry,
+      properties: {
+        objectType: "annotation",
+        classification: { name: target.name, color: hexToRgbArray(target.color) },
+        isLocked: false,
+        histoannotator: phaseCCreateMetadata(),
+      },
+    };
+
+    const previousFilled = annotationsFilled;
+    try {
+      annotationsFilled = true;
+      drawGeometry(previewFeature);
+    } finally {
+      annotationsFilled = previousFilled;
+    }
+  }
+
+  function phaseDCloseFillUnannotated() {
+    phaseDFillUnannotatedPreview = null;
+    phaseDFillUnannotatedBusy = false;
+    if (els.fillUnannotatedModal) els.fillUnannotatedModal.hidden = true;
+    if (els.fillUnannotatedCreateButton) els.fillUnannotatedCreateButton.disabled = true;
+    drawAnnotations();
+  }
+
+  async function phaseDRefreshFillUnannotatedPreview() {
+    if (!currentImage || !currentInfo || phaseDFillUnannotatedBusy) return;
+    if (currentImage.localNative) {
+      setStatus("Fill unannotated tissue currently requires the server-backed geometry engine", "error");
+      return;
+    }
+
+    phaseDFillUnannotatedBusy = true;
+    phaseDFillUnannotatedPreview = null;
+    if (els.fillUnannotatedCreateButton) els.fillUnannotatedCreateButton.disabled = true;
+    phaseDRenderFillUnannotatedSummary(null);
+    drawAnnotations();
+
+    try {
+      const response = await apiFetch(
+        `${API}/geojson/fill-unannotated`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            featureCollection,
+            imageWidth: Number(currentInfo.width || 0),
+            imageHeight: Number(currentInfo.height || 0),
+          }),
+          timeoutMs: 30000,
+        }
+      );
+      const payload = await response.json();
+      phaseDFillUnannotatedPreview = {
+        geometry: payload.geometry || null,
+        payload,
+        revision: Number(currentLocalRevision || 0),
+      };
+      phaseDRenderFillUnannotatedSummary(payload);
+      if (els.fillUnannotatedCreateButton) {
+        els.fillUnannotatedCreateButton.disabled =
+          !payload.geometry || Number(payload.remainingAreaPx2 || 0) <= 0;
+      }
+      if (!payload.geometry) setStatus("No unannotated Valid Tissue remains", "saved");
+      drawAnnotations();
+    } catch (error) {
+      phaseDFillUnannotatedPreview = null;
+      if (els.fillUnannotatedSummary) {
+        els.fillUnannotatedSummary.innerHTML =
+          `<p class="modal-note">Could not calculate preview: ${escapeHtml(error.message)}</p>`;
+      }
+      setStatus(`Could not calculate remaining tissue: ${error.message}`, "error");
+    } finally {
+      phaseDFillUnannotatedBusy = false;
+    }
+  }
+
+  async function phaseDOpenFillUnannotated() {
+    if (!currentImage || !currentInfo) return;
+    toggleFileMenu(false);
+
+    phaseBToggleSettings(false);if (currentImage.localNative) {
+      setStatus("Fill unannotated tissue currently requires a server-backed image", "error");
+      return;
+    }
+    phaseDPopulateFillUnannotatedClasses();
+    if (els.fillUnannotatedModal) els.fillUnannotatedModal.hidden = false;
+    await phaseDRefreshFillUnannotatedPreview();
+  }
+
+  function phaseDCreateFillUnannotated() {
+    const preview = phaseDFillUnannotatedPreview;
+    if (!preview?.geometry) return;
+    if (Number(preview.revision) !== Number(currentLocalRevision || 0)) {
+      setStatus("Annotations changed after the preview. Refresh the preview before creating the remainder.", "error");
+      return;
+    }
+
+    const target = phaseDFillUnannotatedTargetClass();
+    if (!target) {
+      setStatus("Choose a target class", "error");
+      return;
+    }
+
+    pushUndo();
+
+    const feature = {
+      type: "Feature",
+      id: uid(),
+      geometry:
+        deepClone(
+          preview.geometry
+        ),
+      properties: {
+        objectType:
+          "annotation",
+        classification: {
+          name:
+            target.name,
+          color:
+            hexToRgbArray(
+              target.color
+            ),
+        },
+        isLocked:
+          false,
+        histoannotator:
+          phaseCCreateMetadata(),
+      },
+    };
+
+    phaseDSyncArtifactRole(
+      feature
+    );
+    featureCollection.features.push(feature);
+    phaseDFillUnannotatedPreview = null;
+    if (els.fillUnannotatedModal) els.fillUnannotatedModal.hidden = true;
+    setSingleSelection(String(feature.id), true);
+    markChanged();
+
+    const area = Number(preview.payload?.remainingAreaPx2 || 0);
+    const percent = Number(preview.payload?.remainingPercentValid || 0);
+    setStatus(
+      `Created "${target.name}" from remaining tissue · ${phaseDFormatArea(area)} px² · ${percent.toFixed(2)}% of Valid Tissue`,
+      "saved"
+    );
+  }
+
   async function showAnnotationStatistics() {
     if (
       !currentImage
@@ -13054,7 +13538,7 @@
     toggleFileMenu(false);
 
     els.annotationStatsContent.innerHTML =
-      '<p class="modal-note">Calculating ROI-aware geometric unions…</p>';
+      '<p class="modal-note">Calculating valid tissue and Artifact exclusion…</p>';
 
     els.annotationStatsModal.hidden =
       false;
@@ -13089,24 +13573,54 @@
       const stats = await response.json();
       const analysis = stats.analysis || {};
 
-      const validArea =
-        Number(analysis.validAreaPx2 || 0);
+      const sourceIsRoi =
+        analysis.source === "tissue-roi";
+
+      const sourceLabel =
+        sourceIsRoi
+          ? "Tissue ROI"
+          : "Full image";
 
       const baseArea =
         Number(
           analysis.baseAreaPx2
-          || validArea
+          || 0
         );
 
-      const sourceLabel =
-        analysis.source === "tissue-roi"
-          ? "Tissue ROI"
-          : "Full image";
+      const postBorderArea =
+        Number(
+          analysis.postBorderAreaPx2
+          || baseArea
+        );
+
+      const artifactArea =
+        Number(
+          analysis.artifactAreaPx2
+          || 0
+        );
+
+      const artifactPercent =
+        Number(
+          analysis.artifactPercentPostBorder
+          || 0
+        );
+
+      const artifactCount =
+        Number(
+          analysis.artifactCount
+          || 0
+        );
+
+      const validArea =
+        Number(
+          analysis.validAreaPx2
+          || 0
+        );
 
       const percentHeader =
-        analysis.source === "tissue-roi"
+        sourceIsRoi
           ? "% valid tissue"
-          : "% image";
+          : "% valid area";
 
       const rowsHtml =
         (stats.rows || [])
@@ -13121,19 +13635,31 @@
           .join("");
 
       const totalArea =
-        Number(stats.totalUnionAreaPx2 || 0);
+        Number(
+          stats.totalUnionAreaPx2
+          || 0
+        );
 
       const totalPercent =
-        Number(stats.totalPercentValid || 0);
+        Number(
+          stats.totalPercentValid
+          || 0
+        );
 
       const borderEnabled =
         Boolean(
           analysis.externalBorderEnabled
         );
 
-      const borderPercent =
+      const borderActual =
         Number(
           analysis.externalBorderActualPct
+          || 0
+        );
+
+      const borderRequested =
+        Number(
+          analysis.externalBorderRequestedPct
           || 0
         );
 
@@ -13143,24 +13669,8 @@
           || 0
         );
 
-      const borderSummary =
-        (
-          analysis.source === "tissue-roi"
-          && borderEnabled
-        )
-          ? `
-            <span>
-              External border exclusion:
-              ${formatStatNumber(borderPercent, 2)}%
-              ${borderWidth > 0
-                ? `· ≈${formatStatNumber(borderWidth, 1)} px inward`
-                : ""}
-            </span>
-          `
-          : "";
-
       const baseSummary =
-        analysis.source === "tissue-roi"
+        sourceIsRoi
           ? `
             <span>
               Original Tissue ROI:
@@ -13174,6 +13684,54 @@
             </span>
           `;
 
+      const borderSummary =
+        (
+          sourceIsRoi
+          && borderEnabled
+        )
+          ? `
+            <span>
+              External border:
+              ${formatStatNumber(borderActual, 2)}%
+              excluded
+              ${Math.abs(borderActual - borderRequested) > 0.05
+                ? ` (requested ${formatStatNumber(borderRequested, 1)}%)`
+                : ""}
+              ${borderWidth > 0
+                ? ` · ≈${formatStatNumber(borderWidth, 1)} px inward`
+                : ""}
+            </span>
+            <span>
+              Tissue after border:
+              ${formatStatNumber(postBorderArea)} px²
+            </span>
+          `
+          : "";
+
+      const artifactSummary =
+        artifactCount > 0
+          ? `
+            <span>
+              Artifact excluded:
+              ${formatStatNumber(artifactArea)} px²
+              · ${formatStatNumber(artifactPercent, 2)}%
+              of ${sourceIsRoi ? "post-border tissue" : "image"}
+              · ${formatStatNumber(artifactCount)}
+              feature${artifactCount === 1 ? "" : "s"}
+            </span>
+          `
+          : `
+            <span>
+              Artifact excluded:
+              0 px² · 0.00%
+            </span>
+          `;
+
+      const validLabel =
+        sourceIsRoi
+          ? "Valid tissue"
+          : "Valid analysis area";
+
       els.annotationStatsContent.innerHTML = `
         <div class="stats-summary">
           <strong>${escapeHtml(currentImage.name)}</strong>
@@ -13183,8 +13741,9 @@
           </span>
           ${baseSummary}
           ${borderSummary}
+          ${artifactSummary}
           <span>
-            Valid analysis area:
+            <strong>${escapeHtml(validLabel)}:</strong>
             ${formatStatNumber(validArea)} px²
             · 100%
           </span>
@@ -13205,25 +13764,27 @@
 
             <tfoot>
               <tr>
-                <td>All annotations</td>
-                <td>${formatStatNumber(stats.totalAnnotations)}</td>
-                <td>${formatStatNumber(totalArea)}</td>
-                <td>${formatStatNumber(totalPercent, 2)}%</td>
+                <th>Union of biological classes</th>
+                <th>${formatStatNumber(stats.totalAnnotations || 0)}</th>
+                <th>${formatStatNumber(totalArea)}</th>
+                <th>${formatStatNumber(totalPercent, 2)}%</th>
               </tr>
             </tfoot>
           </table>
         </div>
 
         <p class="stats-note">
-          Tissue ROI settings define the valid analysis region before
-          statistics are calculated. Union within one class avoids
-          double-counting same-class overlap. Different classes may overlap,
-          so class percentages do not necessarily sum to 100%.
+          Artifact is a reviewable annotation class, but it is used as an
+          exclusion mask for these biological-area statistics and therefore
+          is not listed as a biological class row. Same-class overlaps are
+          unioned once. Different biological classes may overlap, so their
+          percentages do not need to sum to 100%.
         </p>
       `;
+
     } catch (error) {
       els.annotationStatsContent.innerHTML =
-        `<p class="modal-note">Statistics could not be calculated: ${escapeHtml(error.message)}</p>`;
+        `<p class="modal-note error-text">${escapeHtml(error.message || String(error))}</p>`;
     }
   }
 
@@ -14114,6 +14675,7 @@
     els.drawingProfileSelect?.addEventListener("change", () => setDrawingProfile(els.drawingProfileSelect.value));
     els.annotationFileSelect?.addEventListener("change", () => loadSelectedAnnotationFile(els.annotationFileSelect.value).catch((error) => setStatus(`Could not switch annotation file: ${error.message}`, "error")));
     els.newAnnotationFileButton?.addEventListener("click", createAnnotationFile);
+    els.deleteAnnotationFileButton?.addEventListener("click", deleteCurrentAnnotationFile);
     els.finishPathologistContour?.addEventListener("click", () => completePathologistDraft());
     els.addPathologistHole?.addEventListener("click", beginPathologistHole);
     els.cancelPathologistContour?.addEventListener("click", cancelPathologistDraft);
@@ -14252,6 +14814,15 @@
     els.intersectSelection?.addEventListener("click", () => combineSelected("intersect"));
     els.subtractSelection?.addEventListener("click", () => combineSelected("subtract"));
     els.clearSelection?.addEventListener("click", () => clearSelectedFeatures(true));
+    els.fillUnannotatedButton?.addEventListener("click", () => phaseDOpenFillUnannotated());
+    els.fillUnannotatedRefreshButton?.addEventListener("click", () => phaseDRefreshFillUnannotatedPreview());
+    els.fillUnannotatedCancelButton?.addEventListener("click", phaseDCloseFillUnannotated);
+    els.fillUnannotatedCreateButton?.addEventListener("click", phaseDCreateFillUnannotated);
+    els.fillUnannotatedClassSelect?.addEventListener("change", () => {
+      phaseDRenderFillUnannotatedSummary(phaseDFillUnannotatedPreview?.payload || null);
+      drawAnnotations();
+    });
+
     els.fillAnnotationsButton.addEventListener("click", () => {
       annotationsFilled = !annotationsFilled;
       els.fillAnnotationsButton.textContent = `${annotationsFilled ? "✓" : "○"} Fill annotations`;

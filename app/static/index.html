@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.2.0">
+  <link rel="stylesheet" href="./static/styles.css?v=1.3.0-alpha.3">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -57,7 +57,9 @@
             <option value="rgb">RGB / Other</option>
           </select>
         </label>
-        <button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
+
+
+
         <div class="menu-separator"></div>
         <button id="reviewModeButton" class="menu-item" type="button" disabled>Review annotations</button>
         <button id="phaseCWorkflowSummaryButton" class="menu-item" type="button" disabled>Workflow summary</button>
@@ -83,6 +85,9 @@
         <button id="phaseBFocusMenuButton" class="menu-item" type="button">Focus Mode</button>
         <button id="phaseBShortcutsMenuButton" class="menu-item" type="button">Keyboard shortcuts</button>
         <button id="phaseDTissueRoiMenuButton" class="menu-item" type="button">Tissue ROI…</button>
+<div class="phase-d7-1-v2-settings-separator"></div>
+<button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
+<button id="fillUnannotatedButton" class="menu-item" type="button" disabled>Fill unannotated tissue…</button>
       </div>
     </div>
 
@@ -220,10 +225,15 @@
       <section class="annotation-file-section">
         <label for="annotationFileSelect">Annotation file</label>
         <div class="annotation-file-row">
-          <select id="annotationFileSelect" aria-label="Annotation file" disabled>
+          <div class="phase-d7-1-v2-annotation-file-row">
+  <select id="annotationFileSelect" aria-label="Annotation file" disabled>
             <option value="Default">Default</option>
           </select>
-          <button id="newAnnotationFileButton" class="small-button" type="button" title="Create a separate annotation file" disabled>+</button>
+  <div class="phase-d7-1-v2-file-actions" aria-label="Annotation file actions">
+    <button id="newAnnotationFileButton" class="small-button" type="button" title="Create a separate annotation file" disabled>+</button>
+    <button id="deleteAnnotationFileButton" class="small-button" type="button" title="Delete the current annotation file" aria-label="Delete current annotation file" disabled>−</button>
+  </div>
+</div>
         </div>
       </section>
       <section class="class-section">
@@ -371,6 +381,29 @@
       <div class="modal-actions">
         <button id="reviewSetupCancelButton" type="button">Cancel</button>
         <button id="reviewSetupStartButton" type="button">Start review</button>
+      </div>
+    </section>
+  </div>
+
+
+  <div id="fillUnannotatedModal" class="modal-overlay" hidden>
+    <section class="modal-card stats-card" role="dialog" aria-modal="true" aria-labelledby="fillUnannotatedTitle">
+      <h2 id="fillUnannotatedTitle">Fill unannotated tissue</h2>
+      <p class="modal-note">
+        Preview of Valid Tissue not covered by any biological annotation.
+        Tissue ROI border exclusion and Artifact are already removed.
+      </p>
+      <label class="menu-field">
+        <span>Target class</span>
+        <select id="fillUnannotatedClassSelect"></select>
+      </label>
+      <div id="fillUnannotatedSummary">
+        <p class="modal-note">Calculating preview…</p>
+      </div>
+      <div class="modal-actions">
+        <button id="fillUnannotatedRefreshButton" type="button">Refresh preview</button>
+        <button id="fillUnannotatedCancelButton" type="button">Cancel</button>
+        <button id="fillUnannotatedCreateButton" type="button" disabled>Create annotation</button>
       </div>
     </section>
   </div>
@@ -581,6 +614,6 @@
 
 
 
-  <script src="./static/app.js?v=1.3.0-dev-D3.3"></script>
+  <script src="./static/app.js?v=1.3.0-alpha.3"></script>
 </body>
 </html>
