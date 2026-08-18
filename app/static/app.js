@@ -281,6 +281,12 @@
   let retryTimer = null;
   let dirty = false;
   let localDraftState = "Ready";
+  // Local-first revision state. Revisions are persisted with each draft and
+  // used only internally; GeoJSON remains unchanged.
+  let currentLocalRevision = 0;
+  let currentLastSyncedRevision = 0;
+  const annotationSyncChains = new Map();
+  const annotationSyncInFlight = new Set();
   let lastPointerType = "—";
   let tileStats = { loaded: 0, failed: 0 };
   let openSequence = 0;
@@ -2899,6 +2905,7 @@
           currentImage.id,
           currentAnnotationFile
         );
+      restoreCurrentRevisionState(localDraft);
 
       if (
         localDraft?.featureCollection?.type
@@ -3434,6 +3441,38 @@
   function localDraftKey(imageId, annotationFile = currentAnnotationFile) {
     return annotationFile === "Default" ? imageId : `${imageId}::${annotationFile}`;
   }
+  function currentDocumentKey() {
+    if (!currentImage) return "";
+    return localDraftKey(currentImage.id, currentAnnotationFile);
+  }
+  function restoreCurrentRevisionState(record) {
+    const localRevision = Math.max(
+      0,
+      Number(
+        record?.localRevision
+        || (record?.pending ? record?.updatedAt : 0)
+        || 0
+      )
+    );
+    const syncedRevision = Math.max(
+      0,
+      Number(record?.lastSyncedRevision ?? (record?.pending ? 0 : localRevision))
+    );
+    currentLocalRevision = Math.max(localRevision, syncedRevision);
+    currentLastSyncedRevision = Math.min(currentLocalRevision, syncedRevision);
+  }
+  function nextLocalRevision() {
+    currentLocalRevision = Math.max(currentLocalRevision + 1, Date.now());
+    return currentLocalRevision;
+  }
+  function currentSyncPending() {
+    return Boolean(
+      currentImage
+      && !currentImage.localNative
+      && currentLocalRevision > currentLastSyncedRevision
+    );
+  }
+
 
   async function getLocalDraft(imageId, annotationFile = currentAnnotationFile) {
     try {
@@ -3452,46 +3491,234 @@
   async function putLocalDraft(record) {
     try {
       const db = await openDraftDb();
+      return await new Promise((resolve, reject) => {
+        const transaction = db.transaction(DB_STORE, "readwrite");
+        const store = transaction.objectStore(DB_STORE);
+        const request = store.get(record.imageId);
+        request.onsuccess = () => {
+          const existing = request.result || null;
+          const existingRevision = Math.max(0, Number(existing?.localRevision || 0));
+          const incomingRevision = Math.max(0, Number(record?.localRevision || 0));
+
+          if (existing && existingRevision > incomingRevision) {
+            // A newer durable snapshot already exists. Treat this older write
+            // as safely superseded rather than as a persistence failure.
+            return;
+          }
+
+          store.put(record);
+        };
+        request.onerror = () => reject(request.error);
+        transaction.oncomplete = () => resolve(true);
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } catch (error) {
+      console.warn("Could not save the local draft", error);
+      return false;
+    }
+  }
+  async function persistLocalDraft(
+    pending = true,
+    image = currentImage,
+    payload = featureCollection,
+    options = {}
+  ) {
+    if (!image) return false;
+
+    const annotationFile = options.annotationFile ?? currentAnnotationFile;
+    const isCurrentDocument =
+      image.id === currentImage?.id
+      && annotationFile === currentAnnotationFile;
+    const localRevision = Math.max(
+      0,
+      Number(options.localRevision ?? (isCurrentDocument ? currentLocalRevision : 0))
+    );
+    const lastSyncedRevision = Math.max(
+      0,
+      Number(
+        options.lastSyncedRevision
+        ?? (isCurrentDocument ? currentLastSyncedRevision : (pending ? 0 : localRevision))
+      )
+    );
+    const effectivePending = image.localNative ? false : Boolean(pending);
+
+    const record = {
+      imageId: localDraftKey(image.id, annotationFile),
+      sourceImageId: image.id,
+      annotationFile,
+      imageName: image.name,
+      relativePath: image.relativePath,
+      localNative: Boolean(image.localNative),
+      featureCollection: deepClone(payload),
+      pending: effectivePending,
+      localRevision,
+      lastSyncedRevision,
+      updatedAt: Date.now(),
+    };
+
+    const saved = await putLocalDraft(record);
+    if (saved && isCurrentDocument && localRevision >= currentLocalRevision) {
+      if (image.localNative) {
+        localDraftState = "Saved locally";
+      } else if (effectivePending) {
+        localDraftState = "Saved locally · sync pending";
+      } else {
+        localDraftState = "Synced";
+      }
+      updateDiagnostics();
+    }
+    return saved;
+  }
+
+  async function applyAnnotationSyncResult(job, normalizedPayload) {
+    try {
+      const db = await openDraftDb();
       await new Promise((resolve, reject) => {
         const transaction = db.transaction(DB_STORE, "readwrite");
-        transaction.objectStore(DB_STORE).put(record);
+        const store = transaction.objectStore(DB_STORE);
+        const request = store.get(job.draftKey);
+
+        request.onsuccess = () => {
+          const existing = request.result || {
+            imageId: job.draftKey,
+            sourceImageId: job.image.id,
+            annotationFile: job.annotationFile,
+            imageName: job.image.name,
+            relativePath: job.image.relativePath,
+            localNative: false,
+            featureCollection: deepClone(job.payload),
+            pending: true,
+            localRevision: job.revision,
+            lastSyncedRevision: 0,
+            updatedAt: Date.now(),
+          };
+
+          const existingRevision = Math.max(0, Number(existing.localRevision || 0));
+          existing.lastSyncedRevision = Math.max(
+            Number(existing.lastSyncedRevision || 0),
+            job.revision
+          );
+
+          if (existingRevision <= job.revision) {
+            existing.localRevision = job.revision;
+            existing.featureCollection = deepClone(normalizedPayload);
+            existing.pending = false;
+          } else {
+            // A newer local state already exists. Keep it intact and only
+            // record how far the server has caught up.
+            existing.pending = true;
+          }
+
+          existing.updatedAt = Date.now();
+          store.put(existing);
+        };
+        request.onerror = () => reject(request.error);
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
         transaction.onabort = () => reject(transaction.error);
       });
       return true;
     } catch (error) {
-      console.warn("Could not save the local draft", error);
+      console.warn("Could not update local sync state", error);
       return false;
     }
   }
 
-  async function persistLocalDraft(pending = true, image = currentImage, payload = featureCollection) {
-    if (!image) return false;
-    const record = {
-      imageId: localDraftKey(image.id, currentAnnotationFile),
-      sourceImageId: image.id,
-      annotationFile: currentAnnotationFile,
-      imageName: image.name,
-      relativePath: image.relativePath,
-      localNative: Boolean(image.localNative),
-      featureCollection: deepClone(payload),
-      pending: image.localNative ? false : pending,
-      updatedAt: Date.now(),
-    };
-    const saved = await putLocalDraft(record);
-    if (saved && image.id === currentImage?.id) {
-      localDraftState = pending ? "Saved locally" : "Synced";
+  async function syncAnnotationSnapshot(job, showConfirmation = false) {
+    const key = job.draftKey;
+    annotationSyncInFlight.add(key);
+
+    if (currentDocumentKey() === key) {
+      localDraftState = "Syncing…";
       updateDiagnostics();
     }
-    return saved;
+
+    try {
+      const response = await apiFetch(
+        `${API}/annotations/${job.image.id}?file=${encodeURIComponent(job.annotationFile)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(job.payload),
+        }
+      );
+      const result = await response.json();
+      const normalizedPayload =
+        result?.featureCollection?.type === "FeatureCollection"
+          ? normalizeFeatureCollectionClient(result.featureCollection)
+          : job.payload;
+
+      await applyAnnotationSyncResult(job, normalizedPayload);
+
+      if (currentDocumentKey() === key) {
+        currentLastSyncedRevision = Math.max(currentLastSyncedRevision, job.revision);
+
+        if (currentLocalRevision === job.revision) {
+          // Only the newest revision may replace the live document.
+          featureCollection = normalizedPayload;
+          featureCollection.features.forEach(featureId);
+          dirty = false;
+          localDraftState = "Synced";
+        } else {
+          // The user edited while this request was in flight.
+          dirty = true;
+          localDraftState = "Saved locally · sync pending";
+        }
+
+        updateControls();
+        updateDiagnostics();
+
+        const repaired = Number(result?.report?.repaired || 0);
+        if (showConfirmation && currentLocalRevision === job.revision) {
+          setStatus(
+            `Saved to server: ${result.features} annotations${repaired ? ` · ${repaired} geometry repaired` : ""}`,
+            "saved"
+          );
+        }
+      }
+
+      return { synced: true, revision: job.revision };
+    } finally {
+      annotationSyncInFlight.delete(key);
+      if (currentDocumentKey() === key) updateDiagnostics();
+    }
   }
 
+  function enqueueAnnotationSync(job, showConfirmation = false) {
+    const key = job.draftKey;
+    const previous = annotationSyncChains.get(key) || Promise.resolve();
+
+    const run = previous
+      .catch(() => undefined)
+      .then(() => syncAnnotationSnapshot(job, showConfirmation));
+
+    let tracked;
+    tracked = run.finally(() => {
+      if (annotationSyncChains.get(key) === tracked) {
+        annotationSyncChains.delete(key);
+      }
+    });
+    annotationSyncChains.set(key, tracked);
+    return tracked;
+  }
   function scheduleLocalDraft() {
-    clearTimeout(localSaveTimer);
-    localSaveTimer = setTimeout(() => persistLocalDraft(true), 120);
+    if (!currentImage) return;
+    const image = currentImage;
+    const annotationFile = currentAnnotationFile;
+    const payload = deepClone(featureCollection);
+    const revision = currentLocalRevision;
+    void persistLocalDraft(
+      true,
+      image,
+      payload,
+      {
+        annotationFile,
+        localRevision: revision,
+        lastSyncedRevision: currentLastSyncedRevision,
+      }
+    );
   }
-
   async function requestPersistentStorage() {
     try {
       if (navigator.storage?.persist) await navigator.storage.persist();
@@ -3941,32 +4168,75 @@
   async function syncAllPendingDrafts(showToast = true) {
     if (IS_NATIVE && !API) {
       if (showToast) {
-        setStatus("No server configured; pending annotations remain on this device", "local");
+        setStatus(
+          "No server configured; pending annotations remain on this device",
+          "local"
+        );
+      }
+      return { synced: 0, failed: 0 };
+    }
+    if (!navigator.onLine) {
+      if (showToast) {
+        setStatus(
+          "Offline: synchronization will resume when a connection is available",
+          "local"
+        );
       }
       return { synced: 0, failed: 0 };
     }
 
-    if (!navigator.onLine) {
-      if (showToast) setStatus("Offline: synchronization will resume when a connection is available", "local");
-      return { synced: 0, failed: 0 };
-    }
-    const drafts = (await idbGetAll(DB_STORE)).filter((record) => record?.pending && !record?.localNative && record?.sourceImageId && record?.featureCollection);
-    let synced = 0; let failed = 0;
+    const drafts = (await idbGetAll(DB_STORE)).filter(
+      (record) =>
+        record?.pending
+        && !record?.localNative
+        && record?.sourceImageId
+        && record?.featureCollection
+    );
+
+    let synced = 0;
+    let failed = 0;
+
     for (const record of drafts) {
+      const revision = Math.max(
+        1,
+        Number(record.localRevision || record.updatedAt || Date.now())
+      );
+      const annotationFile = record.annotationFile || "Default";
+      const job = {
+        draftKey: localDraftKey(record.sourceImageId, annotationFile),
+        image: {
+          id: record.sourceImageId,
+          name: record.imageName || record.sourceImageId,
+          relativePath: record.relativePath || "",
+          localNative: false,
+        },
+        annotationFile,
+        payload: deepClone(record.featureCollection),
+        revision,
+      };
+
       try {
-        await apiFetch(`${API}/annotations/${record.sourceImageId}?file=${encodeURIComponent(record.annotationFile || "Default")}`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(record.featureCollection),
-        });
-        record.pending = false; record.updatedAt = Date.now(); await putLocalDraft(record); synced += 1;
-      } catch (_) { failed += 1; }
+        await enqueueAnnotationSync(job, false);
+        synced += 1;
+      } catch (_) {
+        failed += 1;
+      }
     }
+
     const localClasses = readLocalClasses();
     if (localClasses?.pending) await syncClassesToServer();
-    if (showToast) setStatus(failed ? `${synced} annotation files synced · ${failed} still pending` : `${synced} pending annotation files synchronized`, failed ? "local" : "saved");
+
+    if (showToast) {
+      setStatus(
+        failed
+          ? `${synced} annotation files synced · ${failed} still pending`
+          : `${synced} pending annotation files synchronized`,
+        failed ? "local" : "saved"
+      );
+    }
     updateDiagnostics();
     return { synced, failed };
   }
-
   function registerOfflineServiceWorker() {
     // The current Service Worker caches URLs from the web deployment.
     // Android alpha1 uses the native client and will receive a dedicated
@@ -6694,16 +6964,42 @@
   }
 
   function markChanged() {
+    if (!currentImage) return;
+
     dirty = true;
+    const image = currentImage;
+    const annotationFile = currentAnnotationFile;
+    const payload = deepClone(featureCollection);
+    const revision = nextLocalRevision();
+
+    localDraftState = "Saving locally…";
     updateControls();
     drawAnnotations();
-    scheduleLocalDraft();
+    updateDiagnostics();
+
+    // Local durability starts immediately. Drawing never awaits this promise.
+    void persistLocalDraft(
+      true,
+      image,
+      payload,
+      {
+        annotationFile,
+        localRevision: revision,
+        lastSyncedRevision: currentLastSyncedRevision,
+      }
+    ).then((saved) => {
+      if (!saved && currentDocumentKey() === localDraftKey(image.id, annotationFile)) {
+        setStatus("Could not persist annotations locally", "error");
+      }
+    });
+
     setStatus(
-      currentImage?.localNative
+      image.localNative
         ? "Saving annotations locally…"
-        : "Saving locally; server sync will follow automatically…",
+        : "Saved locally first; server sync will follow automatically…",
       "local"
     );
+
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => saveAnnotations(false), 1200);
   }
@@ -6711,70 +7007,110 @@
   function scheduleRetry() {
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => {
-      if (dirty && navigator.onLine) saveAnnotations(false);
+      if (navigator.onLine) syncAllPendingDrafts(false);
     }, 10000);
   }
 
   async function saveAnnotations(showConfirmation = true) {
     if (!currentImage || !dirty) return;
     clearTimeout(saveTimer);
-    const image = currentImage;
-    const payload = deepClone(featureCollection);
-    await persistLocalDraft(true, image, payload);
 
-    if (image.localNative) {
-      dirty = false;
-      localDraftState = "Saved locally";
-      updateControls();
-      updateDiagnostics();
+    const image = currentImage;
+    const annotationFile = currentAnnotationFile;
+    const payload = deepClone(featureCollection);
+    const revision = currentLocalRevision;
+    const draftKey = localDraftKey(image.id, annotationFile);
+
+    const savedLocally = await persistLocalDraft(
+      true,
+      image,
+      payload,
+      {
+        annotationFile,
+        localRevision: revision,
+        lastSyncedRevision: currentLastSyncedRevision,
+      }
+    );
+
+    if (!savedLocally) {
       setStatus(
-        `Saved locally: ${payload.features?.length || 0} annotations`,
-        "saved"
+        "Local annotation save failed; server sync was not attempted",
+        "error"
       );
       return;
     }
 
+    if (image.localNative) {
+      if (currentDocumentKey() === draftKey && currentLocalRevision === revision) {
+        dirty = false;
+        localDraftState = "Saved locally";
+        updateControls();
+        updateDiagnostics();
+      }
+      if (showConfirmation) {
+        setStatus(
+          `Saved locally: ${payload.features?.length || 0} annotations`,
+          "saved"
+        );
+      }
+      return;
+    }
+
     if (IS_NATIVE && !API) {
-      dirty = false;
-      localDraftState = "Saved locally";
-      updateControls();
-      updateDiagnostics();
-      setStatus("Saved locally · no server configured", "local");
+      if (currentDocumentKey() === draftKey && currentLocalRevision === revision) {
+        dirty = false;
+        localDraftState = "Saved locally · sync pending";
+        updateControls();
+        updateDiagnostics();
+      }
+      if (showConfirmation) {
+        setStatus("Saved locally · no server configured", "local");
+      }
       return;
     }
 
     if (!navigator.onLine) {
-      setStatus("Offline: annotations are safe on this device and waiting to sync", "local");
+      if (currentDocumentKey() === draftKey) {
+        localDraftState = "Saved locally · sync pending";
+        updateDiagnostics();
+      }
+      if (showConfirmation) {
+        setStatus(
+          "Offline: annotations are safe on this device and waiting to sync",
+          "local"
+        );
+      }
       scheduleRetry();
       return;
     }
 
+    const job = {
+      draftKey,
+      image: {
+        id: image.id,
+        name: image.name,
+        relativePath: image.relativePath,
+        localNative: false,
+      },
+      annotationFile,
+      payload,
+      revision,
+    };
+
     try {
-      const response = await apiFetch(`${API}/annotations/${image.id}?file=${encodeURIComponent(currentAnnotationFile)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
-      const normalizedPayload = result?.featureCollection?.type === "FeatureCollection" ? normalizeFeatureCollectionClient(result.featureCollection) : payload;
-      await persistLocalDraft(false, image, normalizedPayload);
-      if (currentImage?.id === image.id && currentAnnotationFile === (result.annotationFile || currentAnnotationFile)) {
-        featureCollection = normalizedPayload;
-        featureCollection.features.forEach(featureId);
-        dirty = false;
-        const repaired = Number(result?.report?.repaired || 0);
-        setStatus(`Saved to server: ${result.features} annotations${repaired ? ` · ${repaired} geometry repaired` : ""}`, "saved");
-        updateControls();
-        if (!showConfirmation) setTimeout(() => {
-          if (!dirty && currentImage?.id === image.id) setStatus(`${image.name} • synced`, "saved");
-        }, 1300);
-      }
+      await enqueueAnnotationSync(job, showConfirmation);
     } catch (error) {
-      setStatus(`Saved on this device; server sync pending: ${error.message}`, "local");
+      if (currentDocumentKey() === draftKey) {
+        localDraftState = "Saved locally · sync pending";
+        updateDiagnostics();
+      }
+      setStatus(
+        `Saved on this device; server sync pending: ${error.message}`,
+        "local"
+      );
       scheduleRetry();
     }
   }
-
   function updateControls() {
     const enabled = Boolean(currentImage);
     els.saveButton.disabled = !enabled || !dirty || geometryBusy;
@@ -6859,6 +7195,7 @@
     renderAnnotationFileOptions();
     clearSelectedFeatures(false); undoStack = []; redoStack = []; pathologistDraft = null; activeDraft = null; pointerState = null;
     const localDraft = await getLocalDraft(currentImage.id, currentAnnotationFile);
+    restoreCurrentRevisionState(localDraft);
     let serverCollection = null;
     if (!currentImage.localNative) {
       try {
@@ -6895,6 +7232,8 @@
     await putMeta(`files:${currentImage.id}`, annotationFiles);
     renderAnnotationFileOptions();
     featureCollection = { type: "FeatureCollection", features: [] };
+    currentLocalRevision = 0;
+    currentLastSyncedRevision = 0;
     dirty = false; localDraftState = navigator.onLine ? "New local file" : "Offline local file";
     await persistLocalDraft(false, currentImage, featureCollection);
     drawAnnotations(); updateControls(); updateDiagnostics();
@@ -7352,6 +7691,7 @@
       }
 
       const localDraft = await getLocalDraft(imageId, currentAnnotationFile);
+      restoreCurrentRevisionState(localDraft);
       if (localDraft?.pending && localDraft.featureCollection?.type === "FeatureCollection") {
         featureCollection = localDraft.featureCollection;
         dirty = true;
@@ -9351,16 +9691,28 @@
 
   function updateDiagnostics() {
     if (!els.diagnostics) return;
+
     let state = "Ready";
     if (currentImage) {
-      if (!navigator.onLine) state = "Offline · saved locally";
-      else if (dirty) state = "Saving";
-      else state = localDraftState === "Ready" ? "Synced" : localDraftState;
+      const key = currentDocumentKey();
+      if (annotationSyncInFlight.has(key)) {
+        state = "Syncing…";
+      } else if (!navigator.onLine) {
+        state = localDraftState.includes("Saved locally")
+          ? localDraftState
+          : "Offline · saved locally";
+      } else if (localDraftState !== "Ready") {
+        state = localDraftState;
+      } else if (currentSyncPending()) {
+        state = "Saved locally · sync pending";
+      } else {
+        state = "Synced";
+      }
     }
+
     const source = IS_NATIVE ? (NATIVE_SERVER ? "Server" : "Local") : "Web";
     els.diagnostics.textContent = `v${VERSION} · ${source} · ${state}`;
   }
-
   async function removeLegacyServiceWorker() {
     const result = {
       registrations: 0,
