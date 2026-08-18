@@ -6071,6 +6071,9 @@
     }
   }
 
+  // Standard Freehand gestures staying within this screen-space radius
+  // are treated as selection taps rather than drawings.
+  const FREEHAND_TAP_THRESHOLD_PX = 6;
   async function finalizeActiveDraft() {
     if (!activeDraft || geometryBusy) return;
     const draft = activeDraft;
@@ -6134,6 +6137,44 @@
       } catch (error) { setStatus(`Selection error: ${error.message}`, "error"); }
       finally { geometryBusy = false; updateControls(); drawAnnotations(); }
       return;
+    }
+
+    if (draft.type === "freehand") {
+      const origin = draft.points[0];
+      const originScreen = origin ? screenPointFromImage(origin) : null;
+      let maxTravelPx = 0;
+
+      if (originScreen) {
+        for (const point of draft.points) {
+          const screen = screenPointFromImage(point);
+          if (!screen) continue;
+          maxTravelPx = Math.max(
+            maxTravelPx,
+            Math.hypot(
+              screen.x - originScreen.x,
+              screen.y - originScreen.y
+            )
+          );
+        }
+      }
+
+      if (maxTravelPx <= FREEHAND_TAP_THRESHOLD_PX) {
+        const tapPoint =
+          draft.points[draft.points.length - 1]
+          || draft.points[0];
+
+        const id = hitTest(tapPoint);
+        // A Freehand tap is an intentional selection. With Phase A1,
+        // setSingleSelection() also clears the implicit "just drawn" marker.
+        setSingleSelection(id);
+
+        const feature =
+          selectedId ? findFeature(selectedId) : null;
+        syncCurrentClassFromFeature(feature);
+        updateControls();
+        drawAnnotations();
+        return;
+      }
     }
 
     geometryBusy = true;
