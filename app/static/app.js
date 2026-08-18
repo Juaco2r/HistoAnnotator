@@ -261,6 +261,9 @@
   let mode = "navigate";
   let selectedId = null;
   let selectedIds = new Set();
+  // ID of the annotation selected automatically just after drawing.
+  // Explicit user selection clears this marker.
+  let implicitSelectionId = null;
 
   const REVIEW_PROPERTY = "histoannotatorReview";
   let reviewPendingNewClassAssignment = false;
@@ -4148,9 +4151,22 @@
       label.textContent = item.name;
       main.append(swatch, label);
       main.addEventListener("click", () => {
+        const previousClassName = currentClass?.name || "";
+        const changingClass = item.name !== previousClassName;
+        const implicitOnly =
+          selectedIds.size === 1
+          && selectedId
+          && implicitSelectionId === selectedId;
+
         currentClass = item;
-        renderClassButtons();
-        if (selectedIds.size) {
+
+        if (implicitOnly) {
+          // Keep the newest annotation selected while the class is unchanged
+          // for rapid Shift + Add/Subtract. Choosing another class prepares
+          // the next annotation and must not reclassify the one just drawn.
+          if (changingClass) clearSelectedFeatures(false);
+        } else if (selectedIds.size) {
+          // Explicit selection: choosing a class intentionally reclassifies it.
           pushUndo();
           for (const feature of selectedFeatures()) {
             feature.properties = feature.properties || {};
@@ -4159,6 +4175,10 @@
           }
           markChanged();
         }
+
+        renderClassButtons();
+        updateControls();
+        drawAnnotations();
       });
 
       const edit = document.createElement("button");
@@ -4356,20 +4376,23 @@
   function clearSelectedFeatures(redraw = true) {
     selectedIds.clear();
     selectedId = null;
+    implicitSelectionId = null;
     if (redraw) {
       updateControls();
       drawAnnotations();
     }
   }
 
-  function setSingleSelection(id) {
+  function setSingleSelection(id, implicit = false) {
     selectedIds.clear();
     selectedId = id ? String(id) : null;
     if (selectedId) selectedIds.add(selectedId);
+    implicitSelectionId = implicit && selectedId ? selectedId : null;
   }
 
   function setMultiSelection(ids, primary = null) {
     selectedIds = new Set((ids || []).map(String));
+    implicitSelectionId = null;
     if (!selectedIds.size) selectedId = null;
     else if (primary && selectedIds.has(String(primary))) selectedId = String(primary);
     else {
@@ -6528,7 +6551,9 @@
       pushUndo();
       const feature = createAnnotationFeature(geometry);
       featureCollection.features.push(feature);
-      setSingleSelection(String(feature.id));
+      // Keep the newest annotation selected for rapid Shift + Add/Subtract,
+      // but mark that automatic selection as implicit.
+      setSingleSelection(String(feature.id), true);
       markChanged();
       setStatus(`${metadata.tool || "Area"} annotation created`, "saved");
       return true;
