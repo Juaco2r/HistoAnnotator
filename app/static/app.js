@@ -326,6 +326,9 @@
   let cachedCatalog = [];
   let restoreViewportState = null;
   let serverReachable = null;
+  // Pixel source and annotation connectivity are independent.
+  // A downloaded image can use local pixels while annotations stay connected.
+  let currentImageUsesOfflineCopy = false;
   let imageCatalogSequence = 0;
 
   function deepClone(value) {
@@ -7623,9 +7626,203 @@
     return true;
   }
 
+  function mergeAnnotationFileNames(...collections) {
+    const names = new Set(["Default"]);
+    for (const collection of collections) {
+      for (const raw of collection || []) {
+        const name = String(raw || "").trim();
+        if (name) names.add(name);
+      }
+    }
+    return [...names];
+  }
+
+  async function refreshDownloadedImageAnnotations(imageId, sequence) {
+    if (
+      !imageId
+      || !currentImage
+      || currentImage.id !== imageId
+      || currentImage.localNative
+      || !currentImageUsesOfflineCopy
+      || !navigator.onLine
+      || !API
+    ) {
+      return false;
+    }
+
+    try {
+      const filesResponse = await apiFetch(
+        `${API}/annotations/${imageId}/files`,
+        { timeoutMs: 7000 }
+      );
+      const filesPayload = await filesResponse.json();
+      const serverFiles =
+        Array.isArray(filesPayload?.files) && filesPayload.files.length
+          ? filesPayload.files
+          : ["Default"];
+
+      if (sequence !== openSequence || currentImage?.id !== imageId) {
+        return false;
+      }
+
+      const cachedFiles = await getMeta(`files:${imageId}`);
+      annotationFiles = mergeAnnotationFileNames(
+        serverFiles,
+        annotationFiles,
+        Array.isArray(cachedFiles) ? cachedFiles : []
+      );
+
+      if (!annotationFiles.includes(currentAnnotationFile)) {
+        currentAnnotationFile = "Default";
+      }
+
+      renderAnnotationFileOptions();
+      await putMeta(`files:${imageId}`, deepClone(annotationFiles));
+
+      const imageMeta = await getMeta(`image:${imageId}`);
+      if (imageMeta) {
+        imageMeta.annotationFiles = deepClone(annotationFiles);
+        await putMeta(`image:${imageId}`, imageMeta);
+      }
+
+      serverReachable = true;
+      localDraftState = currentSyncPending()
+        ? "Local copy · Connected · sync pending"
+        : "Local copy · Connected";
+      updateDiagnostics();
+
+      // Local pending work always wins and syncs before remote refresh.
+      await syncAllPendingDrafts(false);
+
+      // Cache every server file that is not protected by a newer/pending
+      // local draft. This makes newly discovered files available offline.
+      for (const annotationFile of serverFiles) {
+        if (sequence !== openSequence || currentImage?.id !== imageId) {
+          return false;
+        }
+
+        const before = await getLocalDraft(imageId, annotationFile);
+        if (before?.pending) continue;
+
+        const beforeRevision = Math.max(
+          0,
+          Number(before?.localRevision || 0)
+        );
+        const isCurrent =
+          annotationFile === currentAnnotationFile
+          && currentImage?.id === imageId;
+        const liveRevisionBefore = isCurrent
+          ? currentLocalRevision
+          : null;
+
+        let serverCollection;
+        try {
+          const response = await apiFetch(
+            `${API}/annotations/${imageId}?file=${encodeURIComponent(annotationFile)}`,
+            { timeoutMs: 10000 }
+          );
+          serverCollection = normalizeFeatureCollectionClient(
+            await response.json()
+          );
+        } catch (error) {
+          console.warn(
+            `Could not refresh annotation file ${annotationFile}`,
+            error
+          );
+          continue;
+        }
+
+        // The user may have edited while the request was in flight.
+        const latest = await getLocalDraft(imageId, annotationFile);
+        const latestRevision = Math.max(
+          0,
+          Number(latest?.localRevision || 0)
+        );
+        const liveChanged =
+          isCurrent
+          && (
+            dirty
+            || currentLocalRevision !== liveRevisionBefore
+          );
+
+        if (
+          latest?.pending
+          || latestRevision > beforeRevision
+          || liveChanged
+        ) {
+          continue;
+        }
+
+        const syncedRevision = Math.max(
+          beforeRevision,
+          Number(latest?.lastSyncedRevision || 0)
+        );
+
+        await persistLocalDraft(
+          false,
+          currentImage,
+          serverCollection,
+          {
+            annotationFile,
+            localRevision: syncedRevision,
+            lastSyncedRevision: syncedRevision,
+          }
+        );
+
+        if (
+          isCurrent
+          && sequence === openSequence
+          && currentImage?.id === imageId
+          && !dirty
+          && currentLocalRevision === liveRevisionBefore
+        ) {
+          featureCollection = deepClone(serverCollection);
+          featureCollection.features.forEach(featureId);
+          const refreshedRecord =
+            await getLocalDraft(imageId, annotationFile);
+          restoreCurrentRevisionState(refreshedRecord);
+          clearSelectedFeatures(false);
+          undoStack = [];
+          redoStack = [];
+          drawAnnotations();
+          updateControls();
+        }
+      }
+
+      if (sequence === openSequence && currentImage?.id === imageId) {
+        localDraftState = currentSyncPending()
+          ? "Local copy · Connected · sync pending"
+          : "Local copy · Connected · Synced";
+        updateDiagnostics();
+        setStatus(
+          `Local image · ${annotationFiles.length} annotation file${
+            annotationFiles.length === 1 ? "" : "s"
+          } available`,
+          "saved"
+        );
+      }
+
+      return true;
+    } catch (error) {
+      serverReachable = false;
+      if (sequence === openSequence && currentImage?.id === imageId) {
+        localDraftState = currentSyncPending()
+          ? "Local copy · Offline · sync pending"
+          : "Local copy · Offline";
+        updateDiagnostics();
+      }
+      console.warn(
+        "Downloaded-image annotation refresh unavailable",
+        error
+      );
+      return false;
+    }
+  }
+
   async function openImage(imageId) {
     if (reviewState.active) exitReviewMode();
     const sequence = ++openSequence;
+    currentImageUsesOfflineCopy = false;
     if (dirty) await saveAnnotations(false);
     if (!imageId) {
       currentImage = null;
@@ -7691,6 +7888,7 @@
       let cachedRecord = await getMeta(`image:${imageId}`);
       let offlinePackage = await offlineRecordForImage(imageId);
       const preferOffline = Boolean(offlinePackage && (offlinePackage.info || cachedRecord?.info));
+      currentImageUsesOfflineCopy = preferOffline;
 
       // A fully downloaded image opens immediately from local metadata/cache.
       // VPN/server checks happen later and never hold the viewer on “Preparing”.
@@ -7726,7 +7924,12 @@
         if (!offlinePackage) throw new Error("This image has not been downloaded for offline use");
         currentInfo = offlinePackage.info || cachedRecord?.info;
         if (!currentInfo) throw new Error("Offline image metadata is missing");
-        annotationFiles = offlinePackage.annotationFiles || cachedRecord?.annotationFiles || ["Default"];
+        const refreshedCachedFiles = await getMeta(`files:${imageId}`);
+        annotationFiles = mergeAnnotationFileNames(
+          offlinePackage.annotationFiles || [],
+          cachedRecord?.annotationFiles || [],
+          Array.isArray(refreshedCachedFiles) ? refreshedCachedFiles : []
+        );
         currentAnnotationFile = annotationFiles.includes(currentAnnotationFile) ? currentAnnotationFile : "Default";
         renderAnnotationFileOptions();
         if (offlinePackage.displayQuery) applyOfflineDisplayQuery(offlinePackage.displayQuery);
@@ -7794,15 +7997,10 @@
       updateControls();
       updateDiagnostics();
 
-      if (preferOffline && navigator.onLine) {
-        // Do not await: local opening is complete already. This only updates
-        // reachability and pushes pending local annotations when possible.
-        apiFetch(`${API}/images/${imageId}/info`, { timeoutMs: 5000 })
-          .then(() => {
-            serverReachable = true;
-            return syncAllPendingDrafts(false);
-          })
-          .catch(() => { serverReachable = false; });
+      if (preferOffline && navigator.onLine && API) {
+        // Do not await: local pixels are already open. Refresh annotations
+        // independently so a downloaded image never freezes an old catalog.
+        void refreshDownloadedImageAnnotations(imageId, sequence);
       }
     } catch (error) {
       if (sequence !== openSequence) return;
