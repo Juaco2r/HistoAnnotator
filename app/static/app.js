@@ -285,8 +285,10 @@
   // used only internally; GeoJSON remains unchanged.
   let currentLocalRevision = 0;
   let currentLastSyncedRevision = 0;
+  let currentPendingChangeCount = 0;
   const annotationSyncChains = new Map();
   const annotationSyncInFlight = new Set();
+  const annotationLatestQueuedRevision = new Map();
   let lastPointerType = "—";
   let tileStats = { loaded: 0, failed: 0 };
   let openSequence = 0;
@@ -3460,6 +3462,10 @@
     );
     currentLocalRevision = Math.max(localRevision, syncedRevision);
     currentLastSyncedRevision = Math.min(currentLocalRevision, syncedRevision);
+    currentPendingChangeCount = Math.max(
+      0,
+      Number(record?.pendingChangeCount ?? (record?.pending ? 1 : 0))
+    );
   }
   function nextLocalRevision() {
     currentLocalRevision = Math.max(currentLocalRevision + 1, Date.now());
@@ -3542,6 +3548,15 @@
       )
     );
     const effectivePending = image.localNative ? false : Boolean(pending);
+    const pendingChangeCount = effectivePending
+      ? Math.max(
+          0,
+          Number(
+            options.pendingChangeCount
+            ?? (isCurrentDocument ? currentPendingChangeCount : 1)
+          )
+        )
+      : 0;
 
     const record = {
       imageId: localDraftKey(image.id, annotationFile),
@@ -3552,6 +3567,7 @@
       localNative: Boolean(image.localNative),
       featureCollection: deepClone(payload),
       pending: effectivePending,
+      pendingChangeCount,
       localRevision,
       lastSyncedRevision,
       updatedAt: Date.now(),
@@ -3560,6 +3576,7 @@
     const saved = await putLocalDraft(record);
     if (saved && isCurrentDocument && localRevision >= currentLocalRevision) {
       if (image.localNative) {
+        currentPendingChangeCount = 0;
         localDraftState = "Saved locally";
       } else if (effectivePending) {
         localDraftState = "Saved locally · sync pending";
@@ -3589,6 +3606,7 @@
             localNative: false,
             featureCollection: deepClone(job.payload),
             pending: true,
+            pendingChangeCount: 1,
             localRevision: job.revision,
             lastSyncedRevision: 0,
             updatedAt: Date.now(),
@@ -3604,6 +3622,7 @@
             existing.localRevision = job.revision;
             existing.featureCollection = deepClone(normalizedPayload);
             existing.pending = false;
+            existing.pendingChangeCount = 0;
           } else {
             // A newer local state already exists. Keep it intact and only
             // record how far the server has caught up.
@@ -3659,6 +3678,7 @@
           featureCollection = normalizedPayload;
           featureCollection.features.forEach(featureId);
           dirty = false;
+          currentPendingChangeCount = 0;
           localDraftState = "Synced";
         } else {
           // The user edited while this request was in flight.
@@ -3687,18 +3707,46 @@
 
   function enqueueAnnotationSync(job, showConfirmation = false) {
     const key = job.draftKey;
+    const revision = Math.max(0, Number(job.revision || 0));
+    const previousHighest = Math.max(
+      0,
+      Number(annotationLatestQueuedRevision.get(key) || 0)
+    );
+    annotationLatestQueuedRevision.set(
+      key,
+      Math.max(previousHighest, revision)
+    );
+
     const previous = annotationSyncChains.get(key) || Promise.resolve();
 
     const run = previous
       .catch(() => undefined)
-      .then(() => syncAnnotationSnapshot(job, showConfirmation));
+      .then(() => {
+        const latestQueued = Math.max(
+          0,
+          Number(annotationLatestQueuedRevision.get(key) || 0)
+        );
+
+        if (revision < latestQueued) {
+          return {
+            synced: false,
+            skipped: true,
+            revision,
+            supersededBy: latestQueued,
+          };
+        }
+
+        return syncAnnotationSnapshot(job, showConfirmation);
+      });
 
     let tracked;
     tracked = run.finally(() => {
       if (annotationSyncChains.get(key) === tracked) {
         annotationSyncChains.delete(key);
+        annotationLatestQueuedRevision.delete(key);
       }
     });
+
     annotationSyncChains.set(key, tracked);
     return tracked;
   }
@@ -4216,8 +4264,8 @@
       };
 
       try {
-        await enqueueAnnotationSync(job, false);
-        synced += 1;
+        const result = await enqueueAnnotationSync(job, false);
+        if (result?.synced) synced += 1;
       } catch (_) {
         failed += 1;
       }
@@ -6971,6 +7019,7 @@
     const annotationFile = currentAnnotationFile;
     const payload = deepClone(featureCollection);
     const revision = nextLocalRevision();
+    currentPendingChangeCount += 1;
 
     localDraftState = "Saving locally…";
     updateControls();
@@ -6986,6 +7035,7 @@
         annotationFile,
         localRevision: revision,
         lastSyncedRevision: currentLastSyncedRevision,
+        pendingChangeCount: currentPendingChangeCount,
       }
     ).then((saved) => {
       if (!saved && currentDocumentKey() === localDraftKey(image.id, annotationFile)) {
@@ -7029,6 +7079,7 @@
         annotationFile,
         localRevision: revision,
         lastSyncedRevision: currentLastSyncedRevision,
+        pendingChangeCount: currentPendingChangeCount,
       }
     );
 
@@ -7043,6 +7094,7 @@
     if (image.localNative) {
       if (currentDocumentKey() === draftKey && currentLocalRevision === revision) {
         dirty = false;
+        currentPendingChangeCount = 0;
         localDraftState = "Saved locally";
         updateControls();
         updateDiagnostics();
@@ -7234,6 +7286,7 @@
     featureCollection = { type: "FeatureCollection", features: [] };
     currentLocalRevision = 0;
     currentLastSyncedRevision = 0;
+    currentPendingChangeCount = 0;
     dirty = false; localDraftState = navigator.onLine ? "New local file" : "Offline local file";
     await persistLocalDraft(false, currentImage, featureCollection);
     drawAnnotations(); updateControls(); updateDiagnostics();
@@ -9695,16 +9748,24 @@
     let state = "Ready";
     if (currentImage) {
       const key = currentDocumentKey();
+      const pendingCount = Math.max(0, Number(currentPendingChangeCount || 0));
+      const pendingLabel =
+        pendingCount === 1 ? "1 pending" : `${pendingCount} pending`;
+
       if (annotationSyncInFlight.has(key)) {
-        state = "Syncing…";
+        state = pendingCount ? `Syncing… · ${pendingLabel}` : "Syncing…";
       } else if (!navigator.onLine) {
-        state = localDraftState.includes("Saved locally")
-          ? localDraftState
-          : "Offline · saved locally";
+        state = pendingCount
+          ? `Saved locally · ${pendingLabel}`
+          : (localDraftState.includes("Saved locally")
+              ? localDraftState
+              : "Offline · saved locally");
+      } else if (currentSyncPending()) {
+        state = pendingCount
+          ? `Saved locally · ${pendingLabel}`
+          : "Saved locally · sync pending";
       } else if (localDraftState !== "Ready") {
         state = localDraftState;
-      } else if (currentSyncPending()) {
-        state = "Saved locally · sync pending";
       } else {
         state = "Synced";
       }
