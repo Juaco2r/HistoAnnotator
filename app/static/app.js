@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.2.0";
+  const VERSION = "1.3.0-dev-C";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -354,35 +354,93 @@
   }
 
   function normalizeFeatureCollectionClient(payload) {
-    const source = payload?.type === "FeatureCollection" && Array.isArray(payload.features) ? payload : { type: "FeatureCollection", features: [] };
+    const source =
+      payload?.type === "FeatureCollection"
+      && Array.isArray(payload.features)
+        ? payload
+        : { type: "FeatureCollection", features: [] };
+
     const features = source.features
-      .filter((feature) => feature?.type === "Feature" && feature.geometry)
+      .filter(
+        (feature) =>
+          feature?.type === "Feature"
+          && feature.geometry
+      )
       .map((feature) => {
-        const sourceProperties = feature.properties && typeof feature.properties === "object" ? feature.properties : {};
-        const classification = sourceProperties.classification && typeof sourceProperties.classification === "object" ? sourceProperties.classification : null;
-        let color = classification ? rgbArrayToHex(classification.color) : null;
-        if (!color && classification && classification.colorRGB !== undefined) color = colorRgbIntegerToHex(classification.colorRGB);
-        if (!color) color = sourceProperties.histoannotator?.color || null;
-        const properties = {
-          objectType: sourceProperties.objectType || sourceProperties.object_type || "annotation",
-          isLocked: Boolean(sourceProperties.isLocked),
-        };
-        if (classification?.name) {
-          properties.classification = { name: String(classification.name) };
-          const rgb = color ? hexToRgbArray(color) : null;
-          if (rgb) properties.classification.color = rgb;
+        const sourceProperties =
+          feature.properties
+          && typeof feature.properties === "object"
+            ? feature.properties
+            : {};
+
+        const classification =
+          sourceProperties.classification
+          && typeof sourceProperties.classification === "object"
+            ? sourceProperties.classification
+            : null;
+
+        let color =
+          classification
+            ? rgbArrayToHex(classification.color)
+            : null;
+
+        if (
+          !color
+          && classification
+          && classification.colorRGB !== undefined
+        ) {
+          color =
+            colorRgbIntegerToHex(
+              classification.colorRGB
+            );
         }
-        const review = sourceProperties.histoannotatorReview;
-        if (review && typeof review === "object") {
-          const status = String(review.status || "").toLowerCase();
-          if (status === "correct" || status === "maybe" || status === "later") {
-            properties.histoannotatorReview = { status };
-            if (review.reviewedAt) properties.histoannotatorReview.reviewedAt = String(review.reviewedAt);
+
+        if (!color) {
+          color =
+            sourceProperties.histoannotator?.color
+            || null;
+        }
+
+        const properties = {
+          objectType:
+            sourceProperties.objectType
+            || sourceProperties.object_type
+            || "annotation",
+          isLocked: Boolean(
+            sourceProperties.isLocked
+          ),
+        };
+
+        if (classification?.name) {
+          properties.classification = {
+            name: String(classification.name),
+          };
+
+          const rgb =
+            color
+              ? hexToRgbArray(color)
+              : null;
+
+          if (rgb) {
+            properties.classification.color = rgb;
           }
         }
-        for (const key of ["name", "description", "measurements"]) {
-          if (key in sourceProperties) properties[key] = sourceProperties[key];
+
+        properties.histoannotator =
+          phaseCNormalizeMetadata(
+            sourceProperties
+          );
+
+        for (
+          const key
+          of ["name", "description", "measurements"]
+        ) {
+          if (key in sourceProperties) {
+            properties[key] =
+              deepClone(sourceProperties[key]);
+          }
         }
+
         return {
           type: "Feature",
           id: String(feature.id || uid()),
@@ -390,9 +448,12 @@
           properties,
         };
       });
-    return { type: "FeatureCollection", features };
-  }
 
+    return {
+      type: "FeatureCollection",
+      features,
+    };
+  }
   function quPathFeatureCollection(payload = featureCollection) {
     return normalizeFeatureCollectionClient(payload);
   }
@@ -4493,7 +4554,6 @@
           for (const feature of selectedFeatures()) {
             feature.properties = feature.properties || {};
             feature.properties.classification = { name: item.name, color: hexToRgbArray(item.color) };
-            delete feature.properties.histoannotator;
           }
           markChanged();
         }
@@ -6037,6 +6097,1339 @@
   }
 
 
+
+  // ========================================================================
+  // Phase C — workflow, review decision, provenance, and lifecycle.
+  // ========================================================================
+
+  const PHASE_C_SCHEMA_VERSION = 1;
+  const PHASE_C_REVIEWER_STORAGE =
+    "histoannotator.reviewer.v1";
+
+  let phaseCSemanticBaseline = null;
+
+  function phaseCDeviceLabel() {
+    if (IS_NATIVE) {
+      const platform =
+        window.Capacitor?.getPlatform?.();
+
+      if (platform === "android") return "Android";
+      if (platform === "ios") return "iOS";
+      return "Native";
+    }
+
+    return "Web/Desktop";
+  }
+
+  function phaseCCanonicalLifecycle(value) {
+    const normalized =
+      String(value || "")
+        .trim()
+        .toLowerCase();
+
+    if (normalized === "approved") return "Approved";
+    if (normalized === "reviewed") return "Reviewed";
+    return "Draft";
+  }
+
+  function phaseCCanonicalDecision(value) {
+    const normalized =
+      String(value || "")
+        .trim()
+        .toLowerCase();
+
+    return ["correct", "maybe", "later"].includes(normalized)
+      ? normalized
+      : null;
+  }
+
+  function phaseCNormalizeMetadata(sourceProperties = {}) {
+    const source =
+      sourceProperties?.histoannotator
+      && typeof sourceProperties.histoannotator === "object"
+        ? deepClone(sourceProperties.histoannotator)
+        : {};
+
+    source.schemaVersion = PHASE_C_SCHEMA_VERSION;
+    source.role = String(source.role || "annotation");
+
+    const workflowSource =
+      source.workflow
+      && typeof source.workflow === "object"
+        ? source.workflow
+        : {};
+
+    let decision =
+      phaseCCanonicalDecision(
+        workflowSource.reviewDecision
+      );
+
+    const legacyReview =
+      sourceProperties?.histoannotatorReview;
+
+    if (
+      !decision
+      && legacyReview
+      && typeof legacyReview === "object"
+    ) {
+      decision =
+        phaseCCanonicalDecision(
+          legacyReview.status
+        );
+
+      if (
+        !workflowSource.reviewedAt
+        && legacyReview.reviewedAt
+      ) {
+        workflowSource.reviewedAt =
+          String(legacyReview.reviewedAt);
+      }
+    }
+
+    let status =
+      phaseCCanonicalLifecycle(
+        workflowSource.status
+      );
+
+    if (
+      !workflowSource.status
+      && decision === "correct"
+    ) {
+      status = "Reviewed";
+    }
+
+    if (
+      decision === "maybe"
+      || decision === "later"
+    ) {
+      status = "Draft";
+    }
+
+    source.workflow = {
+      status,
+      reviewDecision: decision,
+      reviewer:
+        String(workflowSource.reviewer || "").trim()
+        || null,
+      reviewedAt:
+        String(workflowSource.reviewedAt || "").trim()
+        || null,
+      approvedAt:
+        String(workflowSource.approvedAt || "").trim()
+        || null,
+    };
+
+    const provenanceSource =
+      source.provenance
+      && typeof source.provenance === "object"
+        ? source.provenance
+        : {};
+
+    const provenance = {};
+
+    for (
+      const key
+      of [
+        "createdAt",
+        "modifiedAt",
+        "createdWith",
+        "modifiedWith",
+        "createdDevice",
+        "modifiedDevice",
+      ]
+    ) {
+      const value =
+        String(provenanceSource[key] || "").trim();
+
+      if (value) provenance[key] = value;
+    }
+
+    const version =
+      Math.max(
+        0,
+        Number(provenanceSource.version || 0)
+      );
+
+    if (Number.isFinite(version) && version > 0) {
+      provenance.version = Math.floor(version);
+    }
+
+    source.provenance = provenance;
+    return source;
+  }
+
+  function phaseCCreateMetadata() {
+    const now =
+      new Date().toISOString();
+
+    return {
+      schemaVersion: PHASE_C_SCHEMA_VERSION,
+      role: "annotation",
+      workflow: {
+        status: "Draft",
+        reviewDecision: null,
+        reviewer: null,
+        reviewedAt: null,
+        approvedAt: null,
+      },
+      provenance: {
+        createdAt: now,
+        modifiedAt: now,
+        version: 1,
+        createdWith: VERSION,
+        modifiedWith: VERSION,
+        createdDevice: phaseCDeviceLabel(),
+        modifiedDevice: phaseCDeviceLabel(),
+      },
+    };
+  }
+
+  function phaseCEnsureFeatureMetadata(feature) {
+    if (!feature) return null;
+
+    feature.properties ||= {};
+
+    feature.properties.histoannotator =
+      phaseCNormalizeMetadata(
+        feature.properties
+      );
+
+    return feature.properties.histoannotator;
+  }
+
+  function phaseCCurrentReviewer() {
+    return String(
+      localStorage.getItem(
+        PHASE_C_REVIEWER_STORAGE
+      )
+      || ""
+    ).trim();
+  }
+
+  function phaseCSaveReviewerPreference(value) {
+    const reviewer =
+      String(value || "").trim();
+
+    if (reviewer) {
+      localStorage.setItem(
+        PHASE_C_REVIEWER_STORAGE,
+        reviewer
+      );
+    } else {
+      localStorage.removeItem(
+        PHASE_C_REVIEWER_STORAGE
+      );
+    }
+
+    return reviewer;
+  }
+
+  function phaseCTouchFeature(
+    feature,
+    options = {}
+  ) {
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    if (!metadata) return;
+
+    if (options.invalidateReview !== false) {
+      metadata.workflow.status = "Draft";
+      metadata.workflow.reviewDecision = null;
+      metadata.workflow.reviewer = null;
+      metadata.workflow.reviewedAt = null;
+      metadata.workflow.approvedAt = null;
+    }
+
+    const provenance =
+      metadata.provenance;
+
+    const previousVersion =
+      Math.max(
+        0,
+        Number(provenance.version || 0)
+      );
+
+    provenance.version =
+      Math.floor(previousVersion) + 1;
+
+    provenance.modifiedAt =
+      new Date().toISOString();
+
+    provenance.modifiedWith =
+      VERSION;
+
+    provenance.modifiedDevice =
+      phaseCDeviceLabel();
+  }
+
+  function phaseCFinalizeGeometryEdit(feature) {
+    if (!feature) return;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    metadata.workflow.status = "Draft";
+    metadata.workflow.reviewDecision = null;
+    metadata.workflow.reviewer = null;
+    metadata.workflow.reviewedAt = null;
+    metadata.workflow.approvedAt = null;
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+
+    // This edit is now accounted for explicitly. Prevent markChanged() from
+    // applying the semantic-diff provenance update a second time.
+    phaseCSemanticBaseline = null;
+  }
+
+  function phaseCSetReviewDecision(
+    feature,
+    decision
+  ) {
+    const normalized =
+      phaseCCanonicalDecision(decision);
+
+    if (!feature || !normalized) return;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    metadata.workflow.reviewDecision =
+      normalized;
+
+    metadata.workflow.status =
+      normalized === "correct"
+        ? "Reviewed"
+        : "Draft";
+
+    metadata.workflow.reviewer =
+      phaseCCurrentReviewer()
+      || metadata.workflow.reviewer
+      || null;
+
+    metadata.workflow.reviewedAt =
+      new Date().toISOString();
+
+    metadata.workflow.approvedAt = null;
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+  }
+
+  function phaseCResetToDraft(feature) {
+    if (!feature) return;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    metadata.workflow.status = "Draft";
+    metadata.workflow.reviewDecision = null;
+    metadata.workflow.reviewer = null;
+    metadata.workflow.reviewedAt = null;
+    metadata.workflow.approvedAt = null;
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+  }
+
+  function phaseCApproveFeature(feature) {
+    if (!feature) return false;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    if (metadata.workflow.status !== "Reviewed") {
+      return false;
+    }
+
+    metadata.workflow.status = "Approved";
+    metadata.workflow.reviewer =
+      phaseCCurrentReviewer()
+      || metadata.workflow.reviewer
+      || null;
+
+    metadata.workflow.approvedAt =
+      new Date().toISOString();
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+
+    return true;
+  }
+
+  function phaseCSemanticFingerprint(feature) {
+    return JSON.stringify({
+      geometry: feature?.geometry || null,
+      classification:
+        feature?.properties?.classification
+        || null,
+      name:
+        feature?.properties?.name
+        ?? null,
+      description:
+        feature?.properties?.description
+        ?? null,
+    });
+  }
+
+  function phaseCCaptureSemanticBaseline() {
+    phaseCSemanticBaseline =
+      new Map();
+
+    for (
+      const feature
+      of featureCollection.features
+      || []
+    ) {
+      phaseCSemanticBaseline.set(
+        String(featureId(feature)),
+        phaseCSemanticFingerprint(feature)
+      );
+    }
+  }
+
+  function phaseCApplySemanticChanges() {
+    if (!phaseCSemanticBaseline) return;
+
+    for (
+      const feature
+      of featureCollection.features
+      || []
+    ) {
+      const id =
+        String(featureId(feature));
+
+      if (!phaseCSemanticBaseline.has(id)) {
+        phaseCEnsureFeatureMetadata(feature);
+        continue;
+      }
+
+      const previous =
+        phaseCSemanticBaseline.get(id);
+
+      const current =
+        phaseCSemanticFingerprint(feature);
+
+      if (previous !== current) {
+        phaseCTouchFeature(
+          feature,
+          { invalidateReview: true }
+        );
+      }
+    }
+
+    phaseCSemanticBaseline = null;
+  }
+
+  function phaseCWorkflowForFeature(feature) {
+    return phaseCEnsureFeatureMetadata(feature)?.workflow
+      || {
+        status: "Draft",
+        reviewDecision: null,
+        reviewer: null,
+        reviewedAt: null,
+        approvedAt: null,
+      };
+  }
+
+  function phaseCSelectedFeature() {
+    if (
+      selectedIds.size !== 1
+      || !selectedId
+    ) {
+      return null;
+    }
+
+    return findFeature(selectedId);
+  }
+
+  function phaseCWorkflowRefs() {
+    return {
+      action:
+        document.getElementById("phaseCWorkflowAction"),
+      button:
+        document.getElementById("phaseCWorkflowButton"),
+      summaryButton:
+        document.getElementById("phaseCWorkflowSummaryButton"),
+      overlay:
+        document.getElementById("phaseCWorkflowOverlay"),
+      content:
+        document.getElementById("phaseCWorkflowContent"),
+      summary:
+        document.getElementById("phaseCWorkflowSummary"),
+      scope:
+        document.getElementById("phaseCWorkflowScope"),
+      reviewerInput:
+        document.getElementById("phaseCReviewerInput"),
+      saveReviewer:
+        document.getElementById("phaseCSaveReviewerButton"),
+      returnDraft:
+        document.getElementById("phaseCReturnDraftButton"),
+      approve:
+        document.getElementById("phaseCApproveButton"),
+      approveReviewed:
+        document.getElementById("phaseCApproveReviewedButton"),
+      close:
+        document.getElementById("phaseCCloseWorkflowButton"),
+    };
+  }
+
+
+  function phaseCCurrentClassName() {
+    return String(
+      currentClass?.name
+      || ""
+    ).trim();
+  }
+
+  function phaseCFeaturesForWorkflowScope(scope) {
+    const all =
+      featureCollection.features
+      || [];
+
+    if (scope === "selected") {
+      return all.filter(
+        (feature) =>
+          selectedIds.has(
+            String(featureId(feature))
+          )
+      );
+    }
+
+    if (scope === "class") {
+      const className =
+        phaseCCurrentClassName();
+
+      if (!className) return [];
+
+      return all.filter(
+        (feature) =>
+          String(
+            feature?.properties
+              ?.classification?.name
+            || ""
+          ) === className
+      );
+    }
+
+    return [...all];
+  }
+
+  function phaseCWorkflowSummaryFor(features) {
+    const summary = {
+      total: 0,
+      Draft: 0,
+      Reviewed: 0,
+      Approved: 0,
+      correct: 0,
+      maybe: 0,
+      later: 0,
+      pending: 0,
+    };
+
+    for (const feature of features || []) {
+      const workflow =
+        phaseCWorkflowForFeature(
+          feature
+        );
+
+      summary.total += 1;
+
+      const status =
+        phaseCCanonicalLifecycle(
+          workflow.status
+        );
+
+      summary[status] += 1;
+
+      const decision =
+        phaseCCanonicalDecision(
+          workflow.reviewDecision
+        );
+
+      if (decision) {
+        summary[decision] += 1;
+      } else {
+        summary.pending += 1;
+      }
+    }
+
+    return summary;
+  }
+
+  function phaseCWorkflowScopeLabel(scope, count) {
+    if (scope === "selected") {
+      return `${count} selected`;
+    }
+
+    if (scope === "class") {
+      const className =
+        phaseCCurrentClassName()
+        || "class";
+
+      return `${className} · ${count}`;
+    }
+
+    return `Current file · ${count}`;
+  }
+
+  function phaseCRenderBatchSummary(
+    refs,
+    features,
+    summary
+  ) {
+    if (!refs.summary) return;
+
+    refs.summary.hidden = false;
+    refs.summary.innerHTML = "";
+
+    const addHeading = (text) => {
+      const heading =
+        document.createElement("div");
+
+      heading.className =
+        "phase-c-summary-section";
+
+      heading.textContent = text;
+      refs.summary.append(heading);
+    };
+
+    const addItem = (label, value) => {
+      const item =
+        document.createElement("div");
+
+      item.className =
+        "phase-c-summary-item";
+
+      const strong =
+        document.createElement("strong");
+
+      strong.textContent =
+        String(value);
+
+      const span =
+        document.createElement("span");
+
+      span.textContent = label;
+
+      item.append(strong, span);
+      refs.summary.append(item);
+    };
+
+    addHeading("Lifecycle");
+    addItem("Total", summary.total);
+    addItem("Draft", summary.Draft);
+    addItem("Reviewed", summary.Reviewed);
+    addItem("Approved", summary.Approved);
+
+    addHeading("Review decisions");
+    addItem("Correct", summary.correct);
+    addItem("Maybe", summary.maybe);
+    addItem("Review later", summary.later);
+    addItem("Pending", summary.pending);
+  }
+
+  function phaseCOpenWorkflowSummary(
+    preferredScope = "file"
+  ) {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (!refs.overlay) return;
+
+    let scope =
+      preferredScope;
+
+    if (
+      scope === "selected"
+      && !selectedIds.size
+    ) {
+      scope = "file";
+    }
+
+    if (
+      scope === "class"
+      && !phaseCCurrentClassName()
+    ) {
+      scope = "file";
+    }
+
+    if (refs.scope) {
+      refs.scope.value = scope;
+    }
+
+    phaseCRenderWorkflowModal(
+      scope
+    );
+
+    refs.overlay.hidden = false;
+  }
+
+  function phaseCBatchApproveReviewed(scope) {
+    const features =
+      phaseCFeaturesForWorkflowScope(
+        scope
+      );
+
+    const targets =
+      features.filter(
+        (feature) =>
+          phaseCWorkflowForFeature(feature)
+            .status === "Reviewed"
+      );
+
+    if (!targets.length) {
+      setStatus(
+        "No Reviewed annotations in this scope",
+        "local"
+      );
+      return 0;
+    }
+
+    pushUndo();
+
+    let changed = 0;
+
+    for (const feature of targets) {
+      if (phaseCApproveFeature(feature)) {
+        changed += 1;
+      }
+    }
+
+    if (changed) {
+      markChanged();
+      phaseCUpdateWorkflowAction();
+
+      setStatus(
+        `${changed} Reviewed annotation${changed === 1 ? "" : "s"} Approved`,
+        "saved"
+      );
+    }
+
+    return changed;
+  }
+
+  function phaseCBatchReturnDraft(scope) {
+    const features =
+      phaseCFeaturesForWorkflowScope(
+        scope
+      );
+
+    const targets =
+      features.filter((feature) => {
+        const workflow =
+          phaseCWorkflowForFeature(
+            feature
+          );
+
+        return (
+          workflow.status !== "Draft"
+          || Boolean(
+            workflow.reviewDecision
+          )
+        );
+      });
+
+    if (!targets.length) {
+      setStatus(
+        "All annotations in this scope are already clean Drafts",
+        "local"
+      );
+      return 0;
+    }
+
+    pushUndo();
+
+    for (const feature of targets) {
+      phaseCResetToDraft(feature);
+    }
+
+    markChanged();
+    phaseCUpdateWorkflowAction();
+
+    setStatus(
+      `${targets.length} annotation${targets.length === 1 ? "" : "s"} returned to Draft`,
+      "saved"
+    );
+
+    return targets.length;
+  }
+
+  function phaseCFormatTimestamp(
+    value,
+    legacy = false
+  ) {
+    if (!value) {
+      return legacy
+        ? "— (legacy)"
+        : "—";
+    }
+
+    const parsed =
+      new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
+      return String(value);
+    }
+
+    return parsed.toLocaleString();
+  }
+
+  function phaseCUpdateWorkflowAction() {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (!refs.action || !refs.button) return;
+
+    const selectionCount =
+      selectedIds.size;
+
+    const feature =
+      phaseCSelectedFeature();
+
+    const visible =
+      selectionCount > 0
+      && !reviewState.active;
+
+    refs.action.hidden = !visible;
+
+    if (refs.summaryButton) {
+      refs.summaryButton.disabled =
+        !currentImage
+        || !featureCollection.features.length;
+    }
+
+    if (!visible) return;
+
+    refs.button.classList.remove(
+      "phase-c-workflow-button-draft",
+      "phase-c-workflow-button-reviewed",
+      "phase-c-workflow-button-approved"
+    );
+
+    if (selectionCount > 1) {
+      refs.button.textContent =
+        `Workflow · ${selectionCount} selected`;
+      return;
+    }
+
+    const workflow =
+      phaseCWorkflowForFeature(feature);
+
+    refs.button.textContent =
+      `Workflow · ${workflow.status}`;
+
+    refs.button.classList.add(
+      `phase-c-workflow-button-${workflow.status.toLowerCase()}`
+    );
+  }
+
+  function phaseCRenderWorkflowModal(
+    requestedScope = null
+  ) {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (!refs.content) return false;
+
+    let scope =
+      requestedScope
+      || refs.scope?.value
+      || (
+        selectedIds.size
+          ? "selected"
+          : "file"
+      );
+
+    if (
+      scope === "selected"
+      && !selectedIds.size
+    ) {
+      scope = "file";
+    }
+
+    if (
+      scope === "class"
+      && !phaseCCurrentClassName()
+    ) {
+      scope = "file";
+    }
+
+    if (refs.scope) {
+      refs.scope.value = scope;
+
+      const selectedOption =
+        refs.scope.querySelector(
+          'option[value="selected"]'
+        );
+
+      if (selectedOption) {
+        selectedOption.disabled =
+          selectedIds.size === 0;
+      }
+
+      const classOption =
+        refs.scope.querySelector(
+          'option[value="class"]'
+        );
+
+      if (classOption) {
+        const className =
+          phaseCCurrentClassName();
+
+        classOption.disabled =
+          !className;
+
+        classOption.textContent =
+          className
+            ? `Current class · ${className}`
+            : "Current class";
+      }
+    }
+
+    const features =
+      phaseCFeaturesForWorkflowScope(
+        scope
+      );
+
+    const summary =
+      phaseCWorkflowSummaryFor(
+        features
+      );
+
+    const singleIndividual =
+      scope === "selected"
+      && features.length === 1;
+
+    refs.content.innerHTML = "";
+
+    if (refs.summary) {
+      refs.summary.hidden =
+        singleIndividual;
+    }
+
+    if (singleIndividual) {
+      const feature =
+        features[0];
+
+      const metadata =
+        phaseCEnsureFeatureMetadata(
+          feature
+        );
+
+      const workflow =
+        metadata.workflow;
+
+      const provenance =
+        metadata.provenance;
+
+      const legacy =
+        !provenance.createdAt;
+
+      const rows = [
+        ["Status", workflow.status],
+        [
+          "Review decision",
+          workflow.reviewDecision || "—",
+        ],
+        [
+          "Reviewer",
+          workflow.reviewer || "—",
+        ],
+        [
+          "Created",
+          phaseCFormatTimestamp(
+            provenance.createdAt,
+            legacy
+          ),
+        ],
+        [
+          "Modified",
+          phaseCFormatTimestamp(
+            provenance.modifiedAt
+          ),
+        ],
+        [
+          "Version",
+          provenance.version
+            ? String(provenance.version)
+            : "— (legacy)",
+        ],
+        [
+          "Created with",
+          provenance.createdWith || "—",
+        ],
+        [
+          "Modified with",
+          provenance.modifiedWith || "—",
+        ],
+        [
+          "Created device",
+          provenance.createdDevice || "—",
+        ],
+        [
+          "Modified device",
+          provenance.modifiedDevice || "—",
+        ],
+      ];
+
+      for (
+        const [label, value]
+        of rows
+      ) {
+        const labelElement =
+          document.createElement("span");
+
+        labelElement.textContent =
+          label;
+
+        const valueElement =
+          document.createElement("strong");
+
+        valueElement.textContent =
+          value;
+
+        refs.content.append(
+          labelElement,
+          valueElement
+        );
+      }
+
+      if (refs.reviewerInput) {
+        refs.reviewerInput.value =
+          workflow.reviewer
+          || phaseCCurrentReviewer()
+          || "";
+      }
+
+      if (refs.approve) {
+        refs.approve.hidden = false;
+        refs.approve.disabled =
+          workflow.status !== "Reviewed";
+      }
+
+      if (refs.approveReviewed) {
+        refs.approveReviewed.hidden = true;
+      }
+
+      if (refs.returnDraft) {
+        refs.returnDraft.disabled =
+          workflow.status === "Draft"
+          && !workflow.reviewDecision;
+
+        refs.returnDraft.textContent =
+          "Return to Draft";
+      }
+    } else {
+      phaseCRenderBatchSummary(
+        refs,
+        features,
+        summary
+      );
+
+      const titleLabel =
+        document.createElement("span");
+
+      titleLabel.textContent =
+        "Scope";
+
+      const titleValue =
+        document.createElement("strong");
+
+      titleValue.textContent =
+        phaseCWorkflowScopeLabel(
+          scope,
+          summary.total
+        );
+
+      refs.content.append(
+        titleLabel,
+        titleValue
+      );
+
+      if (refs.reviewerInput) {
+        refs.reviewerInput.value =
+          phaseCCurrentReviewer()
+          || "";
+      }
+
+      if (refs.approve) {
+        refs.approve.hidden = true;
+      }
+
+      if (refs.approveReviewed) {
+        refs.approveReviewed.hidden = false;
+        refs.approveReviewed.disabled =
+          summary.Reviewed === 0;
+
+        refs.approveReviewed.textContent =
+          `Approve Reviewed (${summary.Reviewed})`;
+      }
+
+      if (refs.returnDraft) {
+        const resetCount =
+          features.filter((feature) => {
+            const workflow =
+              phaseCWorkflowForFeature(
+                feature
+              );
+
+            return (
+              workflow.status !== "Draft"
+              || Boolean(
+                workflow.reviewDecision
+              )
+            );
+          }).length;
+
+        refs.returnDraft.disabled =
+          resetCount === 0;
+
+        refs.returnDraft.textContent =
+          `Return to Draft (${resetCount})`;
+      }
+    }
+
+    return true;
+  }
+
+  function phaseCOpenWorkflowModal() {
+    const preferredScope =
+      selectedIds.size
+        ? "selected"
+        : "file";
+
+    phaseCOpenWorkflowSummary(
+      preferredScope
+    );
+  }
+
+  function phaseCCloseWorkflowModal() {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (refs.overlay) {
+      refs.overlay.hidden = true;
+    }
+  }
+
+  function phaseBBindPhaseCEvents() {
+    const refs =
+      phaseCWorkflowRefs();
+
+    refs.button?.addEventListener(
+      "click",
+      phaseCOpenWorkflowModal
+    );
+
+    refs.summaryButton?.addEventListener(
+      "click",
+      () => {
+        toggleFileMenu(false);
+        phaseCOpenWorkflowSummary("file");
+      }
+    );
+
+    refs.scope?.addEventListener(
+      "change",
+      () => {
+        phaseCRenderWorkflowModal(
+          refs.scope.value
+        );
+      }
+    );
+
+    refs.close?.addEventListener(
+      "click",
+      phaseCCloseWorkflowModal
+    );
+
+    refs.overlay?.addEventListener(
+      "click",
+      (event) => {
+        if (event.target === refs.overlay) {
+          phaseCCloseWorkflowModal();
+        }
+      }
+    );
+
+    refs.saveReviewer?.addEventListener(
+      "click",
+      () => {
+        const reviewer =
+          phaseCSaveReviewerPreference(
+            refs.reviewerInput?.value
+            || ""
+          );
+
+        const scope =
+          refs.scope?.value
+          || "selected";
+
+        const features =
+          phaseCFeaturesForWorkflowScope(
+            scope
+          );
+
+        // For a single selected annotation, Save reviewer also updates that
+        // reviewed/approved feature. For batch scopes it acts as the reviewer
+        // preference for subsequent review decisions, avoiding accidental
+        // rewriting of hundreds of historical reviewer fields.
+        if (
+          scope === "selected"
+          && features.length === 1
+        ) {
+          const feature =
+            features[0];
+
+          const metadata =
+            phaseCEnsureFeatureMetadata(
+              feature
+            );
+
+          if (
+            metadata.workflow.reviewDecision
+            || metadata.workflow.status === "Reviewed"
+            || metadata.workflow.status === "Approved"
+          ) {
+            pushUndo();
+
+            metadata.workflow.reviewer =
+              reviewer || null;
+
+            phaseCTouchFeature(
+              feature,
+              { invalidateReview: false }
+            );
+
+            markChanged();
+          }
+        }
+
+        phaseCRenderWorkflowModal(
+          scope
+        );
+
+        setStatus(
+          reviewer
+            ? `Reviewer set to ${reviewer}`
+            : "Reviewer preference cleared",
+          "saved"
+        );
+      }
+    );
+
+    refs.returnDraft?.addEventListener(
+      "click",
+      () => {
+        const scope =
+          refs.scope?.value
+          || "selected";
+
+        const features =
+          phaseCFeaturesForWorkflowScope(
+            scope
+          );
+
+        if (
+          scope === "selected"
+          && features.length === 1
+        ) {
+          const feature =
+            features[0];
+
+          const workflow =
+            phaseCWorkflowForFeature(
+              feature
+            );
+
+          if (
+            workflow.status === "Draft"
+            && !workflow.reviewDecision
+          ) {
+            return;
+          }
+
+          pushUndo();
+          phaseCResetToDraft(feature);
+          markChanged();
+
+          setStatus(
+            "Annotation returned to Draft",
+            "saved"
+          );
+        } else {
+          phaseCBatchReturnDraft(
+            scope
+          );
+        }
+
+        phaseCRenderWorkflowModal(
+          scope
+        );
+        phaseCUpdateWorkflowAction();
+      }
+    );
+
+    refs.approve?.addEventListener(
+      "click",
+      () => {
+        const feature =
+          phaseCSelectedFeature();
+
+        if (!feature) return;
+
+        pushUndo();
+
+        if (!phaseCApproveFeature(feature)) {
+          setStatus(
+            "Only Reviewed annotations can be Approved",
+            "error"
+          );
+          return;
+        }
+
+        markChanged();
+
+        phaseCRenderWorkflowModal(
+          "selected"
+        );
+        phaseCUpdateWorkflowAction();
+
+        setStatus(
+          "Annotation Approved",
+          "saved"
+        );
+      }
+    );
+
+    refs.approveReviewed?.addEventListener(
+      "click",
+      () => {
+        const scope =
+          refs.scope?.value
+          || "file";
+
+        phaseCBatchApproveReviewed(
+          scope
+        );
+
+        phaseCRenderWorkflowModal(
+          scope
+        );
+      }
+    );
+  }
+
   // ========================================================================
   // Phase B — compact Settings, Focus Mode, shortcuts, rectangle information.
   // ========================================================================
@@ -6637,6 +8030,8 @@
         phaseBToggleSettings(false);
       }
     });
+
+    phaseBBindPhaseCEvents();
   }
 
   function setMode(nextMode) {
@@ -6673,6 +8068,7 @@
     updateCircleActions();
     updateSelectionActions();
     phaseBUpdateRectangleAction();
+    phaseCUpdateWorkflowAction();
     drawAnnotations();
     updateDiagnostics();
   }
@@ -7573,6 +8969,7 @@
         objectType: "annotation",
         classification: { name: currentClass.name, color: hexToRgbArray(currentClass.color) },
         isLocked: false,
+        histoannotator: phaseCCreateMetadata(),
       },
     };
   }
@@ -7606,6 +9003,7 @@
       // Keep the same object id, class, name and QuPath properties; only its ROI
       // changes, matching the way QuPath edits a selected annotation.
       feature.geometry = result;
+      phaseCFinalizeGeometryEdit(feature);
       setStatus(operation === "add" ? "Area added to selected annotation" : "Area removed from selected annotation", "saved");
     }
     markChanged();
@@ -7642,6 +9040,7 @@
       }
       pushUndo();
       primary.geometry = result;
+      phaseCFinalizeGeometryEdit(primary);
       const removeIds = new Set(others.map(featureId));
       featureCollection.features = featureCollection.features.filter((feature) => !removeIds.has(featureId(feature)));
       setSingleSelection(featureId(primary));
@@ -7663,6 +9062,7 @@
   function deleteSelected() { deleteSelectedAnnotations(); }
 
   function pushUndo() {
+    phaseCCaptureSemanticBaseline();
     undoStack.push(deepClone(featureCollection.features));
     if (undoStack.length > 50) undoStack.shift();
     redoStack = [];
@@ -7671,6 +9071,7 @@
 
   function undo() {
     if (!undoStack.length) return;
+    phaseCCaptureSemanticBaseline();
     redoStack.push(deepClone(featureCollection.features));
     featureCollection.features = undoStack.pop();
     clearSelectedFeatures(false);
@@ -7679,6 +9080,7 @@
 
   function redo() {
     if (!redoStack.length) return;
+    phaseCCaptureSemanticBaseline();
     undoStack.push(deepClone(featureCollection.features));
     featureCollection.features = redoStack.pop();
     clearSelectedFeatures(false);
@@ -7686,6 +9088,7 @@
   }
 
   function markChanged() {
+    phaseCApplySemanticChanges();
     if (!currentImage) return;
 
     dirty = true;
@@ -7848,6 +9251,8 @@
     els.imageInfoButton.disabled = !enabled;
     if (els.annotationStatsButton) els.annotationStatsButton.disabled = !enabled || featureCollection.features.length === 0 || Boolean(currentImage?.localNative);
     if (els.reviewModeButton) els.reviewModeButton.disabled = !enabled || featureCollection.features.length === 0;
+    const phaseCWorkflowSummaryButton = document.getElementById("phaseCWorkflowSummaryButton");
+    if (phaseCWorkflowSummaryButton) phaseCWorkflowSummaryButton.disabled = !enabled || featureCollection.features.length === 0;
     if (els.imageTypeSelect) els.imageTypeSelect.disabled = !enabled;
     if (els.eyeButton) els.eyeButton.disabled = !enabled;
     if (els.displayButton) els.displayButton.disabled = !enabled;
@@ -7867,6 +9272,7 @@
     updateCircleActions();
     updateSelectionActions();
     phaseBUpdateRectangleAction();
+    phaseCUpdateWorkflowAction();
   }
 
   function formatBytes(bytes) {
@@ -9488,17 +10894,34 @@
     return feature?.properties?.classification?.name || "Unclassified";
   }
   function reviewStatus(feature) {
-    const status = feature?.properties?.[REVIEW_PROPERTY]?.status;
-    return status === "correct"
-      || status === "maybe"
-      || status === "later"
-      ? status
-      : "pending";
+    const workflow =
+      phaseCWorkflowForFeature(feature);
+
+    const decision =
+      phaseCCanonicalDecision(
+        workflow.reviewDecision
+      );
+
+    return decision || "pending";
   }
+
   function setReviewStatus(feature, status) {
-    feature.properties ||= {};
-    feature.properties[REVIEW_PROPERTY] = { status, reviewedAt: new Date().toISOString() };
+    phaseCSetReviewDecision(
+      feature,
+      status
+    );
+
+    if (
+      feature?.properties?.[
+        REVIEW_PROPERTY
+      ]
+    ) {
+      delete feature.properties[
+        REVIEW_PROPERTY
+      ];
+    }
   }
+
   function featuresForReviewScope(scope) {
     return (featureCollection.features || []).filter((feature) =>
       feature?.geometry && (scope === "all" || getFeatureClassName(feature) === scope)
@@ -9738,8 +11161,16 @@
       pushUndo();
 
       for (const feature of scoped) {
-        if (feature?.properties?.[REVIEW_PROPERTY]) {
-          delete feature.properties[REVIEW_PROPERTY];
+        phaseCResetToDraft(feature);
+
+        if (
+          feature?.properties?.[
+            REVIEW_PROPERTY
+          ]
+        ) {
+          delete feature.properties[
+            REVIEW_PROPERTY
+          ];
         }
       }
 
@@ -9798,7 +11229,16 @@
     clearSelectedFeatures(false);
     updateControls();
     drawAnnotations();
-  }
+  
+    // Phase C6.1: completing/exiting review should lead naturally to the
+    // batch summary instead of requiring per-annotation Workflow clicks.
+    const phaseCReviewExitSummaryScheduled = true;
+    if (phaseCReviewExitSummaryScheduled && currentImage) {
+      queueMicrotask(
+        () => phaseCOpenWorkflowSummary("file")
+      );
+    }
+}
   function assignReviewFeatureClass(className) {
     const feature = currentReviewFeature();
     const classItem = classes.find((item) => item.name === className);
@@ -9806,7 +11246,6 @@
     pushUndo();
     feature.properties ||= {};
     feature.properties.classification = { name:classItem.name, color:hexToRgbArray(classItem.color) };
-    delete feature.properties.histoannotator;
     currentClass = classItem;
     markChanged(); populateReviewClassSelect(feature); updateReviewProgress();
   }

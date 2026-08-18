@@ -60,6 +60,7 @@
         <button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
         <div class="menu-separator"></div>
         <button id="reviewModeButton" class="menu-item" type="button" disabled>Review annotations</button>
+        <button id="phaseCWorkflowSummaryButton" class="menu-item" type="button" disabled>Workflow summary</button>
         <button id="annotationStatsButton" class="menu-item" type="button" disabled>Annotation statistics</button>
         <button id="imageInfoButton" class="menu-item" type="button" disabled>Image information</button>
       </div>
@@ -177,6 +178,9 @@
         <button id="intersectSelection" type="button" hidden>Intersect</button>
         <button id="subtractSelection" type="button" hidden>Subtract</button>
         <button id="clearSelection" type="button">Clear</button>
+      </div>
+      <div id="phaseCWorkflowAction" class="context-actions phase-c-workflow-action" hidden>
+        <button id="phaseCWorkflowButton" type="button">Workflow · Draft</button>
       </div>
       <div id="phaseBRectangleAction" class="context-actions phase-b-rectangle-action" hidden>
         <button id="phaseBRectangleInfoButton" type="button">ⓘ Rectangle</button>
@@ -401,6 +405,39 @@
       <button id="closeInfoButton" type="button">Close</button>
     </section>
   </div>
+  <div id="phaseCWorkflowOverlay" class="modal-overlay" hidden>
+    <section class="modal-card phase-c-workflow-card" role="dialog" aria-modal="true">
+      <h2>Annotation workflow</h2>
+
+      <div class="phase-c-batch-toolbar">
+        <label for="phaseCWorkflowScope">Scope</label>
+        <select id="phaseCWorkflowScope">
+          <option value="selected">Selected</option>
+          <option value="class">Current class</option>
+          <option value="file">Current file</option>
+        </select>
+      </div>
+
+      <div id="phaseCWorkflowSummary" class="phase-c-summary-grid" hidden></div>
+
+      <div id="phaseCWorkflowContent" class="phase-c-workflow-grid"></div>
+
+      <label class="phase-c-reviewer-field">
+        Reviewer (optional)
+        <input id="phaseCReviewerInput" type="text" maxlength="120"
+               placeholder="Name or initials">
+      </label>
+
+      <div class="modal-actions phase-c-workflow-actions">
+        <button id="phaseCSaveReviewerButton" type="button">Save reviewer</button>
+        <button id="phaseCReturnDraftButton" type="button">Return to Draft</button>
+        <button id="phaseCApproveButton" type="button">Approve</button>
+        <button id="phaseCApproveReviewedButton" type="button" hidden>Approve Reviewed</button>
+        <button id="phaseCCloseWorkflowButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
   <div id="phaseBShortcutOverlay" class="modal-overlay" hidden>
     <section class="modal-card phase-b-shortcut-card" role="dialog" aria-modal="true">
       <h2>Keyboard shortcuts</h2>

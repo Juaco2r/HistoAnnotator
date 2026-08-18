@@ -1169,3 +1169,111 @@ body.phase-b-focus-mode .input-guide { display: none !important; }
   }
 }
 
+/* ==========================================================================
+   Phase C — Workflow & Provenance
+   ========================================================================== */
+.phase-c-workflow-action {
+  left: 14px;
+  right: auto;
+  bottom: 66px;
+}
+.phase-c-workflow-button-draft {
+  border-color: #94a3b8;
+}
+.phase-c-workflow-button-reviewed {
+  border-color: #38bdf8;
+}
+.phase-c-workflow-button-approved {
+  border-color: #4ade80;
+}
+.phase-c-workflow-card {
+  width: min(620px, calc(100vw - 28px));
+}
+.phase-c-workflow-grid {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 1fr);
+  gap: 9px 18px;
+  margin: 14px 0 18px;
+}
+.phase-c-workflow-grid span {
+  color: var(--muted);
+}
+.phase-c-workflow-grid strong {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.phase-c-reviewer-field {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 18px;
+}
+.phase-c-reviewer-field input {
+  width: 100%;
+}
+.phase-c-workflow-actions {
+  flex-wrap: wrap;
+}
+#phaseCApproveButton:not(:disabled) {
+  border-color: #4ade80;
+}
+
+/* Phase C6.1 — Batch Workflow */
+.phase-c-batch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+.phase-c-batch-toolbar label {
+  font-weight: 600;
+}
+.phase-c-batch-toolbar select {
+  min-width: 170px;
+}
+.phase-c-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(95px, 1fr));
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+.phase-c-summary-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: center;
+}
+.phase-c-summary-item strong,
+.phase-c-summary-item span {
+  display: block;
+}
+.phase-c-summary-item strong {
+  font-size: 1.05rem;
+}
+.phase-c-summary-item span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.phase-c-summary-section {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+@media (max-width: 620px) {
+  .phase-c-summary-grid {
+    grid-template-columns: repeat(2, minmax(95px, 1fr));
+  }
+  .phase-c-batch-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .phase-c-batch-toolbar select {
+    width: 100%;
+  }
+}
+

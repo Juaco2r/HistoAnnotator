@@ -763,51 +763,198 @@ def _sanitize_area_geometry(geometry: dict[str, Any]) -> tuple[dict[str, Any] | 
 
 def _qupath_properties(source_properties: dict[str, Any]) -> dict[str, Any]:
     properties: dict[str, Any] = {
-        "objectType": str(source_properties.get("objectType") or source_properties.get("object_type") or "annotation"),
-        "isLocked": bool(source_properties.get("isLocked", False)),
+        "objectType": str(
+            source_properties.get("objectType")
+            or source_properties.get("object_type")
+            or "annotation"
+        ),
+        "isLocked": bool(
+            source_properties.get("isLocked", False)
+        ),
     }
+
     classification = source_properties.get("classification")
-    if isinstance(classification, dict) and str(classification.get("name", "")).strip():
+    if (
+        isinstance(classification, dict)
+        and str(classification.get("name", "")).strip()
+    ):
         name = str(classification["name"]).strip()
         color = _normalize_rgb(classification.get("color"))
+
         if color is None:
-            color = _rgb_from_color_rgb(classification.get("colorRGB"))
+            color = _rgb_from_color_rgb(
+                classification.get("colorRGB")
+            )
+
         if color is None:
-            histo = source_properties.get("histoannotator")
-            if isinstance(histo, dict):
-                color = _rgb_from_hex(str(histo.get("color", "")))
-        normalized_classification: dict[str, Any] = {"name": name}
+            histo_source = source_properties.get("histoannotator")
+            if isinstance(histo_source, dict):
+                color = _rgb_from_hex(
+                    str(histo_source.get("color", ""))
+                )
+
+        normalized_classification: dict[str, Any] = {
+            "name": name
+        }
+
         if color is not None:
             normalized_classification["color"] = color
-        properties["classification"] = normalized_classification
-    review = source_properties.get("histoannotatorReview")
-    if isinstance(review, dict):
-        status = str(review.get("status") or "").strip().lower()
-        if status in {"correct", "maybe", "later"}:
-            normalized_review: dict[str, Any] = {"status": status}
-            reviewed_at = str(review.get("reviewedAt") or "").strip()
-            if reviewed_at:
-                normalized_review["reviewedAt"] = reviewed_at
-            properties["histoannotatorReview"] = normalized_review
 
-    for key in ("name", "description", "measurements"):
+        properties["classification"] = normalized_classification
+
+    histo_source = source_properties.get("histoannotator")
+    histo: dict[str, Any] = (
+        dict(histo_source)
+        if isinstance(histo_source, dict)
+        else {}
+    )
+
+    histo["schemaVersion"] = 1
+    histo["role"] = str(
+        histo.get("role") or "annotation"
+    )
+
+    workflow_source = histo.get("workflow")
+    workflow_source = (
+        dict(workflow_source)
+        if isinstance(workflow_source, dict)
+        else {}
+    )
+
+    decision = str(
+        workflow_source.get("reviewDecision") or ""
+    ).strip().lower()
+
+    if decision not in {"correct", "maybe", "later"}:
+        decision = ""
+
+    legacy_review = source_properties.get("histoannotatorReview")
+    if not decision and isinstance(legacy_review, dict):
+        legacy_status = str(
+            legacy_review.get("status") or ""
+        ).strip().lower()
+
+        if legacy_status in {"correct", "maybe", "later"}:
+            decision = legacy_status
+
+            legacy_reviewed_at = str(
+                legacy_review.get("reviewedAt") or ""
+            ).strip()
+
+            if legacy_reviewed_at:
+                workflow_source.setdefault(
+                    "reviewedAt",
+                    legacy_reviewed_at,
+                )
+
+    raw_status = str(
+        workflow_source.get("status") or ""
+    ).strip().lower()
+
+    if raw_status == "approved":
+        lifecycle_status = "Approved"
+    elif raw_status == "reviewed":
+        lifecycle_status = "Reviewed"
+    elif raw_status == "draft":
+        lifecycle_status = "Draft"
+    else:
+        lifecycle_status = (
+            "Reviewed"
+            if decision == "correct"
+            else "Draft"
+        )
+
+    if decision in {"maybe", "later"}:
+        lifecycle_status = "Draft"
+
+    workflow: dict[str, Any] = {
+        "status": lifecycle_status,
+        "reviewDecision": decision or None,
+        "reviewer": (
+            str(workflow_source.get("reviewer") or "").strip()
+            or None
+        ),
+        "reviewedAt": (
+            str(workflow_source.get("reviewedAt") or "").strip()
+            or None
+        ),
+        "approvedAt": (
+            str(workflow_source.get("approvedAt") or "").strip()
+            or None
+        ),
+    }
+
+    histo["workflow"] = workflow
+
+    provenance_source = histo.get("provenance")
+    provenance_source = (
+        dict(provenance_source)
+        if isinstance(provenance_source, dict)
+        else {}
+    )
+
+    provenance: dict[str, Any] = {}
+
+    for key in (
+        "createdAt",
+        "modifiedAt",
+        "createdWith",
+        "modifiedWith",
+        "createdDevice",
+        "modifiedDevice",
+    ):
+        value = str(
+            provenance_source.get(key) or ""
+        ).strip()
+
+        if value:
+            provenance[key] = value
+
+    try:
+        version = int(
+            provenance_source.get("version")
+            or 0
+        )
+    except (TypeError, ValueError):
+        version = 0
+
+    if version > 0:
+        provenance["version"] = version
+
+    histo["provenance"] = provenance
+    properties["histoannotator"] = histo
+
+    for key in (
+        "name",
+        "description",
+        "measurements",
+    ):
         if key in source_properties:
             value = source_properties[key]
-            # QuPath historically rejected NaN/Infinity measurements during JSON import.
+
             if key == "measurements" and isinstance(value, list):
                 cleaned_measurements = []
+
                 for item in value:
                     if isinstance(item, dict):
                         cleaned = {}
+
                         for k, v in item.items():
-                            if isinstance(v, float) and not np.isfinite(v):
+                            if (
+                                isinstance(v, float)
+                                and not np.isfinite(v)
+                            ):
                                 continue
                             cleaned[k] = v
+
                         cleaned_measurements.append(cleaned)
                     else:
                         cleaned_measurements.append(item)
+
                 value = cleaned_measurements
+
             properties[key] = value
+
     return properties
 
 
@@ -860,7 +1007,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.2.0"}
+    return {"status": "ok", "version": "1.3.0-dev-C"}
 
 
 @app.get("/health")
