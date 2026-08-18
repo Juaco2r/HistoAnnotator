@@ -3715,6 +3715,7 @@
       0,
       Number(annotationLatestQueuedRevision.get(key) || 0)
     );
+
     annotationLatestQueuedRevision.set(
       key,
       Math.max(previousHighest, revision)
@@ -9943,34 +9944,78 @@
   function updateDiagnostics() {
     if (!els.diagnostics) return;
 
-    let state = "Ready";
-    if (currentImage) {
-      const key = currentDocumentKey();
-      const pendingCount = Math.max(0, Number(currentPendingChangeCount || 0));
-      const pendingLabel =
-        pendingCount === 1 ? "1 pending" : `${pendingCount} pending`;
+    const pendingCount = Math.max(
+      0,
+      Number(currentPendingChangeCount || 0)
+    );
+    const pendingLabel =
+      pendingCount === 1
+        ? "1 pending"
+        : `${pendingCount} pending`;
 
-      if (annotationSyncInFlight.has(key)) {
-        state = pendingCount ? `Syncing… · ${pendingLabel}` : "Syncing…";
-      } else if (!navigator.onLine) {
-        state = pendingCount
-          ? `Saved locally · ${pendingLabel}`
-          : (localDraftState.includes("Saved locally")
-              ? localDraftState
-              : "Offline · saved locally");
-      } else if (currentSyncPending()) {
-        state = pendingCount
-          ? `Saved locally · ${pendingLabel}`
-          : "Saved locally · sync pending";
-      } else if (localDraftState !== "Ready") {
-        state = localDraftState;
-      } else {
-        state = "Synced";
-      }
+    if (!currentImage) {
+      const source =
+        IS_NATIVE
+          ? (NATIVE_SERVER ? "Server" : "Local")
+          : "Web";
+      els.diagnostics.textContent =
+        `v${VERSION} · ${source} · Ready`;
+      return;
     }
 
-    const source = IS_NATIVE ? (NATIVE_SERVER ? "Server" : "Local") : "Web";
-    els.diagnostics.textContent = `v${VERSION} · ${source} · ${state}`;
+    const key = currentDocumentKey();
+    const syncing = annotationSyncInFlight.has(key);
+
+    if (currentImageUsesOfflineCopy) {
+      const connected = serverReachable === true;
+
+      let state;
+      if (!connected) {
+        state = pendingCount
+          ? `Offline · ${pendingLabel}`
+          : "Offline";
+      } else if (syncing) {
+        state = pendingCount
+          ? `Connected · Syncing… · ${pendingLabel}`
+          : "Connected · Syncing…";
+      } else if (currentSyncPending()) {
+        state = pendingCount
+          ? `Connected · ${pendingLabel}`
+          : "Connected · sync pending";
+      } else {
+        state = "Connected · Synced";
+      }
+
+      els.diagnostics.textContent =
+        `v${VERSION} · Local copy · ${state}`;
+      return;
+    }
+
+    let state;
+    if (syncing) {
+      state = pendingCount
+        ? `Syncing… · ${pendingLabel}`
+        : "Syncing…";
+    } else if (!navigator.onLine) {
+      state = pendingCount
+        ? `Saved locally · ${pendingLabel}`
+        : "Offline · saved locally";
+    } else if (currentSyncPending()) {
+      state = pendingCount
+        ? `Saved locally · ${pendingLabel}`
+        : "Saved locally · sync pending";
+    } else if (currentImage.localNative) {
+      state = "Saved locally";
+    } else {
+      state = "Synced";
+    }
+
+    const source =
+      IS_NATIVE
+        ? (NATIVE_SERVER ? "Server" : "Local")
+        : "Web";
+    els.diagnostics.textContent =
+      `v${VERSION} · ${source} · ${state}`;
   }
   async function removeLegacyServiceWorker() {
     const result = {
