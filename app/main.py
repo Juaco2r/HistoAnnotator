@@ -810,8 +810,15 @@ def _qupath_properties(source_properties: dict[str, Any]) -> dict[str, Any]:
     )
 
     histo["schemaVersion"] = 1
-    histo["role"] = str(
+
+    role = str(
         histo.get("role") or "annotation"
+    ).strip().lower()
+
+    histo["role"] = (
+        role
+        if role in {"annotation", "roi", "artifact"}
+        else "annotation"
     )
 
     workflow_source = histo.get("workflow")
@@ -1007,7 +1014,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.3.0-dev-C"}
+    return {"status": "ok", "version": "1.3.0-dev-D3.3"}
 
 
 @app.get("/health")
@@ -2798,6 +2805,514 @@ def _geometry_json(geometry: Any, simplify_tolerance: float = 0.0) -> dict[str, 
     return mapping(polygonal)
 
 
+
+def _tissue_thumbnail(
+    image_id: str,
+    max_size: int,
+) -> tuple[Image.Image, int, int]:
+    path, relative = safe_image_path(image_id)
+
+    if (
+        preparation_required(path)
+        and not read_ready_manifest(path, relative)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Image is not ready yet",
+        )
+
+    render_path = resolve_render_path(
+        path,
+        relative,
+    )
+
+    handle = get_slide(render_path)
+    source_width, source_height = handle.dimensions
+
+    thumbnail = handle.slide.get_thumbnail(
+        (max_size, max_size)
+    ).convert("RGB")
+
+    return (
+        thumbnail,
+        int(source_width),
+        int(source_height),
+    )
+
+
+def _tissue_mask_to_geometry(
+    mask: np.ndarray,
+    source_width: int,
+    source_height: int,
+    *,
+    fill_holes: bool,
+    min_island_fraction: float,
+    smoothing: float,
+) -> dict[str, Any] | None:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Tissue detection requires "
+                "opencv-python-headless"
+            ),
+        ) from exc
+
+    height, width = mask.shape[:2]
+
+    if width <= 0 or height <= 0:
+        return None
+
+    minimum_area = max(
+        4.0,
+        float(width * height)
+        * max(0.0, min_island_fraction),
+    )
+
+    contour_mode = (
+        cv2.RETR_EXTERNAL
+        if fill_holes
+        else cv2.RETR_CCOMP
+    )
+
+    contours, hierarchy = cv2.findContours(
+        mask,
+        contour_mode,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+
+    if not contours:
+        return None
+
+    hierarchy_row = (
+        hierarchy[0]
+        if hierarchy is not None
+        and len(hierarchy)
+        else None
+    )
+
+    scale_x = (
+        float(source_width)
+        / float(width)
+    )
+    scale_y = (
+        float(source_height)
+        / float(height)
+    )
+
+    epsilon = max(
+        0.5,
+        0.6
+        + float(smoothing) * 0.035,
+    )
+
+    def scaled_ring(contour):
+        approximated = cv2.approxPolyDP(
+            contour,
+            epsilon,
+            True,
+        )
+
+        raw = approximated.reshape(-1, 2)
+
+        return [
+            (
+                float(point[0]) * scale_x,
+                float(point[1]) * scale_y,
+            )
+            for point in raw
+        ]
+
+    polygons = []
+
+    for index, contour in enumerate(contours):
+        if cv2.contourArea(contour) < minimum_area:
+            continue
+
+        if (
+            hierarchy_row is not None
+            and hierarchy_row[index][3] != -1
+        ):
+            continue
+
+        exterior = scaled_ring(contour)
+
+        if len(exterior) < 3:
+            continue
+
+        holes = []
+
+        if (
+            not fill_holes
+            and hierarchy_row is not None
+        ):
+            child = int(
+                hierarchy_row[index][2]
+            )
+
+            while child != -1:
+                hole_contour = contours[child]
+
+                if (
+                    cv2.contourArea(hole_contour)
+                    >= 4.0
+                ):
+                    hole = scaled_ring(
+                        hole_contour
+                    )
+
+                    if len(hole) >= 3:
+                        holes.append(hole)
+
+                child = int(
+                    hierarchy_row[child][0]
+                )
+
+        try:
+            polygon = Polygon(
+                exterior,
+                holes,
+            )
+
+            if not polygon.is_valid:
+                polygon = make_valid(
+                    polygon
+                )
+
+            polygon = _polygonal_only(
+                polygon
+            )
+
+            if (
+                polygon is not None
+                and not polygon.is_empty
+            ):
+                polygons.append(
+                    polygon
+                )
+        except Exception:
+            continue
+
+    if not polygons:
+        return None
+
+    merged = unary_union(polygons)
+
+    if not merged.is_valid:
+        merged = make_valid(merged)
+
+    merged = _polygonal_only(merged)
+
+    if (
+        merged is None
+        or merged.is_empty
+    ):
+        return None
+
+    simplify_level0 = max(
+        scale_x,
+        scale_y,
+    ) * max(
+        0.0,
+        min(2.0, float(smoothing) / 40.0),
+    )
+
+    return _geometry_json(
+        merged,
+        simplify_level0,
+    )
+
+
+@app.post("/api/images/{image_id}/detect-tissue")
+def detect_tissue(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    # Fast reduced-resolution ROI helper; output is level-0 geometry.
+    sensitivity = max(
+        0.0,
+        min(
+            100.0,
+            float(payload.get("sensitivity", 50)),
+        ),
+    )
+
+    smoothing = max(
+        0.0,
+        min(
+            100.0,
+            float(payload.get("smoothing", 45)),
+        ),
+    )
+
+    min_island_pct = max(
+        0.0,
+        min(
+            5.0,
+            float(payload.get("minIslandPct", 0.05)),
+        ),
+    )
+
+    fill_holes = bool(
+        payload.get("fillHoles", True)
+    )
+
+    max_size = max(
+        1024,
+        min(
+            4096,
+            int(payload.get("maxSize", 2048)),
+        ),
+    )
+
+    thumbnail, source_width, source_height = (
+        _tissue_thumbnail(
+            image_id,
+            max_size,
+        )
+    )
+
+    try:
+        import cv2
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Tissue detection requires "
+                "opencv-python-headless"
+            ),
+        ) from exc
+
+    rgb = np.asarray(
+        thumbnail,
+        dtype=np.uint8,
+    )
+
+    if (
+        rgb.ndim != 3
+        or rgb.shape[2] < 3
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="The image could not be converted to RGB",
+        )
+
+    gray = cv2.cvtColor(
+        rgb,
+        cv2.COLOR_RGB2GRAY,
+    )
+
+    hsv = cv2.cvtColor(
+        rgb,
+        cv2.COLOR_RGB2HSV,
+    )
+
+    saturation = hsv[:, :, 1].astype(
+        np.float32
+    )
+
+    darkness = (
+        255.0
+        - gray.astype(np.float32)
+    )
+
+    score = np.clip(
+        darkness
+        + 0.55 * saturation,
+        0,
+        255,
+    ).astype(np.uint8)
+
+    otsu_threshold, _ = cv2.threshold(
+        score,
+        0,
+        255,
+        cv2.THRESH_BINARY
+        + cv2.THRESH_OTSU,
+    )
+
+    threshold = float(
+        np.clip(
+            otsu_threshold
+            - (sensitivity - 50.0) * 0.65,
+            8.0,
+            245.0,
+        )
+    )
+
+    mask = (
+        score >= threshold
+    ).astype(np.uint8) * 255
+
+    kernel_radius = max(
+        1,
+        int(round(1 + smoothing / 16.0)),
+    )
+
+    kernel_size = kernel_radius * 2 + 1
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (kernel_size, kernel_size),
+    )
+
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_CLOSE,
+        kernel,
+    )
+
+    opening_kernel_size = max(
+        3,
+        max(1, kernel_radius // 2) * 2 + 1,
+    )
+
+    opening_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (
+            opening_kernel_size,
+            opening_kernel_size,
+        ),
+    )
+
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        opening_kernel,
+    )
+
+    component_count, labels, stats, _ = (
+        cv2.connectedComponentsWithStats(
+            mask,
+            connectivity=8,
+        )
+    )
+
+    clean = np.zeros_like(mask)
+
+    minimum_component_area = max(
+        4,
+        int(
+            rgb.shape[0]
+            * rgb.shape[1]
+            * (min_island_pct / 100.0)
+        ),
+    )
+
+    for label in range(
+        1,
+        component_count,
+    ):
+        area = int(
+            stats[label, cv2.CC_STAT_AREA]
+        )
+
+        if area >= minimum_component_area:
+            clean[labels == label] = 255
+
+    geometry = _tissue_mask_to_geometry(
+        clean,
+        source_width,
+        source_height,
+        fill_holes=fill_holes,
+        min_island_fraction=(
+            min_island_pct / 100.0
+        ),
+        smoothing=smoothing,
+    )
+
+    if geometry is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No tissue area was detected. "
+                "Try increasing Sensitivity or decreasing Minimum tissue."
+            ),
+        )
+
+    detected_pixels = int(
+        np.count_nonzero(clean)
+    )
+
+    total_pixels = max(
+        1,
+        int(clean.size),
+    )
+
+    return {
+        "geometry": geometry,
+        "sourceWidth": source_width,
+        "sourceHeight": source_height,
+        "previewWidth": int(rgb.shape[1]),
+        "previewHeight": int(rgb.shape[0]),
+        "detectedFraction": (
+            detected_pixels / total_pixels
+        ),
+        "detector": {
+            "name": "thumbnail-color-v1",
+            "sensitivity": sensitivity,
+            "smoothing": smoothing,
+            "minIslandPct": min_island_pct,
+            "fillHoles": fill_holes,
+            "maxSize": max_size,
+            "otsuThreshold": float(otsu_threshold),
+            "effectiveThreshold": threshold,
+        },
+    }
+
+
+
+@app.post("/api/geometry/tissue-roi-preview")
+def tissue_roi_preview(
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    geometry = _polygonal_geometry(payload.get("geometry"))
+
+    if geometry.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail="Tissue ROI geometry is empty",
+        )
+
+    requested_percent = max(
+        0.0,
+        min(
+            50.0,
+            float(
+                payload.get(
+                    "externalBorderExclusionPct",
+                    0,
+                )
+                or 0
+            ),
+        ),
+    )
+
+    effective, actual_percent, width_px = (
+        _stats_exclude_external_border(
+            geometry,
+            requested_percent,
+        )
+    )
+
+    if effective.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail="External border exclusion removed the complete Tissue ROI",
+        )
+
+    return {
+        "geometry": _geometry_json(effective),
+        "originalAreaPx2": float(geometry.area),
+        "effectiveAreaPx2": float(effective.area),
+        "requestedPercent": float(requested_percent),
+        "actualPercent": float(actual_percent),
+        "widthPx": float(width_px),
+    }
+
+
 @app.post("/api/geometry/brush")
 def create_brush_geometry(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     points = payload.get("points")
@@ -2891,52 +3406,540 @@ def select_geometries(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 
-@app.post("/api/geojson/statistics")
-def geojson_statistics(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    # Compute annotation count and geometric union area per class.
-    collection, report = sanitize_qupath_feature_collection(payload)
 
-    grouped: dict[str, list[Any]] = {}
-    all_geometries: list[Any] = []
+def _stats_polygon_parts(geometry: Any) -> list[Polygon]:
+    polygonal = _polygonal_geometry(geometry)
 
-    for feature in collection.get("features", []):
-        geometry_payload = feature.get("geometry")
-        if not isinstance(geometry_payload, dict):
-            continue
+    if polygonal.is_empty:
+        return []
+
+    if isinstance(polygonal, Polygon):
+        return [polygonal]
+
+    if isinstance(polygonal, MultiPolygon):
+        return [
+            part
+            for part in polygonal.geoms
+            if not part.is_empty
+            and part.area > 0
+        ]
+
+    return []
+
+
+def _stats_exterior_only_erode(
+    geometry: Any,
+    distance: float,
+):
+    # Shrink only exterior rings. Internal holes are subtracted again at their
+    # original location instead of being expanded by a normal negative buffer.
+    polygonal = _polygonal_geometry(geometry)
+
+    if polygonal.is_empty:
+        return GeometryCollection()
+
+    if distance <= 0:
+        return polygonal
+
+    output_parts: list[Any] = []
+
+    for part in _stats_polygon_parts(
+        polygonal
+    ):
         try:
-            geometry = shape(geometry_payload)
+            exterior_shell = Polygon(
+                part.exterior.coords
+            )
+
+            eroded_shell = exterior_shell.buffer(
+                -float(distance)
+            )
+
+            eroded_shell = _polygonal_only(
+                eroded_shell
+            )
+
+            if (
+                eroded_shell is None
+                or eroded_shell.is_empty
+            ):
+                continue
+
+            hole_polygons = []
+
+            for interior in part.interiors:
+                try:
+                    hole = Polygon(
+                        interior.coords
+                    )
+
+                    if (
+                        not hole.is_empty
+                        and hole.area > 0
+                    ):
+                        hole_polygons.append(
+                            hole
+                        )
+                except Exception:
+                    continue
+
+            if hole_polygons:
+                holes = unary_union(
+                    hole_polygons
+                )
+
+                eroded_shell = (
+                    eroded_shell.difference(
+                        holes
+                    )
+                )
+
+            if not eroded_shell.is_valid:
+                eroded_shell = make_valid(
+                    eroded_shell
+                )
+
+            eroded_shell = _polygonal_only(
+                eroded_shell
+            )
+
+            if (
+                eroded_shell is not None
+                and not eroded_shell.is_empty
+            ):
+                output_parts.append(
+                    eroded_shell
+                )
         except Exception:
             continue
 
-        if geometry.is_empty or geometry.geom_type not in {"Polygon", "MultiPolygon"}:
+    if not output_parts:
+        return GeometryCollection()
+
+    merged = unary_union(
+        output_parts
+    )
+
+    if not merged.is_valid:
+        merged = make_valid(merged)
+
+    polygonal = _polygonal_only(
+        merged
+    )
+
+    return (
+        polygonal
+        if polygonal is not None
+        else GeometryCollection()
+    )
+
+
+def _stats_exclude_external_border(
+    tissue_geometry: Any,
+    requested_percent: float,
+) -> tuple[Any, float, float]:
+    # requested_percent is percentage of Tissue ROI area, not width/height.
+    # A binary search finds the inward exterior distance matching that area.
+    tissue = _polygonal_geometry(
+        tissue_geometry
+    )
+
+    if tissue.is_empty:
+        return (
+            GeometryCollection(),
+            0.0,
+            0.0,
+        )
+
+    original_area = float(
+        tissue.area
+    )
+
+    if original_area <= 0:
+        return (
+            GeometryCollection(),
+            0.0,
+            0.0,
+        )
+
+    percent = max(
+        0.0,
+        min(
+            50.0,
+            float(requested_percent),
+        ),
+    )
+
+    if percent <= 0:
+        return (
+            tissue,
+            0.0,
+            0.0,
+        )
+
+    target_area = (
+        original_area
+        * (1.0 - percent / 100.0)
+    )
+
+    min_x, min_y, max_x, max_y = (
+        tissue.bounds
+    )
+
+    span = max(
+        float(max_x - min_x),
+        float(max_y - min_y),
+        1.0,
+    )
+
+    low = 0.0
+    high = span
+
+    best_geometry = tissue
+    best_distance = 0.0
+    best_error = abs(
+        original_area - target_area
+    )
+
+    for _ in range(6):
+        candidate = (
+            _stats_exterior_only_erode(
+                tissue,
+                high,
+            )
+        )
+
+        candidate_area = float(
+            candidate.area
+        ) if not candidate.is_empty else 0.0
+
+        error = abs(
+            candidate_area - target_area
+        )
+
+        if error < best_error:
+            best_geometry = candidate
+            best_distance = high
+            best_error = error
+
+        if candidate_area <= target_area:
+            break
+
+        high *= 2.0
+
+    for _ in range(36):
+        middle = (
+            low + high
+        ) / 2.0
+
+        candidate = (
+            _stats_exterior_only_erode(
+                tissue,
+                middle,
+            )
+        )
+
+        candidate_area = float(
+            candidate.area
+        ) if not candidate.is_empty else 0.0
+
+        error = abs(
+            candidate_area - target_area
+        )
+
+        if error < best_error:
+            best_geometry = candidate
+            best_distance = middle
+            best_error = error
+
+        if candidate_area > target_area:
+            low = middle
+        else:
+            high = middle
+
+    valid_area = float(
+        best_geometry.area
+    ) if not best_geometry.is_empty else 0.0
+
+    actual_percent = (
+        100.0
+        * max(
+            0.0,
+            original_area - valid_area,
+        )
+        / original_area
+    )
+
+    return (
+        best_geometry,
+        actual_percent,
+        best_distance,
+    )
+
+
+@app.post("/api/geojson/statistics")
+def geojson_statistics(
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    if payload.get("type") == "FeatureCollection":
+        collection_payload = payload
+        image_width = 0.0
+        image_height = 0.0
+    else:
+        collection_payload = payload.get("featureCollection")
+
+        if not isinstance(collection_payload, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="featureCollection is required",
+            )
+
+        image_width = max(
+            0.0,
+            float(payload.get("imageWidth", 0) or 0),
+        )
+        image_height = max(
+            0.0,
+            float(payload.get("imageHeight", 0) or 0),
+        )
+
+    collection, report = sanitize_qupath_feature_collection(
+        collection_payload
+    )
+
+    image_region = GeometryCollection()
+    if image_width > 0 and image_height > 0:
+        image_region = Polygon([
+            (0.0, 0.0),
+            (image_width, 0.0),
+            (image_width, image_height),
+            (0.0, image_height),
+        ])
+
+    tissue_geometries: list[Any] = []
+    border_enabled = False
+    border_percent = 0.0
+    annotation_records: list[tuple[str, Any]] = []
+
+    for feature in collection.get("features", []):
+        properties = feature.get("properties", {})
+        histo = properties.get("histoannotator", {})
+        role = str(
+            histo.get("role", "annotation")
+        ).strip().lower()
+
+        geometry_payload = feature.get("geometry")
+        if not isinstance(geometry_payload, dict):
+            continue
+
+        try:
+            geometry = _polygonal_geometry(geometry_payload)
+        except HTTPException:
+            continue
+
+        if geometry.is_empty:
+            continue
+
+        roi_meta = histo.get("roi", {})
+        roi_kind = (
+            str(roi_meta.get("kind", "tissue")).strip().lower()
+            if isinstance(roi_meta, dict)
+            else "tissue"
+        )
+
+        if role == "roi" and roi_kind == "tissue":
+            tissue_geometries.append(geometry)
+
+            if isinstance(roi_meta, dict):
+                border_meta = roi_meta.get("externalBorderExclusion")
+
+                if isinstance(border_meta, dict):
+                    border_enabled = bool(
+                        border_meta.get("enabled", False)
+                    )
+                    try:
+                        border_percent = max(
+                            0.0,
+                            min(
+                                50.0,
+                                float(border_meta.get("percent", 0) or 0),
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        border_percent = 0.0
+
+            continue
+
+        if role != "annotation":
             continue
 
         class_name = (
-            feature.get("properties", {})
+            properties
             .get("classification", {})
             .get("name")
             or "Unclassified"
         )
-        class_name = str(class_name)
-        grouped.setdefault(class_name, []).append(geometry)
-        all_geometries.append(geometry)
+
+        annotation_records.append(
+            (str(class_name), geometry)
+        )
+
+    tissue_roi = (
+        unary_union(tissue_geometries)
+        if tissue_geometries
+        else GeometryCollection()
+    )
+
+    if not tissue_roi.is_empty and not tissue_roi.is_valid:
+        tissue_roi = make_valid(tissue_roi)
+
+    tissue_roi = (
+        _polygonal_only(tissue_roi)
+        if not tissue_roi.is_empty
+        else None
+    )
+
+    has_tissue_roi = (
+        tissue_roi is not None
+        and not tissue_roi.is_empty
+    )
+
+    if has_tissue_roi:
+        analysis_base = tissue_roi
+
+        if not image_region.is_empty:
+            clipped = analysis_base.intersection(image_region)
+            analysis_base = (
+                _polygonal_only(clipped)
+                or GeometryCollection()
+            )
+
+        analysis_source = "tissue-roi"
+    else:
+        analysis_base = image_region
+        analysis_source = "full-image"
+
+    if analysis_base.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Statistics require either a valid Tissue ROI "
+                "or valid image dimensions"
+            ),
+        )
+
+    base_area = float(analysis_base.area)
+
+    requested_border = (
+        border_percent
+        if has_tissue_roi and border_enabled
+        else 0.0
+    )
+
+    valid_region, actual_border, border_width = (
+        _stats_exclude_external_border(
+            analysis_base,
+            requested_border,
+        )
+    )
+
+    if valid_region.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The Tissue ROI external-border exclusion removed "
+                "the complete analysis region"
+            ),
+        )
+
+    valid_area = float(valid_region.area)
+
+    grouped_valid: dict[str, list[Any]] = {}
+    grouped_counts: dict[str, int] = {}
+    class_names: set[str] = set()
+    all_valid: list[Any] = []
+
+    for class_name, geometry in annotation_records:
+        class_names.add(class_name)
+
+        effective = geometry.intersection(valid_region)
+        effective = _polygonal_only(effective)
+
+        if effective is None or effective.is_empty:
+            continue
+
+        grouped_valid.setdefault(
+            class_name,
+            [],
+        ).append(effective)
+
+        grouped_counts[class_name] = (
+            grouped_counts.get(class_name, 0) + 1
+        )
+
+        all_valid.append(effective)
 
     rows = []
-    for class_name in sorted(grouped, key=str.casefold):
-        geometries = grouped[class_name]
-        merged = unary_union(geometries)
+
+    for class_name in sorted(class_names, key=str.casefold):
+        items = grouped_valid.get(class_name, [])
+        merged = (
+            unary_union(items)
+            if items
+            else GeometryCollection()
+        )
+
+        area = float(merged.area) if not merged.is_empty else 0.0
+
         rows.append({
             "className": class_name,
-            "count": len(geometries),
-            "areaPx2": float(merged.area) if not merged.is_empty else 0.0,
+            "count": int(grouped_counts.get(class_name, 0)),
+            "areaPx2": area,
+            "percentValid": (
+                100.0 * area / valid_area
+                if valid_area > 0
+                else 0.0
+            ),
         })
 
-    all_union = unary_union(all_geometries) if all_geometries else GeometryCollection()
+    all_union = (
+        unary_union(all_valid)
+        if all_valid
+        else GeometryCollection()
+    )
+
+    total_area = (
+        float(all_union.area)
+        if not all_union.is_empty
+        else 0.0
+    )
 
     return {
         "rows": rows,
-        "totalAnnotations": len(all_geometries),
-        "totalUnionAreaPx2": float(all_union.area) if not all_union.is_empty else 0.0,
+        "totalAnnotations": int(sum(grouped_counts.values())),
+        "totalUnionAreaPx2": total_area,
+        "totalPercentValid": (
+            100.0 * total_area / valid_area
+            if valid_area > 0
+            else 0.0
+        ),
+        "analysis": {
+            "source": analysis_source,
+            "roiPresent": bool(has_tissue_roi),
+            "imageAreaPx2": (
+                float(image_region.area)
+                if not image_region.is_empty
+                else 0.0
+            ),
+            "baseAreaPx2": base_area,
+            "validAreaPx2": valid_area,
+            "externalBorderEnabled": bool(
+                has_tissue_roi and border_enabled
+            ),
+            "externalBorderRequestedPct": float(requested_border),
+            "externalBorderActualPct": float(actual_border),
+            "externalBorderWidthPx": float(border_width),
+        },
         "report": report,
     }
 

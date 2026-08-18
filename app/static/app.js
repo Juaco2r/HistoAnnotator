@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.3.0-dev-C";
+  const VERSION = "1.3.0-dev-D3.3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -4534,6 +4534,25 @@
       label.textContent = item.name;
       main.append(swatch, label);
       main.addEventListener("click", () => {
+        const selectedSpecial =
+          selectedFeatures().some(
+            (feature) =>
+              !phaseDIsAnnotationFeature(
+                feature
+              )
+          );
+
+        if (selectedSpecial) {
+          clearSelectedFeatures(false);
+        }
+
+        if (phaseDActiveRole !== "annotation") {
+          phaseDSetActiveRole(
+            "annotation",
+            false
+          );
+        }
+
         const previousClassName = currentClass?.name || "";
         const changingClass = item.name !== previousClassName;
         const implicitOnly =
@@ -4766,6 +4785,42 @@
   }
 
   function setSingleSelection(id, implicit = false) {
+    // Phase D3.3.1 structural single-selection lock
+    if (
+      id
+      && phaseDActiveRole !== "roi"
+    ) {
+      const candidate =
+        findFeature(id);
+
+      if (
+        candidate
+        && !phaseDIsAnnotationFeature(
+          candidate
+        )
+      ) {
+        id = null;
+      }
+    }
+
+    // Phase D3.1 protected single selection
+    if (
+      id
+      && phaseDActiveRole !== "roi"
+    ) {
+      const candidate =
+        findFeature(id);
+
+      if (
+        candidate
+        && !phaseDIsAnnotationFeature(
+          candidate
+        )
+      ) {
+        return;
+      }
+    }
+
     selectedIds.clear();
     selectedId = id ? String(id) : null;
     if (selectedId) selectedIds.add(selectedId);
@@ -4773,6 +4828,48 @@
   }
 
   function setMultiSelection(ids, primary = null) {
+    // Phase D3.3.1 structural multi-selection lock
+    if (
+      phaseDActiveRole !== "roi"
+      && Array.isArray(ids)
+    ) {
+      ids =
+        ids.filter(
+          (candidateId) => {
+            const candidate =
+              findFeature(candidateId);
+
+            return (
+              !candidate
+              || phaseDIsAnnotationFeature(
+                candidate
+              )
+            );
+          }
+        );
+    }
+
+    // Phase D3.1 protected multi-selection
+    if (
+      phaseDActiveRole !== "roi"
+      && Array.isArray(ids)
+    ) {
+      ids =
+        ids.filter(
+          (id) => {
+            const candidate =
+              findFeature(id);
+
+            return (
+              !candidate
+              || phaseDIsAnnotationFeature(
+                candidate
+              )
+            );
+          }
+        );
+    }
+
     selectedIds = new Set((ids || []).map(String));
     implicitSelectionId = null;
     if (!selectedIds.size) selectedId = null;
@@ -6083,6 +6180,31 @@
 
   function requireSelectedForOperation(operation) {
     if (operation === "new") return true;
+
+    if (phaseDActiveRole === "roi") {
+      const roi =
+        phaseDTissueRoiFeature();
+
+      if (!roi) {
+        setStatus(
+          `${operation === "add" ? "Add" : "Subtract"}: create the Tissue ROI first`,
+          "error"
+        );
+        return false;
+      }
+
+      if (
+        !selectedId
+        || !phaseDIsTissueRoi(
+          findFeature(selectedId)
+        )
+      ) {
+        setSingleSelection(
+          String(featureId(roi))
+        );
+      }
+    }
+
     const feature = selectedId ? findFeature(selectedId) : null;
     if (!feature) {
       setStatus(`${operation === "add" ? "Add" : "Subtract"}: select an annotation first`, "error");
@@ -6097,6 +6219,1348 @@
   }
 
 
+
+
+  // ========================================================================
+  // Phase D1-D3 — roles, manual Tissue ROI, and lightweight Detect tissue.
+  // ========================================================================
+
+  const PHASE_D_TISSUE_ROI_COLOR =
+    "#22c7ad";
+
+  let phaseDActiveRole =
+    "annotation";
+
+  let phaseDDetectBusy =
+    false;
+
+  function phaseDCanonicalRole(value) {
+    const role =
+      String(value || "annotation")
+        .trim()
+        .toLowerCase();
+
+    return [
+      "annotation",
+      "roi",
+      "artifact",
+    ].includes(role)
+      ? role
+      : "annotation";
+  }
+
+  function phaseDFeatureRole(feature) {
+    return phaseDCanonicalRole(
+      feature?.properties
+        ?.histoannotator
+        ?.role
+      || "annotation"
+    );
+  }
+
+  function phaseDIsAnnotationFeature(feature) {
+    return (
+      phaseDFeatureRole(feature)
+      === "annotation"
+    );
+  }
+
+  function phaseDIsTissueRoi(feature) {
+    return (
+      phaseDFeatureRole(feature) === "roi"
+      && String(
+        feature?.properties
+          ?.histoannotator
+          ?.roi
+          ?.kind
+        || "tissue"
+      ).toLowerCase() === "tissue"
+    );
+  }
+
+  function phaseDTissueRoiFeature() {
+    return (
+      featureCollection.features
+      || []
+    ).find(
+      phaseDIsTissueRoi
+    ) || null;
+  }
+
+
+  function phaseDHitTestNormalAnnotation(point) {
+    if (phaseDActiveRole === "roi") {
+      return hitTest(point);
+    }
+
+    const allFeatures =
+      featureCollection.features;
+
+    featureCollection.features =
+      allFeatures.filter(
+        phaseDIsAnnotationFeature
+      );
+
+    try {
+      return hitTest(point);
+    } finally {
+      featureCollection.features =
+        allFeatures;
+    }
+  }
+
+  function phaseDCreateTissueRoiFeature(
+    geometry,
+    source = "manual",
+    detector = null
+  ) {
+    const feature = {
+      type: "Feature",
+      id: uid(),
+      geometry:
+        deepClone(geometry),
+      properties: {
+        objectType: "annotation",
+        classification: {
+          name: "Tissue ROI",
+          color:
+            hexToRgbArray(
+              PHASE_D_TISSUE_ROI_COLOR
+            ),
+        },
+        isLocked: false,
+        histoannotator:
+          phaseCCreateMetadata(
+            "roi"
+          ),
+      },
+    };
+
+    feature.properties
+      .histoannotator.roi = {
+        kind: "tissue",
+        source:
+          String(source || "manual"),
+      };
+
+    if (
+      detector
+      && typeof detector === "object"
+    ) {
+      feature.properties
+        .histoannotator.roi.detector =
+          deepClone(detector);
+    }
+
+    return feature;
+  }
+
+
+  let phaseDEffectiveRoiPreview =
+    null;
+
+  let phaseDBorderPreviewTimer =
+    null;
+
+  let phaseDBorderPreviewSequence =
+    0;
+
+  function phaseDBorderConfigForRoi(
+    roi = phaseDTissueRoiFeature()
+  ) {
+    const config =
+      roi?.properties
+        ?.histoannotator
+        ?.roi
+        ?.externalBorderExclusion;
+
+    if (!config || typeof config !== "object") {
+      return {
+        enabled: false,
+        percent: 5,
+      };
+    }
+
+    const percent = Number(config.percent);
+
+    return {
+      enabled: Boolean(config.enabled),
+      percent:
+        Number.isFinite(percent)
+          ? Math.max(0, Math.min(50, percent))
+          : 5,
+    };
+  }
+
+  function phaseDSetBorderConfig(
+    roi,
+    enabled,
+    percent,
+    touch = true
+  ) {
+    if (!roi) return;
+
+    const histo =
+      phaseCEnsureFeatureMetadata(roi);
+
+    if (!histo.roi || typeof histo.roi !== "object") {
+      histo.roi = {
+        kind: "tissue",
+        source: "manual",
+      };
+    }
+
+    const nextPercent =
+      Math.max(
+        0,
+        Math.min(50, Number(percent) || 0)
+      );
+
+    const previous =
+      histo.roi.externalBorderExclusion;
+
+    const changed =
+      !previous
+      || Boolean(previous.enabled) !== Boolean(enabled)
+      || Number(previous.percent) !== nextPercent;
+
+    histo.roi.externalBorderExclusion = {
+      enabled: Boolean(enabled),
+      percent: nextPercent,
+    };
+
+    if (changed && touch) {
+      phaseCTouchFeature(
+        roi,
+        { invalidateReview: false }
+      );
+      markChanged();
+    }
+  }
+
+  function phaseDFormatAreaCompact(value) {
+    const area = Number(value);
+
+    if (!Number.isFinite(area) || area < 0) {
+      return "—";
+    }
+    if (area >= 1e9) {
+      return `${(area / 1e9).toFixed(2)}G px²`;
+    }
+    if (area >= 1e6) {
+      return `${(area / 1e6).toFixed(2)}M px²`;
+    }
+    if (area >= 1e3) {
+      return `${(area / 1e3).toFixed(1)}k px²`;
+    }
+    return `${Math.round(area)} px²`;
+  }
+
+
+  let phaseDBorderHydrationKey =
+    "";
+
+  function phaseDEffectivePreviewForRoi(
+    roi = phaseDTissueRoiFeature()
+  ) {
+    if (!roi) return null;
+
+    const preview =
+      phaseDEffectiveRoiPreview;
+
+    if (
+      !preview
+      || String(preview.featureId || "")
+        !== String(featureId(roi))
+    ) {
+      return null;
+    }
+
+    return preview;
+  }
+
+  function phaseDEnsureStoredEffectivePreview() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (!roi) {
+      phaseDEffectiveRoiPreview = null;
+      phaseDBorderHydrationKey = "";
+      return;
+    }
+
+    const config =
+      phaseDBorderConfigForRoi(roi);
+
+    if (!config.enabled || config.percent <= 0) {
+      return;
+    }
+
+    if (phaseDEffectivePreviewForRoi(roi)?.geometry) {
+      return;
+    }
+
+    const key = [
+      String(featureId(roi)),
+      config.percent.toFixed(3),
+      geometryAreaPixels(roi.geometry).toFixed(3),
+    ].join("|");
+
+    if (key === phaseDBorderHydrationKey) {
+      return;
+    }
+
+    phaseDBorderHydrationKey = key;
+
+    queueMicrotask(() => {
+      const current =
+        phaseDTissueRoiFeature();
+
+      if (
+        !current
+        || String(featureId(current))
+          !== String(featureId(roi))
+      ) {
+        return;
+      }
+
+      phaseDLoadBorderControlsFromRoi();
+
+      phaseDRefreshBorderPreview({
+        saveConfig: false,
+        quiet: true,
+      });
+    });
+  }
+
+  function phaseDRenderBorderPreviewSummary() {
+    const refs = phaseDRefs();
+    const roi = phaseDTissueRoiFeature();
+
+    const baseArea =
+      roi
+        ? geometryAreaPixels(roi.geometry)
+        : 0;
+
+    const preview =
+      phaseDEffectiveRoiPreview;
+
+    const effectiveArea =
+      preview
+        ? Number(preview.effectiveAreaPx2)
+        : baseArea;
+
+    const actualPercent =
+      preview
+        ? Number(preview.actualPercent)
+        : 0;
+
+    if (refs.borderPreviewSummary) {
+      refs.borderPreviewSummary.innerHTML = `
+        <span>
+          Original ROI:
+          <strong>${phaseDFormatAreaCompact(baseArea)}</strong>
+        </span>
+        <span>
+          Effective ROI:
+          <strong>${phaseDFormatAreaCompact(effectiveArea)}</strong>
+        </span>
+        <span>
+          Excluded:
+          <strong>${Number.isFinite(actualPercent) ? actualPercent.toFixed(2) : "0.00"}%</strong>
+        </span>
+      `;
+    }
+
+    if (refs.areaSummary) {
+      refs.areaSummary.hidden =
+        !roi || phaseDActiveRole !== "roi";
+
+      refs.areaSummary.textContent =
+        roi
+          ? (
+              `Base ${phaseDFormatAreaCompact(baseArea)} · `
+              + `ROI ${phaseDFormatAreaCompact(effectiveArea)}`
+              + (
+                  actualPercent > 0
+                    ? ` · −${actualPercent.toFixed(1)}%`
+                    : ""
+                )
+            )
+          : "";
+    }
+  }
+
+  function phaseDUpdateBorderControls() {
+    const refs = phaseDRefs();
+
+    const enabled =
+      Boolean(
+        refs.externalBorderEnabled?.checked
+      );
+
+    if (refs.externalBorderPercentField) {
+      refs.externalBorderPercentField.classList.toggle(
+        "disabled",
+        !enabled
+      );
+    }
+
+    if (refs.externalBorderPercent) {
+      refs.externalBorderPercent.disabled = !enabled;
+
+      if (refs.externalBorderPercentValue) {
+        refs.externalBorderPercentValue.textContent =
+          `${Number(refs.externalBorderPercent.value || 0).toFixed(1)}%`;
+      }
+    }
+  }
+
+  function phaseDLoadBorderControlsFromRoi() {
+    const refs = phaseDRefs();
+    const roi = phaseDTissueRoiFeature();
+
+    if (
+      phaseDEffectiveRoiPreview
+      && (
+        !roi
+        || String(
+          phaseDEffectiveRoiPreview.featureId
+          || ""
+        ) !== String(featureId(roi))
+      )
+    ) {
+      phaseDEffectiveRoiPreview = null;
+    }
+
+    const config =
+      phaseDBorderConfigForRoi(roi);
+
+    if (refs.externalBorderEnabled) {
+      refs.externalBorderEnabled.checked =
+        config.enabled;
+    }
+
+    if (refs.externalBorderPercent) {
+      refs.externalBorderPercent.value =
+        String(config.percent);
+    }
+
+    phaseDUpdateBorderControls();
+  }
+
+  async function phaseDRefreshBorderPreview(
+    {
+      saveConfig = false,
+      quiet = true,
+    } = {}
+  ) {
+    const roi = phaseDTissueRoiFeature();
+    const refs = phaseDRefs();
+
+    phaseDUpdateBorderControls();
+
+    if (!roi) {
+      phaseDEffectiveRoiPreview = null;
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+      return;
+    }
+
+    const enabled =
+      Boolean(
+        refs.externalBorderEnabled?.checked
+      );
+
+    const percent =
+      Math.max(
+        0,
+        Math.min(
+          50,
+          Number(
+            refs.externalBorderPercent?.value
+            || 0
+          )
+        )
+      );
+
+    if (saveConfig) {
+      phaseDSetBorderConfig(
+        roi,
+        enabled,
+        percent,
+        true
+      );
+    }
+
+    if (!enabled || percent <= 0) {
+      const area =
+        geometryAreaPixels(roi.geometry);
+
+      phaseDEffectiveRoiPreview = {
+        featureId:
+          String(featureId(roi)),
+        geometry: deepClone(roi.geometry),
+        originalAreaPx2: area,
+        effectiveAreaPx2: area,
+        requestedPercent: 0,
+        actualPercent: 0,
+        widthPx: 0,
+      };
+
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+      return;
+    }
+
+    const sequence =
+      ++phaseDBorderPreviewSequence;
+
+    try {
+      const response =
+        await apiFetch(
+          `${API}/geometry/tissue-roi-preview`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body:
+              JSON.stringify({
+                geometry: roi.geometry,
+                externalBorderExclusionPct:
+                  percent,
+              }),
+            timeoutMs: 30000,
+          }
+        );
+
+      const payload =
+        await response.json();
+
+      if (
+        sequence !== phaseDBorderPreviewSequence
+      ) {
+        return;
+      }
+
+      if (!payload?.geometry) {
+        throw new Error(
+          payload?.detail
+          || "No effective ROI returned"
+        );
+      }
+
+      phaseDEffectiveRoiPreview = {
+        featureId:
+          String(featureId(roi)),
+        geometry:
+          deepClone(payload.geometry),
+        originalAreaPx2:
+          Number(payload.originalAreaPx2 || 0),
+        effectiveAreaPx2:
+          Number(payload.effectiveAreaPx2 || 0),
+        requestedPercent:
+          Number(payload.requestedPercent || percent),
+        actualPercent:
+          Number(payload.actualPercent || 0),
+        widthPx:
+          Number(payload.widthPx || 0),
+      };
+
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+
+      if (!quiet) {
+        setStatus(
+          `Effective Tissue ROI preview · ${phaseDEffectiveRoiPreview.actualPercent.toFixed(2)}% excluded`,
+          "local"
+        );
+      }
+    } catch (error) {
+      phaseDEffectiveRoiPreview = null;
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+
+      if (!quiet) {
+        setStatus(
+          `Border preview unavailable: ${error.message}`,
+          "error"
+        );
+      }
+    }
+  }
+
+  function phaseDScheduleBorderPreview(
+    saveConfig = true
+  ) {
+    if (phaseDBorderPreviewTimer) {
+      clearTimeout(
+        phaseDBorderPreviewTimer
+      );
+    }
+
+    phaseDBorderPreviewTimer =
+      setTimeout(
+        () => {
+          phaseDRefreshBorderPreview({
+            saveConfig,
+            quiet: true,
+          });
+        },
+        180
+      );
+  }
+
+  function phaseDRefs() {
+    return {
+      menuButton:
+        document.getElementById(
+          "phaseDTissueRoiMenuButton"
+        ),
+      overlay:
+        document.getElementById(
+          "phaseDTissueRoiOverlay"
+        ),
+      status:
+        document.getElementById(
+          "phaseDTissueRoiStatus"
+        ),
+      draw:
+        document.getElementById(
+          "phaseDDrawRoiButton"
+        ),
+      select:
+        document.getElementById(
+          "phaseDSelectRoiButton"
+        ),
+      remove:
+        document.getElementById(
+          "phaseDDeleteRoiButton"
+        ),
+      close:
+        document.getElementById(
+          "phaseDCloseRoiButton"
+        ),
+      detect:
+        document.getElementById(
+          "phaseDDetectTissueButton"
+        ),
+      detectNote:
+        document.getElementById(
+          "phaseDTissueDetectNote"
+        ),
+      sensitivity:
+        document.getElementById(
+          "phaseDTissueSensitivity"
+        ),
+      sensitivityValue:
+        document.getElementById(
+          "phaseDTissueSensitivityValue"
+        ),
+      smoothing:
+        document.getElementById(
+          "phaseDTissueSmoothing"
+        ),
+      smoothingValue:
+        document.getElementById(
+          "phaseDTissueSmoothingValue"
+        ),
+      minIsland:
+        document.getElementById(
+          "phaseDTissueMinIsland"
+        ),
+      fillHoles:
+        document.getElementById(
+          "phaseDTissueFillHoles"
+        ),
+      externalBorderEnabled:
+        document.getElementById(
+          "phaseDExternalBorderEnabled"
+        ),
+      externalBorderPercent:
+        document.getElementById(
+          "phaseDExternalBorderPercent"
+        ),
+      externalBorderPercentValue:
+        document.getElementById(
+          "phaseDExternalBorderPercentValue"
+        ),
+      externalBorderPercentField:
+        document.getElementById(
+          "phaseDExternalBorderPercentField"
+        ),
+      borderPreviewSummary:
+        document.getElementById(
+          "phaseDRoiBorderPreviewSummary"
+        ),
+      areaSummary:
+        document.getElementById(
+          "phaseDRoiAreaSummary"
+        ),
+      modeAction:
+        document.getElementById(
+          "phaseDRoiModeAction"
+        ),
+      modeHint:
+        document.getElementById(
+          "phaseDRoiModeHint"
+        ),
+      editDetection:
+        document.getElementById(
+          "phaseDEditDetectionButton"
+        ),
+      done:
+        document.getElementById(
+          "phaseDRoiDoneButton"
+        ),
+    };
+  }
+
+  function phaseDSetActiveRole(
+    role,
+    announce = true
+  ) {
+    phaseDActiveRole =
+      phaseDCanonicalRole(role);
+
+    const roiMode =
+      phaseDActiveRole === "roi";
+
+    document.body.classList.toggle(
+      "phase-d-roi-mode",
+      roiMode
+    );
+
+    const refs =
+      phaseDRefs();
+
+    if (refs.modeAction) {
+      refs.modeAction.hidden =
+        !roiMode;
+    }
+
+    if (refs.modeHint) {
+      const roi =
+        phaseDTissueRoiFeature();
+
+      const hasDetector =
+        Boolean(
+          roi?.properties
+            ?.histoannotator
+            ?.roi
+            ?.detector
+        );
+
+      refs.modeHint.textContent =
+        roi
+          ? (
+              hasDetector
+                ? "Detection preview"
+                : "Editing existing ROI"
+            )
+          : "Draw a tissue area";
+
+      if (refs.editDetection) {
+        refs.editDetection.hidden =
+          !roiMode
+          || !hasDetector;
+      }
+    }
+
+    if (
+      roiMode
+      && announce
+    ) {
+      setStatus(
+        "Tissue ROI mode · use an area tool; new areas are merged into the Tissue ROI",
+        "local"
+      );
+    }
+
+    phaseDUpdateRoiUi();
+  }
+
+  function phaseDOpenRoiSettings() {
+    const refs =
+      phaseDRefs();
+
+    phaseBToggleSettings(false);
+
+    phaseDLoadBorderControlsFromRoi();
+    phaseDUpdateRoiUi();
+
+    if (refs.overlay) {
+      refs.overlay.hidden =
+        false;
+    }
+
+    phaseDRefreshBorderPreview({
+      saveConfig: false,
+      quiet: true,
+    });
+  }
+
+  function phaseDCloseRoiSettings() {
+    const refs =
+      phaseDRefs();
+
+    if (refs.overlay) {
+      refs.overlay.hidden =
+        true;
+    }
+  }
+
+  function phaseDUpdateRoiUi() {
+    const refs =
+      phaseDRefs();
+
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (refs.status) {
+      refs.status.textContent =
+        roi
+          ? (
+              phaseDActiveRole === "roi"
+                ? "Tissue ROI present · edit mode active."
+                : "Tissue ROI present."
+            )
+          : (
+              phaseDActiveRole === "roi"
+                ? "No Tissue ROI yet · draw an area to create it."
+                : "No Tissue ROI in this annotation file."
+            );
+    }
+
+    if (refs.select) {
+      refs.select.disabled =
+        !roi;
+    }
+
+    if (refs.remove) {
+      refs.remove.disabled =
+        !roi;
+    }
+
+    if (refs.detect) {
+      refs.detect.disabled =
+        !currentImage
+        || phaseDDetectBusy
+        || Boolean(
+          currentImage?.localNative
+        );
+
+      refs.detect.textContent =
+        phaseDDetectBusy
+          ? "Detecting…"
+          : "Detect tissue";
+    }
+
+    if (refs.detectNote) {
+      if (
+        currentImage?.localNative
+      ) {
+        refs.detectNote.textContent =
+          "This image is Android-local. Detect tissue requires a server-backed image in D1-D3; manual Tissue ROI works offline.";
+      } else {
+        refs.detectNote.textContent =
+          "Detect tissue uses a reduced-resolution server thumbnail. Manual Tissue ROI drawing works offline.";
+      }
+    }
+
+    if (refs.sensitivityValue) {
+      refs.sensitivityValue.textContent =
+        refs.sensitivity?.value
+        || "50";
+    }
+
+    if (refs.smoothingValue) {
+      refs.smoothingValue.textContent =
+        refs.smoothing?.value
+        || "45";
+    }
+
+    if (refs.modeAction) {
+      refs.modeAction.hidden =
+        phaseDActiveRole !== "roi";
+    }
+
+    const hasDetector =
+      Boolean(
+        roi?.properties
+          ?.histoannotator
+          ?.roi
+          ?.detector
+      );
+
+    if (refs.editDetection) {
+      refs.editDetection.hidden =
+        phaseDActiveRole !== "roi"
+        || !hasDetector;
+    }
+
+    if (refs.modeHint) {
+      refs.modeHint.textContent =
+        roi
+          ? (
+              hasDetector
+                ? "Detection preview"
+                : "Editing existing ROI"
+            )
+          : "Draw a tissue area";
+    }
+
+    phaseDRenderBorderPreviewSummary();
+  }
+
+  function phaseDStartManualRoi() {
+    phaseDSetActiveRole(
+      "roi"
+    );
+
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (roi) {
+      setSingleSelection(
+        String(featureId(roi))
+      );
+    } else {
+      clearSelectedFeatures(false);
+    }
+
+    phaseDCloseRoiSettings();
+
+    if (
+      mode === "navigate"
+      || mode === "select"
+    ) {
+      setMode("freehand");
+    }
+
+    updateControls();
+    drawAnnotations();
+  }
+
+  function phaseDFinishManualRoi() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (roi) {
+      const refs =
+        phaseDRefs();
+
+      phaseDSetBorderConfig(
+        roi,
+        Boolean(
+          refs.externalBorderEnabled?.checked
+        ),
+        Number(
+          refs.externalBorderPercent?.value
+          || 0
+        ),
+        true
+      );
+    }
+
+    clearSelectedFeatures(false);
+
+    phaseDSetActiveRole(
+      "annotation",
+      false
+    );
+
+    setEditOperation("new");
+
+    setStatus(
+      "Tissue ROI accepted · effective region will be used for statistics",
+      "saved"
+    );
+
+    updateControls();
+    drawAnnotations();
+  }
+
+  function phaseDSelectTissueRoi() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (!roi) return;
+
+    phaseDSetActiveRole(
+      "roi",
+      false
+    );
+
+    setSingleSelection(
+      String(featureId(roi))
+    );
+
+    phaseDCloseRoiSettings();
+
+    updateControls();
+    drawAnnotations();
+  }
+
+  function phaseDDeleteTissueRoi() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (!roi) return;
+
+    pushUndo();
+
+    const roiId =
+      String(featureId(roi));
+
+    featureCollection.features =
+      featureCollection.features.filter(
+        (feature) =>
+          String(featureId(feature))
+          !== roiId
+      );
+
+    if (
+      selectedIds.has(roiId)
+    ) {
+      clearSelectedFeatures(false);
+    }
+
+    phaseDSetActiveRole(
+      "annotation",
+      false
+    );
+
+    markChanged();
+
+    phaseDUpdateRoiUi();
+
+    setStatus(
+      "Tissue ROI deleted",
+      "saved"
+    );
+  }
+
+  function phaseDDetectionSettings() {
+    const refs =
+      phaseDRefs();
+
+    return {
+      sensitivity:
+        Number(
+          refs.sensitivity?.value
+          || 50
+        ),
+      smoothing:
+        Number(
+          refs.smoothing?.value
+          || 45
+        ),
+      minIslandPct:
+        Math.max(
+          0,
+          Number(
+            refs.minIsland?.value
+            || 0.05
+          )
+        ),
+      fillHoles:
+        Boolean(
+          refs.fillHoles?.checked
+        ),
+      maxSize: 2048,
+    };
+  }
+
+  async function phaseDDetectTissue() {
+    if (
+      !currentImage
+      || phaseDDetectBusy
+    ) {
+      return;
+    }
+
+    if (currentImage.localNative) {
+      setStatus(
+        "Detect tissue currently requires a server-backed image; use manual Tissue ROI for Android-local images",
+        "error"
+      );
+      return;
+    }
+
+    if (imageType === "fluorescence") {
+      setStatus(
+        "Detect tissue D1-D3 is intended for brightfield H&E/H-DAB/RGB images; use manual Tissue ROI for fluorescence",
+        "error"
+      );
+      return;
+    }
+
+    const settings =
+      phaseDDetectionSettings();
+
+    phaseDDetectBusy = true;
+
+    phaseDCloseRoiSettings();
+    phaseDSetActiveRole(
+      "roi",
+      false
+    );
+    phaseDUpdateRoiUi();
+
+    setStatus(
+      "Detecting tissue on reduced-resolution image…",
+      "local"
+    );
+
+    try {
+      const response =
+        await apiFetch(
+          `${API}/images/${currentImage.id}/detect-tissue`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body:
+              JSON.stringify(
+                settings
+              ),
+            timeoutMs: 45000,
+          }
+        );
+
+      const payload =
+        await response.json();
+
+      if (!payload?.geometry) {
+        throw new Error(
+          payload?.detail
+          || "No tissue geometry returned"
+        );
+      }
+
+      pushUndo();
+
+      let roi =
+        phaseDTissueRoiFeature();
+
+      if (roi) {
+        roi.geometry =
+          deepClone(
+            payload.geometry
+          );
+
+        phaseCFinalizeGeometryEdit(
+          roi
+        );
+
+        const previousBorder =
+          phaseDBorderConfigForRoi(
+            roi
+          );
+
+        roi.properties
+          .histoannotator.roi = {
+            kind: "tissue",
+            source:
+              "detect-tissue",
+            detector:
+              deepClone(
+                payload.detector
+                || {}
+              ),
+            externalBorderExclusion: {
+              enabled:
+                previousBorder.enabled,
+              percent:
+                previousBorder.percent,
+            },
+          };
+      } else {
+        roi =
+          phaseDCreateTissueRoiFeature(
+            payload.geometry,
+            "detect-tissue",
+            payload.detector
+          );
+
+        const refs =
+          phaseDRefs();
+
+        phaseDSetBorderConfig(
+          roi,
+          Boolean(
+            refs.externalBorderEnabled?.checked
+          ),
+          Number(
+            refs.externalBorderPercent?.value
+            || 5
+          ),
+          false
+        );
+
+        featureCollection.features.push(
+          roi
+        );
+      }
+
+      setSingleSelection(
+        String(featureId(roi))
+      );
+
+      phaseDSetActiveRole(
+        "roi",
+        false
+      );
+
+      markChanged();
+
+      phaseDUpdateRoiUi();
+      updateControls();
+
+      phaseDLoadBorderControlsFromRoi();
+
+      await phaseDRefreshBorderPreview({
+        saveConfig: false,
+        quiet: true,
+      });
+
+      drawAnnotations();
+
+      const percent =
+        Number.isFinite(
+          Number(
+            payload.detectedFraction
+          )
+        )
+          ? (
+              Number(
+                payload.detectedFraction
+              )
+              * 100
+            ).toFixed(1)
+          : null;
+
+      setStatus(
+        percent
+          ? `Tissue ROI detected · ${percent}% of preview classified as tissue`
+          : "Tissue ROI detected",
+        "saved"
+      );
+    } catch (error) {
+      const message =
+        error?.message
+        || String(error)
+        || "Unknown tissue detection error";
+
+      clearSelectedFeatures(false);
+
+      phaseDSetActiveRole(
+        "annotation",
+        false
+      );
+
+      setStatus(
+        `Tissue detection failed: ${message}`,
+        "error"
+      );
+    } finally {
+      phaseDDetectBusy = false;
+      phaseDUpdateRoiUi();
+    }
+  }
+
+  function phaseDBindEvents() {
+    const refs =
+      phaseDRefs();
+
+    refs.menuButton?.addEventListener(
+      "click",
+      phaseDOpenRoiSettings
+    );
+
+    refs.close?.addEventListener(
+      "click",
+      phaseDCloseRoiSettings
+    );
+
+    refs.overlay?.addEventListener(
+      "click",
+      (event) => {
+        if (
+          event.target
+          === refs.overlay
+        ) {
+          phaseDCloseRoiSettings();
+        }
+      }
+    );
+
+    refs.draw?.addEventListener(
+      "click",
+      phaseDStartManualRoi
+    );
+
+    refs.done?.addEventListener(
+      "click",
+      phaseDFinishManualRoi
+    );
+
+    refs.editDetection?.addEventListener(
+      "click",
+      () => {
+        phaseDOpenRoiSettings();
+      }
+    );
+
+    refs.select?.addEventListener(
+      "click",
+      phaseDSelectTissueRoi
+    );
+
+    refs.remove?.addEventListener(
+      "click",
+      phaseDDeleteTissueRoi
+    );
+
+    refs.detect?.addEventListener(
+      "click",
+      phaseDDetectTissue
+    );
+
+    refs.sensitivity?.addEventListener(
+      "input",
+      phaseDUpdateRoiUi
+    );
+
+    refs.smoothing?.addEventListener(
+      "input",
+      phaseDUpdateRoiUi
+    );
+
+    refs.externalBorderEnabled?.addEventListener(
+      "change",
+      () => {
+        phaseDUpdateBorderControls();
+        phaseDScheduleBorderPreview(
+          true
+        );
+      }
+    );
+
+    refs.externalBorderPercent?.addEventListener(
+      "input",
+      () => {
+        phaseDUpdateBorderControls();
+        phaseDScheduleBorderPreview(
+          true
+        );
+      }
+    );
+  }
 
   // ========================================================================
   // Phase C — workflow, review decision, provenance, and lifecycle.
@@ -6151,7 +7615,9 @@
         : {};
 
     source.schemaVersion = PHASE_C_SCHEMA_VERSION;
-    source.role = String(source.role || "annotation");
+    source.role = phaseDCanonicalRole(
+      source.role || "annotation"
+    );
 
     const workflowSource =
       source.workflow
@@ -6258,13 +7724,13 @@
     return source;
   }
 
-  function phaseCCreateMetadata() {
+  function phaseCCreateMetadata(role = "annotation") {
     const now =
       new Date().toISOString();
 
     return {
       schemaVersion: PHASE_C_SCHEMA_VERSION,
-      role: "annotation",
+      role: phaseDCanonicalRole(role),
       workflow: {
         status: "Draft",
         reviewDecision: null,
@@ -6593,8 +8059,12 @@
 
   function phaseCFeaturesForWorkflowScope(scope) {
     const all =
-      featureCollection.features
-      || [];
+      (
+        featureCollection.features
+        || []
+      ).filter(
+        phaseDIsAnnotationFeature
+      );
 
     if (scope === "selected") {
       return all.filter(
@@ -6896,8 +8366,15 @@
     const feature =
       phaseCSelectedFeature();
 
+    const workflowSelection =
+      selectedFeatures().filter(
+        phaseDIsAnnotationFeature
+      );
+
     const visible =
       selectionCount > 0
+      && workflowSelection.length
+        === selectionCount
       && !reviewState.active;
 
     refs.action.hidden = !visible;
@@ -8032,9 +9509,24 @@
     });
 
     phaseBBindPhaseCEvents();
+    phaseDBindEvents();
   }
 
   function setMode(nextMode) {
+    // Phase D3.3.1 clear structural selection on normal Select
+    if (
+      nextMode === "select"
+      && phaseDActiveRole !== "roi"
+      && selectedFeatures().some(
+        (feature) =>
+          !phaseDIsAnnotationFeature(
+            feature
+          )
+      )
+    ) {
+      clearSelectedFeatures(false);
+    }
+
     mode = nextMode;
     activeDraft = null;
     pointerState = null;
@@ -8069,6 +9561,7 @@
     updateSelectionActions();
     phaseBUpdateRectangleAction();
     phaseCUpdateWorkflowAction();
+    phaseDUpdateRoiUi();
     drawAnnotations();
     updateDiagnostics();
   }
@@ -8427,10 +9920,41 @@
       const lastScreen = screenPointFromImage(points[points.length - 1] || draft.points[0]);
       const travelPx = firstScreen && lastScreen ? Math.hypot(lastScreen.x - firstScreen.x, lastScreen.y - firstScreen.y) : 0;
       if (points.length < 3 || travelPx < 10) {
-        const id = hitTest(draft.points[draft.points.length - 1] || draft.points[0]);
+        const id =
+          phaseDHitTestNormalAnnotation(
+            draft.points[
+              draft.points.length - 1
+            ]
+            || draft.points[0]
+          );
         if (draft.additive) {
-          if (id && selectedIds.has(String(id))) selectedIds.delete(String(id));
-          else if (id) selectedIds.add(String(id));
+          const selectableId =
+            (
+              id
+              && (
+                phaseDActiveRole === "roi"
+                || phaseDIsAnnotationFeature(
+                  findFeature(id)
+                )
+              )
+            )
+              ? id
+              : null;
+
+          if (
+            selectableId
+            && selectedIds.has(
+              String(selectableId)
+            )
+          ) {
+            selectedIds.delete(
+              String(selectableId)
+            );
+          } else if (selectableId) {
+            selectedIds.add(
+              String(selectableId)
+            );
+          }
           selectedId = selectedIds.has(String(id)) ? String(id) : (selectedIds.size ? [...selectedIds][0] : null);
         } else setSingleSelection(id);
         const feature = selectedId ? findFeature(selectedId) : null;
@@ -8444,7 +9968,13 @@
         if (regionPoints.length < 3) throw new Error("Selection area is too small");
         const ids = await requestGeometrySelection(
           polygonGeometry(regionPoints),
-          featureCollection.features.map(
+          (
+            phaseDActiveRole === "roi"
+              ? featureCollection.features
+              : featureCollection.features.filter(
+                  phaseDIsAnnotationFeature
+                )
+          ).map(
             (feature) => ({
               id: featureId(feature),
               geometry: feature.geometry,
@@ -8485,7 +10015,10 @@
           draft.points[draft.points.length - 1]
           || draft.points[0];
 
-        const id = hitTest(tapPoint);
+        const id =
+          phaseDHitTestNormalAnnotation(
+            tapPoint
+          );
         // A Freehand tap is an intentional selection. With Phase A1,
         // setSingleSelection() also clears the implicit "just drawn" marker.
         setSingleSelection(id);
@@ -8960,16 +10493,44 @@
     }
   }
 
-  function createAnnotationFeature(geometry) {
+  function createAnnotationFeature(
+    geometry,
+    options = {}
+  ) {
+    const role =
+      phaseDCanonicalRole(
+        options.role
+        || "annotation"
+      );
+
+    if (role === "roi") {
+      return phaseDCreateTissueRoiFeature(
+        geometry,
+        options.source
+        || "manual",
+        options.detector
+        || null
+      );
+    }
+
     return {
       type: "Feature",
       id: uid(),
       geometry: deepClone(geometry),
       properties: {
         objectType: "annotation",
-        classification: { name: currentClass.name, color: hexToRgbArray(currentClass.color) },
+        classification: {
+          name: currentClass.name,
+          color:
+            hexToRgbArray(
+              currentClass.color
+            ),
+        },
         isLocked: false,
-        histoannotator: phaseCCreateMetadata(),
+        histoannotator:
+          phaseCCreateMetadata(
+            role
+          ),
       },
     };
   }
@@ -8978,6 +10539,89 @@
     if (!geometry) return false;
     if (!requireSelectedForOperation(operation)) return false;
     if (operation === "new") {
+      if (phaseDActiveRole === "roi") {
+        const existingRoi =
+          phaseDTissueRoiFeature();
+
+        if (existingRoi) {
+          const merged =
+            await requestBooleanGeometry(
+              existingRoi.geometry,
+              geometry,
+              "union"
+            );
+
+          if (!merged) {
+            setStatus(
+              "The Tissue ROI could not be extended",
+              "error"
+            );
+            return false;
+          }
+
+          pushUndo();
+
+          existingRoi.geometry =
+            merged;
+
+          phaseCFinalizeGeometryEdit(
+            existingRoi
+          );
+
+          existingRoi.properties
+            .histoannotator.roi = {
+              kind: "tissue",
+              source: "manual",
+            };
+
+          setSingleSelection(
+            String(
+              featureId(
+                existingRoi
+              )
+            ),
+            true
+          );
+        } else {
+          pushUndo();
+
+          const feature =
+            createAnnotationFeature(
+              geometry,
+              {
+                role: "roi",
+                source: "manual",
+              }
+            );
+
+          featureCollection.features.push(
+            feature
+          );
+
+          setSingleSelection(
+            String(feature.id),
+            true
+          );
+        }
+
+        markChanged();
+
+        phaseDUpdateRoiUi();
+
+        phaseDLoadBorderControlsFromRoi();
+        phaseDRefreshBorderPreview({
+          saveConfig: false,
+          quiet: true,
+        });
+
+        setStatus(
+          "Tissue ROI updated",
+          "saved"
+        );
+
+        return true;
+      }
+
       pushUndo();
       const feature = createAnnotationFeature(geometry);
       featureCollection.features.push(feature);
@@ -9004,6 +10648,19 @@
       // changes, matching the way QuPath edits a selected annotation.
       feature.geometry = result;
       phaseCFinalizeGeometryEdit(feature);
+
+      if (phaseDIsTissueRoi(feature)) {
+        feature.properties
+          .histoannotator.roi.source =
+            "manual-edited";
+
+        phaseDLoadBorderControlsFromRoi();
+        phaseDRefreshBorderPreview({
+          saveConfig: false,
+          quiet: true,
+        });
+      }
+
       setStatus(operation === "add" ? "Area added to selected annotation" : "Area removed from selected annotation", "saved");
     }
     markChanged();
@@ -9263,7 +10920,14 @@
     document.querySelectorAll("[data-edit-operation]").forEach((button) => {
       button.disabled = !enabled || geometryBusy;
     });
-    const annotationCount = featureCollection.features.length;
+    const annotationCount =
+      (
+        featureCollection.features
+        || []
+      ).filter(
+        phaseDIsAnnotationFeature
+      ).length;
+
     els.featureCount.textContent = String(annotationCount);
     els.annotationSummary.textContent = `${annotationCount} annotation${annotationCount === 1 ? "" : "s"}`;
     renderClassButtons();
@@ -9273,6 +10937,7 @@
     updateSelectionActions();
     phaseBUpdateRectangleAction();
     phaseCUpdateWorkflowAction();
+    phaseDUpdateRoiUi();
   }
 
   function formatBytes(bytes) {
@@ -10296,7 +11961,78 @@
       const drawableFeatures = reviewState.active
         ? (reviewState.currentId ? [findFeature(reviewState.currentId)].filter(Boolean) : [])
         : featureCollection.features;
-      drawableFeatures.forEach(drawGeometry);
+
+      drawableFeatures.forEach((feature) => {
+        if (!phaseDIsTissueRoi(feature)) {
+          drawGeometry(feature);
+          return;
+        }
+
+        const previousFilled =
+          annotationsFilled;
+
+        const borderConfig =
+          phaseDBorderConfigForRoi(feature);
+
+        const effectivePreview =
+          phaseDEffectivePreviewForRoi(feature);
+
+        const hasReduction =
+          borderConfig.enabled
+          && borderConfig.percent > 0;
+
+        try {
+          if (
+            hasReduction
+            && effectivePreview?.geometry
+          ) {
+            // Base/original Tissue ROI:
+            // dashed reference outline.
+            ctx.save();
+            ctx.setLineDash([7, 5]);
+            annotationsFilled = false;
+            drawGeometry(feature);
+            ctx.restore();
+
+            // Effective/analysis ROI:
+            // solid outline; filled only while editing.
+            const effectiveFeature =
+              deepClone(feature);
+
+            effectiveFeature.id =
+              `${featureId(feature)}::effective-roi`;
+
+            effectiveFeature.geometry =
+              deepClone(effectivePreview.geometry);
+
+            ctx.save();
+            ctx.setLineDash([]);
+            annotationsFilled =
+              phaseDActiveRole === "roi";
+            drawGeometry(effectiveFeature);
+            ctx.restore();
+          } else {
+            // No reduction: only one ROI.
+            ctx.save();
+            ctx.setLineDash([]);
+            annotationsFilled =
+              phaseDActiveRole === "roi";
+            drawGeometry(feature);
+            ctx.restore();
+
+            if (
+              hasReduction
+              && !effectivePreview?.geometry
+            ) {
+              phaseDEnsureStoredEffectivePreview();
+            }
+          }
+        } finally {
+          annotationsFilled =
+            previousFilled;
+          ctx.setLineDash([]);
+        }
+      });
     }
     if (pathologistDraft && drawingProfile === "pathologist" && mode === "freehand") {
       if (pathologistDraft.outer.length) drawRing(pathologistDraft.outer, drawingColor(pathologistDraft.operation), false, true);
@@ -10894,6 +12630,10 @@
     return feature?.properties?.classification?.name || "Unclassified";
   }
   function reviewStatus(feature) {
+    if (!phaseDIsAnnotationFeature(feature)) {
+      return "excluded";
+    }
+
     const workflow =
       phaseCWorkflowForFeature(feature);
 
@@ -11303,49 +13043,166 @@
   }
 
   async function showAnnotationStatistics() {
-    if (!currentImage || !currentInfo || !featureCollection.features.length) return;
+    if (
+      !currentImage
+      || !currentInfo
+      || !featureCollection.features.length
+    ) {
+      return;
+    }
 
     toggleFileMenu(false);
-    els.annotationStatsContent.innerHTML = '<p class="modal-note">Calculating geometric unions…</p>';
-    els.annotationStatsModal.hidden = false;
+
+    els.annotationStatsContent.innerHTML =
+      '<p class="modal-note">Calculating ROI-aware geometric unions…</p>';
+
+    els.annotationStatsModal.hidden =
+      false;
 
     try {
-      const response = await apiFetch(`${API}/geojson/statistics`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(featureCollection),
-        timeoutMs: 30000,
-      });
+      const response =
+        await apiFetch(
+          `${API}/geojson/statistics`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body:
+              JSON.stringify({
+                featureCollection,
+                imageWidth:
+                  Number(
+                    currentInfo.width
+                    || 0
+                  ),
+                imageHeight:
+                  Number(
+                    currentInfo.height
+                    || 0
+                  ),
+              }),
+            timeoutMs: 30000,
+          }
+        );
 
       const stats = await response.json();
-      const imageArea = Number(currentInfo.width || 0) * Number(currentInfo.height || 0);
+      const analysis = stats.analysis || {};
 
-      const rowsHtml = (stats.rows || []).map((row) => {
-        const area = Number(row.areaPx2 || 0);
-        const percent = imageArea > 0 ? (area / imageArea) * 100 : 0;
-        return `
-          <tr>
-            <td>${escapeHtml(row.className)}</td>
-            <td>${formatStatNumber(row.count)}</td>
-            <td>${formatStatNumber(area)}</td>
-            <td>${formatStatNumber(percent, 2)}%</td>
-          </tr>
-        `;
-      }).join("");
+      const validArea =
+        Number(analysis.validAreaPx2 || 0);
 
-      const totalArea = Number(stats.totalUnionAreaPx2 || 0);
-      const totalPercent = imageArea > 0 ? (totalArea / imageArea) * 100 : 0;
+      const baseArea =
+        Number(
+          analysis.baseAreaPx2
+          || validArea
+        );
+
+      const sourceLabel =
+        analysis.source === "tissue-roi"
+          ? "Tissue ROI"
+          : "Full image";
+
+      const percentHeader =
+        analysis.source === "tissue-roi"
+          ? "% valid tissue"
+          : "% image";
+
+      const rowsHtml =
+        (stats.rows || [])
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.className)}</td>
+              <td>${formatStatNumber(row.count)}</td>
+              <td>${formatStatNumber(Number(row.areaPx2 || 0))}</td>
+              <td>${formatStatNumber(Number(row.percentValid || 0), 2)}%</td>
+            </tr>
+          `)
+          .join("");
+
+      const totalArea =
+        Number(stats.totalUnionAreaPx2 || 0);
+
+      const totalPercent =
+        Number(stats.totalPercentValid || 0);
+
+      const borderEnabled =
+        Boolean(
+          analysis.externalBorderEnabled
+        );
+
+      const borderPercent =
+        Number(
+          analysis.externalBorderActualPct
+          || 0
+        );
+
+      const borderWidth =
+        Number(
+          analysis.externalBorderWidthPx
+          || 0
+        );
+
+      const borderSummary =
+        (
+          analysis.source === "tissue-roi"
+          && borderEnabled
+        )
+          ? `
+            <span>
+              External border exclusion:
+              ${formatStatNumber(borderPercent, 2)}%
+              ${borderWidth > 0
+                ? `· ≈${formatStatNumber(borderWidth, 1)} px inward`
+                : ""}
+            </span>
+          `
+          : "";
+
+      const baseSummary =
+        analysis.source === "tissue-roi"
+          ? `
+            <span>
+              Original Tissue ROI:
+              ${formatStatNumber(baseArea)} px²
+            </span>
+          `
+          : `
+            <span>
+              Full image area:
+              ${formatStatNumber(baseArea)} px²
+            </span>
+          `;
 
       els.annotationStatsContent.innerHTML = `
         <div class="stats-summary">
           <strong>${escapeHtml(currentImage.name)}</strong>
-          <span>${formatStatNumber(currentInfo.width)} × ${formatStatNumber(currentInfo.height)} px</span>
-          <span>Full image area: ${formatStatNumber(imageArea)} px²</span>
+          <span>
+            Analysis region:
+            ${escapeHtml(sourceLabel)}
+          </span>
+          ${baseSummary}
+          ${borderSummary}
+          <span>
+            Valid analysis area:
+            ${formatStatNumber(validArea)} px²
+            · 100%
+          </span>
         </div>
+
         <div class="stats-table-wrap">
           <table class="stats-table">
-            <thead><tr><th>Class</th><th>Annotations</th><th>Union area (px²)</th><th>% image</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Class</th>
+                <th>Annotations</th>
+                <th>Area in valid region (px²)</th>
+                <th>${escapeHtml(percentHeader)}</th>
+              </tr>
+            </thead>
+
             <tbody>${rowsHtml}</tbody>
+
             <tfoot>
               <tr>
                 <td>All annotations</td>
@@ -11356,10 +13213,12 @@
             </tfoot>
           </table>
         </div>
+
         <p class="stats-note">
-          Area uses the geometric union within each class, so overlap between
-          annotations of the same class is counted once. Different classes may
-          overlap, therefore class percentages do not necessarily sum to 100%.
+          Tissue ROI settings define the valid analysis region before
+          statistics are calculated. Union within one class avoids
+          double-counting same-class overlap. Different classes may overlap,
+          so class percentages do not necessarily sum to 100%.
         </p>
       `;
     } catch (error) {

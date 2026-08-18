@@ -1277,3 +1277,351 @@ body.phase-b-focus-mode .input-guide { display: none !important; }
   }
 }
 
+/* ==========================================================================
+   Phase D1-D3 — Roles + Tissue ROI
+   ========================================================================== */
+.phase-d-roi-mode-action {
+  left: 14px;
+  right: auto;
+  bottom: 116px;
+  gap: 8px;
+}
+.phase-d-roi-mode-action strong {
+  color: #22c7ad;
+}
+.phase-d-roi-mode-action span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.phase-d-roi-card {
+  width: min(600px, calc(100vw - 28px));
+}
+.phase-d-roi-card h3 {
+  margin: 12px 0 5px;
+}
+.phase-d-roi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.phase-d-roi-divider {
+  height: 1px;
+  margin: 14px 0;
+  background: var(--border);
+}
+.phase-d-roi-setting {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+.phase-d-roi-setting > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.phase-d-roi-setting input[type="number"] {
+  width: 150px;
+}
+.phase-d-roi-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+body.phase-d-roi-mode #phaseDRoiModeAction {
+  display: flex;
+}
+
+/* ==========================================================================
+   Phase D3.2 — Tissue ROI effective-region preview
+   ========================================================================== */
+.phase-d-roi-preview-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+.phase-d-roi-preview-summary span {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+.phase-d-roi-preview-summary strong {
+  font-size: 0.95rem;
+}
+.phase-d-roi-setting.disabled {
+  opacity: 0.48;
+}
+.phase-d-roi-area-summary {
+  max-width: min(42vw, 430px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+@media (max-width: 720px) {
+  .phase-d-roi-preview-summary {
+    grid-template-columns: 1fr;
+  }
+  .phase-d-roi-area-summary {
+    display: none;
+  }
+}
+
+/* ==========================================================================
+   Phase D3.3 — Compact Tissue ROI workspace
+   ========================================================================== */
+
+.phase-d-roi-mode-action {
+  position: fixed;
+  left: 50%;
+  right: auto;
+  bottom: 72px;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 40px);
+  min-height: 0;
+  padding: 6px 8px;
+  gap: 6px;
+  flex-wrap: nowrap;
+  border-radius: 11px;
+  z-index: 45;
+}
+
+.phase-d-roi-mode-action > strong,
+.phase-d-roi-mode-action > span {
+  white-space: nowrap;
+}
+
+.phase-d-roi-mode-action > strong {
+  font-size: 0.80rem;
+}
+
+.phase-d-roi-mode-action #phaseDRoiModeHint {
+  font-size: 0.72rem;
+}
+
+.phase-d-roi-mode-action button {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 7px 10px;
+  font-size: 0.84rem;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+
+.phase-d-roi-area-summary {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+}
+
+.phase-d-roi-card {
+  width: min(900px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  overflow: auto;
+  padding: 17px;
+}
+
+.phase-d-roi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 11px;
+}
+
+.phase-d-roi-header h2 {
+  margin: 0 0 2px;
+}
+
+.phase-d-roi-header .modal-note {
+  margin: 0;
+}
+
+.phase-d-roi-actions-top {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.phase-d-roi-actions-top button {
+  padding: 7px 10px;
+  font-size: 0.86rem;
+}
+
+.phase-d-roi-layout {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    minmax(0, 1fr);
+  gap: 11px;
+}
+
+.phase-d-roi-panel {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.phase-d-roi-panel h3 {
+  margin: 0 0 2px;
+  font-size: 1rem;
+}
+
+.phase-d-roi-panel .modal-note {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.25;
+}
+
+.phase-d-roi-setting-compact {
+  gap: 4px;
+  margin: 7px 0;
+}
+
+.phase-d-roi-setting-compact > span {
+  font-size: 0.82rem;
+}
+
+.phase-d-roi-setting-compact input[type="range"] {
+  width: 100%;
+}
+
+.phase-d-roi-inline-settings {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr)
+    auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.phase-d-roi-min-island {
+  margin: 0;
+}
+
+.phase-d-roi-min-island input[type="number"] {
+  width: 105px;
+  padding: 5px 7px;
+}
+
+.phase-d-roi-fill-holes {
+  margin: 0 0 4px;
+  white-space: nowrap;
+}
+
+.phase-d-roi-border-toggle {
+  margin: 7px 0 8px;
+}
+
+.phase-d-roi-border-note {
+  margin-top: 6px !important;
+}
+
+.phase-d-roi-preview-summary {
+  grid-template-columns:
+    repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin: 8px 0 0;
+}
+
+.phase-d-roi-preview-summary span {
+  gap: 1px;
+  padding: 5px 7px;
+  font-size: 0.70rem;
+}
+
+.phase-d-roi-preview-summary strong {
+  font-size: 0.82rem;
+}
+
+.phase-d-roi-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.phase-d-roi-footer > .modal-note {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+.phase-d-roi-footer-actions {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.phase-d-roi-footer-actions button {
+  padding: 7px 10px;
+}
+
+@media (max-width: 820px) {
+  .phase-d-roi-card {
+    width: min(640px, calc(100vw - 20px));
+    padding: 13px;
+  }
+
+  .phase-d-roi-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .phase-d-roi-header,
+  .phase-d-roi-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .phase-d-roi-actions-top,
+  .phase-d-roi-footer-actions {
+    justify-content: flex-start;
+  }
+
+  .phase-d-roi-area-summary {
+    display: none;
+  }
+
+  .phase-d-roi-mode-action {
+    max-width: calc(100vw - 20px);
+  }
+}
+
+@media (max-width: 560px) {
+  .phase-d-roi-mode-action {
+    bottom: 66px;
+    padding: 5px 6px;
+    gap: 5px;
+  }
+
+  .phase-d-roi-mode-action > strong,
+  .phase-d-roi-mode-action #phaseDRoiModeHint {
+    display: none;
+  }
+
+  .phase-d-roi-mode-action button {
+    padding: 7px 9px;
+    font-size: 0.80rem;
+  }
+
+  .phase-d-roi-inline-settings {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .phase-d-roi-fill-holes {
+    margin: 3px 0 0;
+  }
+}
+
