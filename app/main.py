@@ -14,9 +14,11 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterator
 
+import qrcode
 import openslide
 import numpy as np
 from fastapi import Body, FastAPI, HTTPException, Query, Request
@@ -1087,7 +1089,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.3.0-alpha.3"}
+    return {"status": "ok", "version": "1.4.0-dev-G1"}
 
 
 @app.get("/health")
@@ -4453,6 +4455,52 @@ def download_annotations(image_id: str, file: str = Query("Default")) -> Respons
     collection, _report = sanitize_qupath_feature_collection(collection)
     body = json.dumps(collection, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
     return Response(body, media_type="application/geo+json", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+
+# ========================================================================
+# Phase G1 — pairing, annotation-file copy, image bounds
+# Desktop/Web renders a QR containing only the user-visible HistoAnnotator
+# server URL. Android already knows how to scan that URL and test /api/images.
+# No deployment address is hard-coded here.
+# ========================================================================
+
+@app.get("/api/pairing/qr.png")
+def pairing_qr_png(server: str = Query(...)) -> Response:
+    value = str(server or "").strip().rstrip("/")
+
+    if (
+        not value
+        or len(value) > 512
+        or re.match(r"^https?://", value, flags=re.IGNORECASE) is None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Pairing address must be an http:// or https:// URL",
+        )
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(value)
+    qr.make(fit=True)
+
+    image = qr.make_image(
+        fill_color="black",
+        back_color="white",
+    )
+
+    stream = BytesIO()
+    image.save(stream, format="PNG")
+
+    return Response(
+        stream.getvalue(),
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/service-worker.js")

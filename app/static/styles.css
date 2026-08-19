@@ -1801,3 +1801,81 @@ body.phase-d-roi-mode #phaseDRoiModeAction {
   max-width: calc(100% + 20px) !important;
 }
 
+/* Phase G1 — pairing / duplicate file */
+.phase-g-pair-card,
+.phase-g-copy-card {
+  width: min(520px, calc(100vw - 28px));
+}
+
+.phase-g-form {
+  display: grid;
+  gap: 12px;
+}
+
+.phase-g-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.phase-g-form input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.phase-g-qr-wrap {
+  display: grid;
+  place-items: center;
+  min-height: 210px;
+}
+
+.phase-g-qr {
+  display: block;
+  width: min(300px, 72vw);
+  height: auto;
+  padding: 10px;
+  background: #fff;
+  border-radius: 12px;
+}
+
+.phase-g-warning,
+.phase-g-message {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.phase-g-warning {
+  color: #ffcf66;
+}
+
+.phase-g-message.error {
+  color: #ff8d8d;
+}
+
+@media (max-height: 620px) {
+  .phase-g-qr {
+    width: min(220px, 55vh);
+  }
+}
+
+/* Phase G1.1 — Settings menu structure fix */
+#phaseBSettingsPanel {
+  max-height: calc(100vh - 86px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#phaseBSettingsPanel > button {
+  position: static !important;
+  flex: 0 0 auto;
+}
+
+#phaseBSettingsPanel > .menu-separator {
+  position: static !important;
+  flex: 0 0 auto;
+}
+
+.phase-g-settings-separator {
+  margin: 5px 0;
+}
+

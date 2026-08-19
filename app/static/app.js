@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-E1";
+  const VERSION = "1.4.0-dev-G1";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -9946,7 +9946,13 @@
   }
 
   function imagePointFromPointer(event) {
-    return imagePointFromViewerPosition(viewerPositionFromPointer(event));
+    const viewerPosition = viewerPositionFromPointer(event);
+
+    if (mode === "select") {
+      return imagePointFromViewerPosition(viewerPosition);
+    }
+
+    return phaseGClampedImagePointFromViewerPosition(viewerPosition);
   }
 
   function handlePointerDown(event) {
@@ -9957,8 +9963,11 @@
       return;
     }
     const viewerPosition = viewerPositionFromPointer(event);
-    const point = imagePointFromViewerPosition(viewerPosition);
-    if (!point) return;
+    const rawPoint = imagePointFromViewerPosition(viewerPosition);
+    if (!rawPoint || !phaseGPointInsideImage(rawPoint)) return;
+    const point = mode === "select"
+      ? rawPoint
+      : phaseGClampPointToImage(rawPoint);
     try { viewer.container.setPointerCapture(event.pointerId); } catch (_) { /* optional */ }
 
     if (mode === "wand") {
@@ -10726,6 +10735,17 @@
   async function commitGeometry(geometry, metadata = {}, operation = editOperation) {
     if (!geometry) return false;
     if (!requireSelectedForOperation(operation)) return false;
+
+geometry = await phaseGClipGeometryToImage(geometry);
+
+if (!geometry) {
+  setStatus(
+    "The annotation is outside the image and was not created",
+    "local"
+  );
+  return false;
+}
+
     if (operation === "new") {
       if (phaseDActiveRole === "roi") {
         const existingRoi =
@@ -10824,7 +10844,8 @@
     const feature = findFeature(selectedId);
     if (!feature) return false;
     setStatus(operation === "add" ? "Adding to selected annotation…" : "Subtracting from selected annotation…");
-    const result = await requestBooleanGeometry(feature.geometry, geometry, operation);
+    let result = await requestBooleanGeometry(feature.geometry, geometry, operation);
+    if (result) result = await phaseGClipGeometryToImage(result);
     pushUndo();
     if (!result) {
       const index = featureCollection.features.findIndex((item) => featureId(item) === selectedId);
@@ -15203,6 +15224,599 @@
     // Drawing-mode instructions no longer occupy persistent UI space.
   }
 
+
+// ========================================================================
+// Phase G1 — pairing, annotation-file copy, image bounds
+// - Web/Desktop exposes a QR for the Android scanner that already exists.
+// - Current annotation file can be duplicated as an exact independent copy.
+// - Drawing is clamped/trimmed to the level-0 image rectangle.
+// ========================================================================
+
+function phaseGRefs() {
+  return {
+    pairMenuButton: document.getElementById("phaseGPairAndroidButton"),
+    pairOverlay: document.getElementById("phaseGPairOverlay"),
+    pairServerInput: document.getElementById("phaseGPairServerInput"),
+    pairWarning: document.getElementById("phaseGPairWarning"),
+    pairQrImage: document.getElementById("phaseGPairQrImage"),
+    pairRefresh: document.getElementById("phaseGPairRefreshButton"),
+    pairCopy: document.getElementById("phaseGPairCopyButton"),
+    pairClose: document.getElementById("phaseGPairCloseButton"),
+
+    duplicateMenuButton: document.getElementById("phaseGDuplicateAnnotationButton"),
+    duplicateOverlay: document.getElementById("phaseGDuplicateOverlay"),
+    duplicateSource: document.getElementById("phaseGDuplicateSource"),
+    duplicateName: document.getElementById("phaseGDuplicateNameInput"),
+    duplicateMessage: document.getElementById("phaseGDuplicateMessage"),
+    duplicateCreate: document.getElementById("phaseGDuplicateCreateButton"),
+    duplicateCancel: document.getElementById("phaseGDuplicateCancelButton"),
+  };
+}
+
+function phaseGDefaultPairingAddress() {
+  if (IS_NATIVE) {
+    return String(
+      localStorage.getItem(NATIVE_SERVER_STORAGE_KEY)
+      || ""
+    ).replace(/\/+$/, "");
+  }
+
+  return `${window.location.origin}${BASE}`
+    .replace(/\/+$/, "");
+}
+
+function phaseGPairingAddress() {
+  const refs = phaseGRefs();
+  return String(
+    refs.pairServerInput?.value
+    || phaseGDefaultPairingAddress()
+    || ""
+  )
+    .trim()
+    .replace(/\/+$/, "");
+}
+
+function phaseGUpdatePairWarning(address = phaseGPairingAddress()) {
+  const refs = phaseGRefs();
+  if (!refs.pairWarning) return;
+
+  let host = "";
+  try {
+    host = new URL(address).hostname.toLowerCase();
+  } catch (_) {
+    refs.pairWarning.hidden = false;
+    refs.pairWarning.textContent =
+      "Enter a complete http:// or https:// address.";
+    return;
+  }
+
+  if (
+    host === "localhost"
+    || host === "127.0.0.1"
+    || host === "::1"
+  ) {
+    refs.pairWarning.hidden = false;
+    refs.pairWarning.textContent =
+      "This is a local-only address. Replace localhost/127.0.0.1 with the computer address that the tablet can reach.";
+  } else {
+    refs.pairWarning.hidden = true;
+    refs.pairWarning.textContent = "";
+  }
+}
+
+function phaseGRefreshPairQr() {
+  const refs = phaseGRefs();
+  if (!refs.pairQrImage) return;
+
+  const address = phaseGPairingAddress();
+  phaseGUpdatePairWarning(address);
+
+  if (!/^https?:\/\//i.test(address)) {
+    refs.pairQrImage.removeAttribute("src");
+    return;
+  }
+
+  refs.pairQrImage.src =
+    `${API}/pairing/qr.png?server=${encodeURIComponent(address)}&t=${Date.now()}`;
+}
+
+function phaseGOpenPairing() {
+  phaseBToggleSettings(false);
+
+  if (IS_NATIVE) {
+    scanConnectionQr().catch((error) => {
+      setStatus(
+        `QR scanner error: ${error?.message || error}`,
+        "error"
+      );
+    });
+    return;
+  }
+
+  const refs = phaseGRefs();
+  if (!refs.pairOverlay) return;
+
+  refs.pairServerInput.value =
+    phaseGDefaultPairingAddress();
+
+  refs.pairOverlay.hidden = false;
+  phaseGRefreshPairQr();
+  refs.pairServerInput.focus();
+  refs.pairServerInput.select();
+}
+
+function phaseGClosePairing() {
+  const refs = phaseGRefs();
+  if (refs.pairOverlay) refs.pairOverlay.hidden = true;
+}
+
+async function phaseGCopyPairingAddress() {
+  const address = phaseGPairingAddress();
+  if (!address) return;
+
+  try {
+    await navigator.clipboard.writeText(address);
+    setStatus("Pairing address copied", "saved");
+  } catch (_) {
+    const refs = phaseGRefs();
+    refs.pairServerInput?.focus();
+    refs.pairServerInput?.select();
+    setStatus(
+      "Select and copy the pairing address manually",
+      "local"
+    );
+  }
+}
+
+function phaseGSuggestAnnotationCopyName() {
+  const source = String(
+    currentAnnotationFile || "Default"
+  ).trim() || "Default";
+
+  const base = `${source} copy`;
+  const used = new Set(
+    (annotationFiles || [])
+      .map((name) => String(name).trim().toLowerCase())
+  );
+
+  if (!used.has(base.toLowerCase())) return base;
+
+  for (let number = 2; number < 1000; number += 1) {
+    const candidate = `${base} ${number}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+
+  return `${base} ${Date.now()}`;
+}
+
+function phaseGSetDuplicateMessage(message = "", error = false) {
+  const refs = phaseGRefs();
+  if (!refs.duplicateMessage) return;
+  refs.duplicateMessage.textContent = message;
+  refs.duplicateMessage.classList.toggle(
+    "error",
+    Boolean(error)
+  );
+}
+
+function phaseGOpenDuplicateAnnotationFile() {
+  phaseBToggleSettings(false);
+
+  if (!currentImage) {
+    setStatus(
+      "Open an image before duplicating an annotation file",
+      "error"
+    );
+    return;
+  }
+
+  const refs = phaseGRefs();
+  if (!refs.duplicateOverlay) return;
+
+  if (refs.duplicateSource) {
+    refs.duplicateSource.textContent =
+      `Copy of: ${currentAnnotationFile} · ${featureCollection.features?.length || 0} feature(s)`;
+  }
+
+  refs.duplicateName.value =
+    phaseGSuggestAnnotationCopyName();
+
+  phaseGSetDuplicateMessage("");
+  refs.duplicateOverlay.hidden = false;
+  refs.duplicateName.focus();
+  refs.duplicateName.select();
+}
+
+function phaseGCloseDuplicateAnnotationFile() {
+  const refs = phaseGRefs();
+  if (refs.duplicateOverlay) {
+    refs.duplicateOverlay.hidden = true;
+  }
+  phaseGSetDuplicateMessage("");
+}
+
+function phaseGValidAnnotationFileName(name) {
+  return (
+    /^[A-Za-z0-9 _.-]{1,80}$/.test(name)
+    && name !== "."
+    && name !== ".."
+  );
+}
+
+async function phaseGCreateAnnotationFileCopy() {
+  const refs = phaseGRefs();
+
+  if (!currentImage) {
+    phaseGSetDuplicateMessage(
+      "No image is open.",
+      true
+    );
+    return;
+  }
+
+  const target =
+    String(refs.duplicateName?.value || "").trim();
+
+  if (!phaseGValidAnnotationFileName(target)) {
+    phaseGSetDuplicateMessage(
+      "Use 1–80 letters, numbers, spaces, _, . or -.",
+      true
+    );
+    return;
+  }
+
+  if (
+    (annotationFiles || []).some(
+      (name) =>
+        String(name).trim().toLowerCase()
+        === target.toLowerCase()
+    )
+  ) {
+    phaseGSetDuplicateMessage(
+      "An annotation file with that name already exists.",
+      true
+    );
+    return;
+  }
+
+  const sourceName =
+    String(currentAnnotationFile || "Default");
+  const snapshot =
+    deepClone(featureCollection);
+
+  refs.duplicateCreate.disabled = true;
+  phaseGSetDuplicateMessage("Creating copy…");
+
+  let serverFileCreated = false;
+
+  if (
+    navigator.onLine
+    && API
+    && !currentImage.localNative
+  ) {
+    try {
+      const response = await apiFetch(
+        `${API}/annotations/${currentImage.id}/files`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ name: target }),
+        }
+      );
+
+      const payload = await response.json();
+
+      if (
+        Array.isArray(payload?.files)
+        && payload.files.length
+      ) {
+        annotationFiles = payload.files;
+      }
+
+      serverFileCreated = true;
+    } catch (error) {
+      console.warn(
+        "Could not reserve copied annotation file on server; keeping local pending copy",
+        error
+      );
+    }
+  }
+
+  if (
+    !(annotationFiles || []).some(
+      (name) =>
+        String(name).trim().toLowerCase()
+        === target.toLowerCase()
+    )
+  ) {
+    annotationFiles.push(target);
+  }
+
+  await putMeta(
+    `files:${currentImage.id}`,
+    annotationFiles
+  );
+
+  currentAnnotationFile = target;
+  featureCollection = snapshot;
+
+  clearSelectedFeatures(false);
+  undoStack = [];
+  redoStack = [];
+  pathologistDraft = null;
+  activeDraft = null;
+  pointerState = null;
+
+  currentLocalRevision = 0;
+  currentLastSyncedRevision = 0;
+  currentPendingChangeCount = 0;
+
+  // Copying a file must not increment feature versions or alter provenance.
+  dirty = true;
+  const revision = nextLocalRevision();
+  currentPendingChangeCount = 1;
+  localDraftState = "Saving copied file locally…";
+
+  await persistLocalDraft(
+    true,
+    currentImage,
+    deepClone(featureCollection),
+    {
+      annotationFile: target,
+      localRevision: revision,
+      lastSyncedRevision: 0,
+      pendingChangeCount: 1,
+    }
+  );
+
+  renderAnnotationFileOptions();
+  drawAnnotations();
+  updateControls();
+  updateDiagnostics();
+
+  refs.duplicateCreate.disabled = false;
+  phaseGCloseDuplicateAnnotationFile();
+
+  setStatus(
+    `Copied "${sourceName}" → "${target}"`,
+    "local"
+  );
+
+  if (
+    navigator.onLine
+    && !currentImage.localNative
+  ) {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(
+      () => saveAnnotations(false),
+      serverFileCreated ? 25 : 250
+    );
+  }
+}
+
+function phaseGImageBounds() {
+  const width = Number(currentInfo?.width || 0);
+  const height = Number(currentInfo?.height || 0);
+
+  if (
+    !Number.isFinite(width)
+    || !Number.isFinite(height)
+    || width <= 0
+    || height <= 0
+  ) {
+    return null;
+  }
+
+  return { width, height };
+}
+
+function phaseGPointInsideImage(point) {
+  const bounds = phaseGImageBounds();
+  if (!bounds || !Array.isArray(point)) return false;
+
+  const x = Number(point[0]);
+  const y = Number(point[1]);
+
+  return (
+    Number.isFinite(x)
+    && Number.isFinite(y)
+    && x >= 0
+    && y >= 0
+    && x <= bounds.width
+    && y <= bounds.height
+  );
+}
+
+function phaseGClampPointToImage(point) {
+  const bounds = phaseGImageBounds();
+  if (!bounds || !Array.isArray(point)) return point;
+
+  const x = Number(point[0]);
+  const y = Number(point[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return point;
+
+  return [
+    Math.max(0, Math.min(bounds.width, x)),
+    Math.max(0, Math.min(bounds.height, y)),
+  ];
+}
+
+function phaseGRawImagePointFromViewerPosition(viewerPosition) {
+  const direct =
+    imagePointFromViewerPosition(viewerPosition);
+
+  if (direct) return direct;
+
+  try {
+    const viewportPoint =
+      viewer.viewport.pointFromPixel(
+        viewerPosition,
+        true
+      );
+
+    const tiledImage =
+      viewer.world.getItemAt(0);
+
+    const imagePoint =
+      tiledImage.viewportToImageCoordinates(
+        viewportPoint
+      );
+
+    if (
+      Number.isFinite(imagePoint?.x)
+      && Number.isFinite(imagePoint?.y)
+    ) {
+      return [imagePoint.x, imagePoint.y];
+    }
+  } catch (_) {
+    // Fall through to null.
+  }
+
+  return null;
+}
+
+function phaseGClampedImagePointFromViewerPosition(viewerPosition) {
+  const raw =
+    phaseGRawImagePointFromViewerPosition(
+      viewerPosition
+    );
+
+  return raw
+    ? phaseGClampPointToImage(raw)
+    : null;
+}
+
+function phaseGImageBoundsGeometry() {
+  const bounds = phaseGImageBounds();
+  if (!bounds) return null;
+
+  return polygonGeometry([
+    [0, 0],
+    [bounds.width, 0],
+    [bounds.width, bounds.height],
+    [0, bounds.height],
+  ]);
+}
+
+async function phaseGClipGeometryToImage(geometry) {
+  if (!geometry) return null;
+
+  const boundsGeometry =
+    phaseGImageBoundsGeometry();
+
+  if (!boundsGeometry) return geometry;
+
+  try {
+    if (window.polygonClipping) {
+      return localBooleanGeometry(
+        geometry,
+        boundsGeometry,
+        "intersect"
+      );
+    }
+  } catch (error) {
+    console.warn(
+      "Local image-bound clipping failed; trying server geometry",
+      error
+    );
+  }
+
+  return await requestBooleanGeometry(
+    geometry,
+    boundsGeometry,
+    "intersect"
+  );
+}
+
+function phaseGInitialize() {
+  const refs = phaseGRefs();
+
+  if (refs.pairMenuButton) {
+    refs.pairMenuButton.textContent =
+      IS_NATIVE
+        ? "Connect by QR…"
+        : "Pair Android…";
+
+    refs.pairMenuButton.addEventListener(
+      "click",
+      phaseGOpenPairing
+    );
+  }
+
+  refs.pairRefresh?.addEventListener(
+    "click",
+    phaseGRefreshPairQr
+  );
+  refs.pairCopy?.addEventListener(
+    "click",
+    phaseGCopyPairingAddress
+  );
+  refs.pairClose?.addEventListener(
+    "click",
+    phaseGClosePairing
+  );
+  refs.pairServerInput?.addEventListener(
+    "input",
+    () => phaseGUpdatePairWarning()
+  );
+  refs.pairServerInput?.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        phaseGRefreshPairQr();
+      }
+      if (event.key === "Escape") {
+        phaseGClosePairing();
+      }
+    }
+  );
+  refs.pairOverlay?.addEventListener(
+    "click",
+    (event) => {
+      if (event.target === refs.pairOverlay) {
+        phaseGClosePairing();
+      }
+    }
+  );
+
+  refs.duplicateMenuButton?.addEventListener(
+    "click",
+    phaseGOpenDuplicateAnnotationFile
+  );
+  refs.duplicateCreate?.addEventListener(
+    "click",
+    phaseGCreateAnnotationFileCopy
+  );
+  refs.duplicateCancel?.addEventListener(
+    "click",
+    phaseGCloseDuplicateAnnotationFile
+  );
+  refs.duplicateName?.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        phaseGCreateAnnotationFileCopy();
+      }
+      if (event.key === "Escape") {
+        phaseGCloseDuplicateAnnotationFile();
+      }
+    }
+  );
+  refs.duplicateOverlay?.addEventListener(
+    "click",
+    (event) => {
+      if (event.target === refs.duplicateOverlay) {
+        phaseGCloseDuplicateAnnotationFile();
+      }
+    }
+  );
+}
+
+
   function bindEvents() {
     phaseBBindEvents();
     document.querySelectorAll(".tool").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
@@ -15423,6 +16037,7 @@
     renderAnnotationFileOptions();
     initViewer();
     bindEvents();
+    phaseGInitialize();
     setClassManagerOpen(false);
     els.inputGuide.hidden = false;
     setDrawingProfile("default");
