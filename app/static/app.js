@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.2.0";
+  const VERSION = "1.3.0-alpha.3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -107,6 +107,7 @@
     classPanel: document.getElementById("classPanel"),
     annotationFileSelect: document.getElementById("annotationFileSelect"),
     newAnnotationFileButton: document.getElementById("newAnnotationFileButton"),
+    deleteAnnotationFileButton: document.getElementById("deleteAnnotationFileButton"),
     toggleClassManager: document.getElementById("toggleClassManager"),
     annotationSummary: document.getElementById("annotationSummary"),
     classList: document.getElementById("classList"),
@@ -201,6 +202,13 @@
     closeOfflineFiles: document.getElementById("closeOfflineFiles"),
     imageInfoButton: document.getElementById("imageInfoButton"),
     annotationStatsButton: document.getElementById("annotationStatsButton"),
+    fillUnannotatedButton: document.getElementById("fillUnannotatedButton"),
+    fillUnannotatedModal: document.getElementById("fillUnannotatedModal"),
+    fillUnannotatedClassSelect: document.getElementById("fillUnannotatedClassSelect"),
+    fillUnannotatedSummary: document.getElementById("fillUnannotatedSummary"),
+    fillUnannotatedRefreshButton: document.getElementById("fillUnannotatedRefreshButton"),
+    fillUnannotatedCancelButton: document.getElementById("fillUnannotatedCancelButton"),
+    fillUnannotatedCreateButton: document.getElementById("fillUnannotatedCreateButton"),
     annotationStatsModal: document.getElementById("annotationStatsModal"),
     annotationStatsContent: document.getElementById("annotationStatsContent"),
     annotationStatsCloseButton: document.getElementById("annotationStatsCloseButton"),
@@ -261,6 +269,9 @@
   let mode = "navigate";
   let selectedId = null;
   let selectedIds = new Set();
+  // ID of the annotation selected automatically just after drawing.
+  // Explicit user selection clears this marker.
+  let implicitSelectionId = null;
 
   const REVIEW_PROPERTY = "histoannotatorReview";
   let reviewPendingNewClassAssignment = false;
@@ -278,6 +289,14 @@
   let retryTimer = null;
   let dirty = false;
   let localDraftState = "Ready";
+  // Local-first revision state. Revisions are persisted with each draft and
+  // used only internally; GeoJSON remains unchanged.
+  let currentLocalRevision = 0;
+  let currentLastSyncedRevision = 0;
+  let currentPendingChangeCount = 0;
+  const annotationSyncChains = new Map();
+  const annotationSyncInFlight = new Set();
+  const annotationLatestQueuedRevision = new Map();
   let lastPointerType = "—";
   let tileStats = { loaded: 0, failed: 0 };
   let openSequence = 0;
@@ -315,6 +334,9 @@
   let cachedCatalog = [];
   let restoreViewportState = null;
   let serverReachable = null;
+  // Pixel source and annotation connectivity are independent.
+  // A downloaded image can use local pixels while annotations stay connected.
+  let currentImageUsesOfflineCopy = false;
   let imageCatalogSequence = 0;
 
   function deepClone(value) {
@@ -340,35 +362,93 @@
   }
 
   function normalizeFeatureCollectionClient(payload) {
-    const source = payload?.type === "FeatureCollection" && Array.isArray(payload.features) ? payload : { type: "FeatureCollection", features: [] };
+    const source =
+      payload?.type === "FeatureCollection"
+      && Array.isArray(payload.features)
+        ? payload
+        : { type: "FeatureCollection", features: [] };
+
     const features = source.features
-      .filter((feature) => feature?.type === "Feature" && feature.geometry)
+      .filter(
+        (feature) =>
+          feature?.type === "Feature"
+          && feature.geometry
+      )
       .map((feature) => {
-        const sourceProperties = feature.properties && typeof feature.properties === "object" ? feature.properties : {};
-        const classification = sourceProperties.classification && typeof sourceProperties.classification === "object" ? sourceProperties.classification : null;
-        let color = classification ? rgbArrayToHex(classification.color) : null;
-        if (!color && classification && classification.colorRGB !== undefined) color = colorRgbIntegerToHex(classification.colorRGB);
-        if (!color) color = sourceProperties.histoannotator?.color || null;
-        const properties = {
-          objectType: sourceProperties.objectType || sourceProperties.object_type || "annotation",
-          isLocked: Boolean(sourceProperties.isLocked),
-        };
-        if (classification?.name) {
-          properties.classification = { name: String(classification.name) };
-          const rgb = color ? hexToRgbArray(color) : null;
-          if (rgb) properties.classification.color = rgb;
+        const sourceProperties =
+          feature.properties
+          && typeof feature.properties === "object"
+            ? feature.properties
+            : {};
+
+        const classification =
+          sourceProperties.classification
+          && typeof sourceProperties.classification === "object"
+            ? sourceProperties.classification
+            : null;
+
+        let color =
+          classification
+            ? rgbArrayToHex(classification.color)
+            : null;
+
+        if (
+          !color
+          && classification
+          && classification.colorRGB !== undefined
+        ) {
+          color =
+            colorRgbIntegerToHex(
+              classification.colorRGB
+            );
         }
-        const review = sourceProperties.histoannotatorReview;
-        if (review && typeof review === "object") {
-          const status = String(review.status || "").toLowerCase();
-          if (status === "correct" || status === "maybe" || status === "later") {
-            properties.histoannotatorReview = { status };
-            if (review.reviewedAt) properties.histoannotatorReview.reviewedAt = String(review.reviewedAt);
+
+        if (!color) {
+          color =
+            sourceProperties.histoannotator?.color
+            || null;
+        }
+
+        const properties = {
+          objectType:
+            sourceProperties.objectType
+            || sourceProperties.object_type
+            || "annotation",
+          isLocked: Boolean(
+            sourceProperties.isLocked
+          ),
+        };
+
+        if (classification?.name) {
+          properties.classification = {
+            name: String(classification.name),
+          };
+
+          const rgb =
+            color
+              ? hexToRgbArray(color)
+              : null;
+
+          if (rgb) {
+            properties.classification.color = rgb;
           }
         }
-        for (const key of ["name", "description", "measurements"]) {
-          if (key in sourceProperties) properties[key] = sourceProperties[key];
+
+        properties.histoannotator =
+          phaseCNormalizeMetadata(
+            sourceProperties
+          );
+
+        for (
+          const key
+          of ["name", "description", "measurements"]
+        ) {
+          if (key in sourceProperties) {
+            properties[key] =
+              deepClone(sourceProperties[key]);
+          }
         }
+
         return {
           type: "Feature",
           id: String(feature.id || uid()),
@@ -376,9 +456,12 @@
           properties,
         };
       });
-    return { type: "FeatureCollection", features };
-  }
 
+    return {
+      type: "FeatureCollection",
+      features,
+    };
+  }
   function quPathFeatureCollection(payload = featureCollection) {
     return normalizeFeatureCollectionClient(payload);
   }
@@ -2896,6 +2979,7 @@
           currentImage.id,
           currentAnnotationFile
         );
+      restoreCurrentRevisionState(localDraft);
 
       if (
         localDraft?.featureCollection?.type
@@ -3431,6 +3515,42 @@
   function localDraftKey(imageId, annotationFile = currentAnnotationFile) {
     return annotationFile === "Default" ? imageId : `${imageId}::${annotationFile}`;
   }
+  function currentDocumentKey() {
+    if (!currentImage) return "";
+    return localDraftKey(currentImage.id, currentAnnotationFile);
+  }
+  function restoreCurrentRevisionState(record) {
+    const localRevision = Math.max(
+      0,
+      Number(
+        record?.localRevision
+        || (record?.pending ? record?.updatedAt : 0)
+        || 0
+      )
+    );
+    const syncedRevision = Math.max(
+      0,
+      Number(record?.lastSyncedRevision ?? (record?.pending ? 0 : localRevision))
+    );
+    currentLocalRevision = Math.max(localRevision, syncedRevision);
+    currentLastSyncedRevision = Math.min(currentLocalRevision, syncedRevision);
+    currentPendingChangeCount = Math.max(
+      0,
+      Number(record?.pendingChangeCount ?? (record?.pending ? 1 : 0))
+    );
+  }
+  function nextLocalRevision() {
+    currentLocalRevision = Math.max(currentLocalRevision + 1, Date.now());
+    return currentLocalRevision;
+  }
+  function currentSyncPending() {
+    return Boolean(
+      currentImage
+      && !currentImage.localNative
+      && currentLocalRevision > currentLastSyncedRevision
+    );
+  }
+
 
   async function getLocalDraft(imageId, annotationFile = currentAnnotationFile) {
     try {
@@ -3449,46 +3569,277 @@
   async function putLocalDraft(record) {
     try {
       const db = await openDraftDb();
+      return await new Promise((resolve, reject) => {
+        const transaction = db.transaction(DB_STORE, "readwrite");
+        const store = transaction.objectStore(DB_STORE);
+        const request = store.get(record.imageId);
+        request.onsuccess = () => {
+          const existing = request.result || null;
+          const existingRevision = Math.max(0, Number(existing?.localRevision || 0));
+          const incomingRevision = Math.max(0, Number(record?.localRevision || 0));
+
+          if (existing && existingRevision > incomingRevision) {
+            // A newer durable snapshot already exists. Treat this older write
+            // as safely superseded rather than as a persistence failure.
+            return;
+          }
+
+          store.put(record);
+        };
+        request.onerror = () => reject(request.error);
+        transaction.oncomplete = () => resolve(true);
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } catch (error) {
+      console.warn("Could not save the local draft", error);
+      return false;
+    }
+  }
+  async function persistLocalDraft(
+    pending = true,
+    image = currentImage,
+    payload = featureCollection,
+    options = {}
+  ) {
+    if (!image) return false;
+
+    const annotationFile = options.annotationFile ?? currentAnnotationFile;
+    const isCurrentDocument =
+      image.id === currentImage?.id
+      && annotationFile === currentAnnotationFile;
+    const localRevision = Math.max(
+      0,
+      Number(options.localRevision ?? (isCurrentDocument ? currentLocalRevision : 0))
+    );
+    const lastSyncedRevision = Math.max(
+      0,
+      Number(
+        options.lastSyncedRevision
+        ?? (isCurrentDocument ? currentLastSyncedRevision : (pending ? 0 : localRevision))
+      )
+    );
+    const effectivePending = image.localNative ? false : Boolean(pending);
+    const pendingChangeCount = effectivePending
+      ? Math.max(
+          0,
+          Number(
+            options.pendingChangeCount
+            ?? (isCurrentDocument ? currentPendingChangeCount : 1)
+          )
+        )
+      : 0;
+
+    const record = {
+      imageId: localDraftKey(image.id, annotationFile),
+      sourceImageId: image.id,
+      annotationFile,
+      imageName: image.name,
+      relativePath: image.relativePath,
+      localNative: Boolean(image.localNative),
+      featureCollection: deepClone(payload),
+      pending: effectivePending,
+      pendingChangeCount,
+      localRevision,
+      lastSyncedRevision,
+      updatedAt: Date.now(),
+    };
+
+    const saved = await putLocalDraft(record);
+    if (saved && isCurrentDocument && localRevision >= currentLocalRevision) {
+      if (image.localNative) {
+        currentPendingChangeCount = 0;
+        localDraftState = "Saved locally";
+      } else if (effectivePending) {
+        localDraftState = "Saved locally · sync pending";
+      } else {
+        localDraftState = "Synced";
+      }
+      updateDiagnostics();
+    }
+    return saved;
+  }
+
+  async function applyAnnotationSyncResult(job, normalizedPayload) {
+    try {
+      const db = await openDraftDb();
       await new Promise((resolve, reject) => {
         const transaction = db.transaction(DB_STORE, "readwrite");
-        transaction.objectStore(DB_STORE).put(record);
+        const store = transaction.objectStore(DB_STORE);
+        const request = store.get(job.draftKey);
+
+        request.onsuccess = () => {
+          const existing = request.result || {
+            imageId: job.draftKey,
+            sourceImageId: job.image.id,
+            annotationFile: job.annotationFile,
+            imageName: job.image.name,
+            relativePath: job.image.relativePath,
+            localNative: false,
+            featureCollection: deepClone(job.payload),
+            pending: true,
+            pendingChangeCount: 1,
+            localRevision: job.revision,
+            lastSyncedRevision: 0,
+            updatedAt: Date.now(),
+          };
+
+          const existingRevision = Math.max(0, Number(existing.localRevision || 0));
+          existing.lastSyncedRevision = Math.max(
+            Number(existing.lastSyncedRevision || 0),
+            job.revision
+          );
+
+          if (existingRevision <= job.revision) {
+            existing.localRevision = job.revision;
+            existing.featureCollection = deepClone(normalizedPayload);
+            existing.pending = false;
+            existing.pendingChangeCount = 0;
+          } else {
+            // A newer local state already exists. Keep it intact and only
+            // record how far the server has caught up.
+            existing.pending = true;
+          }
+
+          existing.updatedAt = Date.now();
+          store.put(existing);
+        };
+        request.onerror = () => reject(request.error);
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
         transaction.onabort = () => reject(transaction.error);
       });
       return true;
     } catch (error) {
-      console.warn("Could not save the local draft", error);
+      console.warn("Could not update local sync state", error);
       return false;
     }
   }
 
-  async function persistLocalDraft(pending = true, image = currentImage, payload = featureCollection) {
-    if (!image) return false;
-    const record = {
-      imageId: localDraftKey(image.id, currentAnnotationFile),
-      sourceImageId: image.id,
-      annotationFile: currentAnnotationFile,
-      imageName: image.name,
-      relativePath: image.relativePath,
-      localNative: Boolean(image.localNative),
-      featureCollection: deepClone(payload),
-      pending: image.localNative ? false : pending,
-      updatedAt: Date.now(),
-    };
-    const saved = await putLocalDraft(record);
-    if (saved && image.id === currentImage?.id) {
-      localDraftState = pending ? "Saved locally" : "Synced";
+  async function syncAnnotationSnapshot(job, showConfirmation = false) {
+    const key = job.draftKey;
+    annotationSyncInFlight.add(key);
+
+    if (currentDocumentKey() === key) {
+      localDraftState = "Syncing…";
       updateDiagnostics();
     }
-    return saved;
+
+    try {
+      const response = await apiFetch(
+        `${API}/annotations/${job.image.id}?file=${encodeURIComponent(job.annotationFile)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(job.payload),
+        }
+      );
+      const result = await response.json();
+      const normalizedPayload =
+        result?.featureCollection?.type === "FeatureCollection"
+          ? normalizeFeatureCollectionClient(result.featureCollection)
+          : job.payload;
+
+      await applyAnnotationSyncResult(job, normalizedPayload);
+
+      if (currentDocumentKey() === key) {
+        currentLastSyncedRevision = Math.max(currentLastSyncedRevision, job.revision);
+
+        if (currentLocalRevision === job.revision) {
+          // Only the newest revision may replace the live document.
+          featureCollection = normalizedPayload;
+          featureCollection.features.forEach(featureId);
+          dirty = false;
+          currentPendingChangeCount = 0;
+          localDraftState = "Synced";
+        } else {
+          // The user edited while this request was in flight.
+          dirty = true;
+          localDraftState = "Saved locally · sync pending";
+        }
+
+        updateControls();
+        updateDiagnostics();
+
+        const repaired = Number(result?.report?.repaired || 0);
+        if (showConfirmation && currentLocalRevision === job.revision) {
+          setStatus(
+            `Saved to server: ${result.features} annotations${repaired ? ` · ${repaired} geometry repaired` : ""}`,
+            "saved"
+          );
+        }
+      }
+
+      return { synced: true, revision: job.revision };
+    } finally {
+      annotationSyncInFlight.delete(key);
+      if (currentDocumentKey() === key) updateDiagnostics();
+    }
   }
 
+  function enqueueAnnotationSync(job, showConfirmation = false) {
+    const key = job.draftKey;
+    const revision = Math.max(0, Number(job.revision || 0));
+    const previousHighest = Math.max(
+      0,
+      Number(annotationLatestQueuedRevision.get(key) || 0)
+    );
+
+    annotationLatestQueuedRevision.set(
+      key,
+      Math.max(previousHighest, revision)
+    );
+
+    const previous = annotationSyncChains.get(key) || Promise.resolve();
+
+    const run = previous
+      .catch(() => undefined)
+      .then(() => {
+        const latestQueued = Math.max(
+          0,
+          Number(annotationLatestQueuedRevision.get(key) || 0)
+        );
+
+        if (revision < latestQueued) {
+          return {
+            synced: false,
+            skipped: true,
+            revision,
+            supersededBy: latestQueued,
+          };
+        }
+
+        return syncAnnotationSnapshot(job, showConfirmation);
+      });
+
+    let tracked;
+    tracked = run.finally(() => {
+      if (annotationSyncChains.get(key) === tracked) {
+        annotationSyncChains.delete(key);
+        annotationLatestQueuedRevision.delete(key);
+      }
+    });
+
+    annotationSyncChains.set(key, tracked);
+    return tracked;
+  }
   function scheduleLocalDraft() {
-    clearTimeout(localSaveTimer);
-    localSaveTimer = setTimeout(() => persistLocalDraft(true), 120);
+    if (!currentImage) return;
+    const image = currentImage;
+    const annotationFile = currentAnnotationFile;
+    const payload = deepClone(featureCollection);
+    const revision = currentLocalRevision;
+    void persistLocalDraft(
+      true,
+      image,
+      payload,
+      {
+        annotationFile,
+        localRevision: revision,
+        lastSyncedRevision: currentLastSyncedRevision,
+      }
+    );
   }
-
   async function requestPersistentStorage() {
     try {
       if (navigator.storage?.persist) await navigator.storage.persist();
@@ -3938,32 +4289,75 @@
   async function syncAllPendingDrafts(showToast = true) {
     if (IS_NATIVE && !API) {
       if (showToast) {
-        setStatus("No server configured; pending annotations remain on this device", "local");
+        setStatus(
+          "No server configured; pending annotations remain on this device",
+          "local"
+        );
+      }
+      return { synced: 0, failed: 0 };
+    }
+    if (!navigator.onLine) {
+      if (showToast) {
+        setStatus(
+          "Offline: synchronization will resume when a connection is available",
+          "local"
+        );
       }
       return { synced: 0, failed: 0 };
     }
 
-    if (!navigator.onLine) {
-      if (showToast) setStatus("Offline: synchronization will resume when a connection is available", "local");
-      return { synced: 0, failed: 0 };
-    }
-    const drafts = (await idbGetAll(DB_STORE)).filter((record) => record?.pending && !record?.localNative && record?.sourceImageId && record?.featureCollection);
-    let synced = 0; let failed = 0;
+    const drafts = (await idbGetAll(DB_STORE)).filter(
+      (record) =>
+        record?.pending
+        && !record?.localNative
+        && record?.sourceImageId
+        && record?.featureCollection
+    );
+
+    let synced = 0;
+    let failed = 0;
+
     for (const record of drafts) {
+      const revision = Math.max(
+        1,
+        Number(record.localRevision || record.updatedAt || Date.now())
+      );
+      const annotationFile = record.annotationFile || "Default";
+      const job = {
+        draftKey: localDraftKey(record.sourceImageId, annotationFile),
+        image: {
+          id: record.sourceImageId,
+          name: record.imageName || record.sourceImageId,
+          relativePath: record.relativePath || "",
+          localNative: false,
+        },
+        annotationFile,
+        payload: deepClone(record.featureCollection),
+        revision,
+      };
+
       try {
-        await apiFetch(`${API}/annotations/${record.sourceImageId}?file=${encodeURIComponent(record.annotationFile || "Default")}`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(record.featureCollection),
-        });
-        record.pending = false; record.updatedAt = Date.now(); await putLocalDraft(record); synced += 1;
-      } catch (_) { failed += 1; }
+        const result = await enqueueAnnotationSync(job, false);
+        if (result?.synced) synced += 1;
+      } catch (_) {
+        failed += 1;
+      }
     }
+
     const localClasses = readLocalClasses();
     if (localClasses?.pending) await syncClassesToServer();
-    if (showToast) setStatus(failed ? `${synced} annotation files synced · ${failed} still pending` : `${synced} pending annotation files synchronized`, failed ? "local" : "saved");
+
+    if (showToast) {
+      setStatus(
+        failed
+          ? `${synced} annotation files synced · ${failed} still pending`
+          : `${synced} pending annotation files synchronized`,
+        failed ? "local" : "saved"
+      );
+    }
     updateDiagnostics();
     return { synced, failed };
   }
-
   function registerOfflineServiceWorker() {
     // The current Service Worker caches URLs from the web deployment.
     // Android alpha1 uses the native client and will receive a dedicated
@@ -4069,6 +4463,21 @@
   }
 
   function openClassEditor(index = null) {
+    // Phase D4 guard openClassEditor
+    if (
+      index !== null
+      && index !== undefined
+      && phaseDIsArtifactClassName(
+        classes[index]?.name
+      )
+    ) {
+      setStatus(
+        "Artifact is a built-in class and cannot be renamed or recolored",
+        "local"
+      );
+      return;
+    }
+
     setClassManagerOpen(true);
     classEditIndex = index;
     const item = index === null ? { name: "", color: "#ff6b6b" } : classes[index];
@@ -4086,6 +4495,24 @@
 
   function saveClassEditor() {
     const name = els.classNameInput.value.trim();
+    // Phase D4 reserved Artifact name
+    if (
+      phaseDIsArtifactClassName(name)
+      && (
+        classEditIndex === null
+        || classEditIndex === undefined
+        || !phaseDIsArtifactClassName(
+          classes[classEditIndex]?.name
+        )
+      )
+    ) {
+      setStatus(
+        "Artifact is a reserved built-in class",
+        "error"
+      );
+      return;
+    }
+
     const color = els.classColorInput.value.toLowerCase();
     if (!name) {
       setStatus("Enter a class name", "error");
@@ -4114,6 +4541,21 @@
   }
 
   function deleteClass(index) {
+    // Phase D4 guard deleteClass
+    if (
+      index !== null
+      && index !== undefined
+      && phaseDIsArtifactClassName(
+        classes[index]?.name
+      )
+    ) {
+      setStatus(
+        "Artifact is a built-in class and cannot be removed",
+        "local"
+      );
+      return;
+    }
+
     if (classes.length <= 1) {
       setStatus("At least one class must remain", "error");
       return;
@@ -4133,10 +4575,15 @@
   }
 
   function renderClassButtons() {
+    // Phase D4 reserved Artifact class
+    phaseDEnsureArtifactClassList(classes);
     els.classList.innerHTML = "";
     for (const [index, item] of classes.entries()) {
       const row = document.createElement("div");
       row.className = "class-row";
+
+      const reservedArtifactClass =
+        phaseDIsArtifactClassName(item.name);
 
       const main = document.createElement("button");
       main.type = "button";
@@ -4148,31 +4595,76 @@
       label.textContent = item.name;
       main.append(swatch, label);
       main.addEventListener("click", () => {
+        const selectedSpecial =
+          selectedFeatures().some(
+            (feature) =>
+              !phaseDIsAnnotationFeature(
+                feature
+              )
+          );
+
+        if (selectedSpecial) {
+          clearSelectedFeatures(false);
+        }
+
+        if (phaseDActiveRole !== "annotation") {
+          phaseDSetActiveRole(
+            "annotation",
+            false
+          );
+        }
+
+        const previousClassName = currentClass?.name || "";
+        const changingClass = item.name !== previousClassName;
+        const implicitOnly =
+          selectedIds.size === 1
+          && selectedId
+          && implicitSelectionId === selectedId;
+
         currentClass = item;
-        renderClassButtons();
-        if (selectedIds.size) {
+
+        if (implicitOnly) {
+          // Keep the newest annotation selected while the class is unchanged
+          // for rapid Shift + Add/Subtract. Choosing another class prepares
+          // the next annotation and must not reclassify the one just drawn.
+          if (changingClass) clearSelectedFeatures(false);
+        } else if (selectedIds.size) {
+          // Explicit selection: choosing a class intentionally reclassifies it.
           pushUndo();
           for (const feature of selectedFeatures()) {
             feature.properties = feature.properties || {};
             feature.properties.classification = { name: item.name, color: hexToRgbArray(item.color) };
-            delete feature.properties.histoannotator;
           }
           markChanged();
         }
+
+        renderClassButtons();
+        updateControls();
+        drawAnnotations();
       });
 
       const edit = document.createElement("button");
       edit.type = "button";
       edit.className = "class-edit management-only";
       edit.textContent = "✎";
-      edit.title = `Edit ${item.name}`;
+      edit.title =
+        reservedArtifactClass
+          ? "Artifact is a built-in class"
+          : `Edit ${item.name}`;
+      edit.hidden = reservedArtifactClass;
+      edit.disabled = reservedArtifactClass;
       edit.addEventListener("click", () => openClassEditor(index));
 
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "class-delete management-only";
       remove.textContent = "×";
-      remove.title = `Delete ${item.name}`;
+      remove.title =
+        reservedArtifactClass
+          ? "Artifact is a built-in class"
+          : `Delete ${item.name}`;
+      remove.hidden = reservedArtifactClass;
+      remove.disabled = reservedArtifactClass;
       remove.addEventListener("click", () => deleteClass(index));
 
       const count = document.createElement("span");
@@ -4356,20 +4848,101 @@
   function clearSelectedFeatures(redraw = true) {
     selectedIds.clear();
     selectedId = null;
+    implicitSelectionId = null;
     if (redraw) {
       updateControls();
       drawAnnotations();
     }
   }
 
-  function setSingleSelection(id) {
+  function setSingleSelection(id, implicit = false) {
+    // Phase D3.3.1 structural single-selection lock
+    if (
+      id
+      && phaseDActiveRole !== "roi"
+    ) {
+      const candidate =
+        findFeature(id);
+
+      if (
+        candidate
+        && !phaseDIsAnnotationFeature(
+          candidate
+        )
+      ) {
+        id = null;
+      }
+    }
+
+    // Phase D3.1 protected single selection
+    if (
+      id
+      && phaseDActiveRole !== "roi"
+    ) {
+      const candidate =
+        findFeature(id);
+
+      if (
+        candidate
+        && !phaseDIsAnnotationFeature(
+          candidate
+        )
+      ) {
+        return;
+      }
+    }
+
     selectedIds.clear();
     selectedId = id ? String(id) : null;
     if (selectedId) selectedIds.add(selectedId);
+    implicitSelectionId = implicit && selectedId ? selectedId : null;
   }
 
   function setMultiSelection(ids, primary = null) {
+    // Phase D3.3.1 structural multi-selection lock
+    if (
+      phaseDActiveRole !== "roi"
+      && Array.isArray(ids)
+    ) {
+      ids =
+        ids.filter(
+          (candidateId) => {
+            const candidate =
+              findFeature(candidateId);
+
+            return (
+              !candidate
+              || phaseDIsAnnotationFeature(
+                candidate
+              )
+            );
+          }
+        );
+    }
+
+    // Phase D3.1 protected multi-selection
+    if (
+      phaseDActiveRole !== "roi"
+      && Array.isArray(ids)
+    ) {
+      ids =
+        ids.filter(
+          (id) => {
+            const candidate =
+              findFeature(id);
+
+            return (
+              !candidate
+              || phaseDIsAnnotationFeature(
+                candidate
+              )
+            );
+          }
+        );
+    }
+
     selectedIds = new Set((ids || []).map(String));
+    implicitSelectionId = null;
     if (!selectedIds.size) selectedId = null;
     else if (primary && selectedIds.has(String(primary))) selectedId = String(primary);
     else {
@@ -5678,6 +6251,31 @@
 
   function requireSelectedForOperation(operation) {
     if (operation === "new") return true;
+
+    if (phaseDActiveRole === "roi") {
+      const roi =
+        phaseDTissueRoiFeature();
+
+      if (!roi) {
+        setStatus(
+          `${operation === "add" ? "Add" : "Subtract"}: create the Tissue ROI first`,
+          "error"
+        );
+        return false;
+      }
+
+      if (
+        !selectedId
+        || !phaseDIsTissueRoi(
+          findFeature(selectedId)
+        )
+      ) {
+        setSingleSelection(
+          String(featureId(roi))
+        );
+      }
+    }
+
     const feature = selectedId ? findFeature(selectedId) : null;
     if (!feature) {
       setStatus(`${operation === "add" ? "Add" : "Subtract"}: select an annotation first`, "error");
@@ -5691,7 +6289,3432 @@
     return true;
   }
 
+
+
+
+  // ========================================================================
+  // Phase D1-D3 — roles, manual Tissue ROI, and lightweight Detect tissue.
+  // ========================================================================
+
+  const PHASE_D_TISSUE_ROI_COLOR =
+    "#22c7ad";
+
+  const PHASE_D_ARTIFACT_NAME =
+    "Artifact";
+
+  const PHASE_D_ARTIFACT_COLOR =
+    "#69db7c";
+
+  function phaseDIsArtifactClassName(value) {
+    return (
+      String(value || "")
+        .trim()
+        .toLowerCase()
+      === PHASE_D_ARTIFACT_NAME.toLowerCase()
+    );
+  }
+
+  function phaseDEnsureArtifactClassList(items = classes) {
+    if (!Array.isArray(items)) return items;
+
+    let artifact = null;
+
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+
+      if (!phaseDIsArtifactClassName(item?.name)) {
+        continue;
+      }
+
+      if (!artifact) {
+        artifact = item;
+        artifact.name =
+          PHASE_D_ARTIFACT_NAME;
+        artifact.color =
+          PHASE_D_ARTIFACT_COLOR;
+      } else {
+        items.splice(index, 1);
+      }
+    }
+
+    if (!artifact) {
+      items.push({
+        name: PHASE_D_ARTIFACT_NAME,
+        color: PHASE_D_ARTIFACT_COLOR,
+      });
+    }
+
+    return items;
+  }
+
+  function phaseDSyncArtifactRole(feature) {
+    if (!feature) return false;
+
+    feature.properties ||= {};
+
+    let histo =
+      feature.properties.histoannotator;
+
+    if (
+      !histo
+      || typeof histo !== "object"
+    ) {
+      histo =
+        phaseCCreateMetadata();
+
+      feature.properties.histoannotator =
+        histo;
+    }
+
+    const currentRole =
+      phaseDCanonicalRole(
+        histo.role
+      );
+
+    if (currentRole === "roi") {
+      histo.role = "roi";
+      return false;
+    }
+
+    const desiredRole =
+      phaseDIsArtifactClassName(
+        feature.properties
+          ?.classification
+          ?.name
+      )
+        ? "artifact"
+        : "annotation";
+
+    const changed =
+      currentRole !== desiredRole
+      || histo.role !== desiredRole;
+
+    histo.role = desiredRole;
+    return changed;
+  }
+
+  function phaseDSyncArtifactRoles() {
+    let changed = false;
+
+    for (
+      const feature
+      of featureCollection.features || []
+    ) {
+      if (phaseDSyncArtifactRole(feature)) {
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+
+  let phaseDActiveRole =
+    "annotation";
+
+  let phaseDDetectBusy =
+    false;
+
+  // Phase D7 — temporary server-derived preview of remaining Valid Tissue.
+  let phaseDFillUnannotatedPreview = null;
+  let phaseDFillUnannotatedBusy = false;
+
+
+  function phaseDCanonicalRole(value) {
+    const role =
+      String(value || "annotation")
+        .trim()
+        .toLowerCase();
+
+    return [
+      "annotation",
+      "roi",
+      "artifact",
+    ].includes(role)
+      ? role
+      : "annotation";
+  }
+
+  function phaseDFeatureRole(feature) {
+    return phaseDCanonicalRole(
+      feature?.properties
+        ?.histoannotator
+        ?.role
+      || "annotation"
+    );
+  }
+
+  function phaseDIsAnnotationFeature(feature) {
+    return [
+      "annotation",
+      "artifact",
+    ].includes(
+      phaseDFeatureRole(feature)
+    );
+  }
+
+  function phaseDIsTissueRoi(feature) {
+    return (
+      phaseDFeatureRole(feature) === "roi"
+      && String(
+        feature?.properties
+          ?.histoannotator
+          ?.roi
+          ?.kind
+        || "tissue"
+      ).toLowerCase() === "tissue"
+    );
+  }
+
+  function phaseDTissueRoiFeature() {
+    return (
+      featureCollection.features
+      || []
+    ).find(
+      phaseDIsTissueRoi
+    ) || null;
+  }
+
+
+  function phaseDHitTestNormalAnnotation(point) {
+    if (phaseDActiveRole === "roi") {
+      return hitTest(point);
+    }
+
+    const allFeatures =
+      featureCollection.features;
+
+    featureCollection.features =
+      allFeatures.filter(
+        phaseDIsAnnotationFeature
+      );
+
+    try {
+      return hitTest(point);
+    } finally {
+      featureCollection.features =
+        allFeatures;
+    }
+  }
+
+  function phaseDCreateTissueRoiFeature(
+    geometry,
+    source = "manual",
+    detector = null
+  ) {
+    const feature = {
+      type: "Feature",
+      id: uid(),
+      geometry:
+        deepClone(geometry),
+      properties: {
+        objectType: "annotation",
+        classification: {
+          name: "Tissue ROI",
+          color:
+            hexToRgbArray(
+              PHASE_D_TISSUE_ROI_COLOR
+            ),
+        },
+        isLocked: false,
+        histoannotator:
+          phaseCCreateMetadata(
+            "roi"
+          ),
+      },
+    };
+
+    feature.properties
+      .histoannotator.roi = {
+        kind: "tissue",
+        source:
+          String(source || "manual"),
+      };
+
+    if (
+      detector
+      && typeof detector === "object"
+    ) {
+      feature.properties
+        .histoannotator.roi.detector =
+          deepClone(detector);
+    }
+
+    return feature;
+  }
+
+
+  let phaseDEffectiveRoiPreview =
+    null;
+
+  let phaseDBorderPreviewTimer =
+    null;
+
+  let phaseDBorderPreviewSequence =
+    0;
+
+  function phaseDBorderConfigForRoi(
+    roi = phaseDTissueRoiFeature()
+  ) {
+    const config =
+      roi?.properties
+        ?.histoannotator
+        ?.roi
+        ?.externalBorderExclusion;
+
+    if (!config || typeof config !== "object") {
+      return {
+        enabled: false,
+        percent: 5,
+      };
+    }
+
+    const percent = Number(config.percent);
+
+    return {
+      enabled: Boolean(config.enabled),
+      percent:
+        Number.isFinite(percent)
+          ? Math.max(0, Math.min(50, percent))
+          : 5,
+    };
+  }
+
+  function phaseDSetBorderConfig(
+    roi,
+    enabled,
+    percent,
+    touch = true
+  ) {
+    if (!roi) return;
+
+    const histo =
+      phaseCEnsureFeatureMetadata(roi);
+
+    if (!histo.roi || typeof histo.roi !== "object") {
+      histo.roi = {
+        kind: "tissue",
+        source: "manual",
+      };
+    }
+
+    const nextPercent =
+      Math.max(
+        0,
+        Math.min(50, Number(percent) || 0)
+      );
+
+    const previous =
+      histo.roi.externalBorderExclusion;
+
+    const changed =
+      !previous
+      || Boolean(previous.enabled) !== Boolean(enabled)
+      || Number(previous.percent) !== nextPercent;
+
+    histo.roi.externalBorderExclusion = {
+      enabled: Boolean(enabled),
+      percent: nextPercent,
+    };
+
+    if (changed && touch) {
+      phaseCTouchFeature(
+        roi,
+        { invalidateReview: false }
+      );
+      markChanged();
+    }
+  }
+
+  function phaseDFormatAreaCompact(value) {
+    const area = Number(value);
+
+    if (!Number.isFinite(area) || area < 0) {
+      return "—";
+    }
+    if (area >= 1e9) {
+      return `${(area / 1e9).toFixed(2)}G px²`;
+    }
+    if (area >= 1e6) {
+      return `${(area / 1e6).toFixed(2)}M px²`;
+    }
+    if (area >= 1e3) {
+      return `${(area / 1e3).toFixed(1)}k px²`;
+    }
+    return `${Math.round(area)} px²`;
+  }
+
+
+  let phaseDBorderHydrationKey =
+    "";
+
+  function phaseDEffectivePreviewForRoi(
+    roi = phaseDTissueRoiFeature()
+  ) {
+    if (!roi) return null;
+
+    const preview =
+      phaseDEffectiveRoiPreview;
+
+    if (
+      !preview
+      || String(preview.featureId || "")
+        !== String(featureId(roi))
+    ) {
+      return null;
+    }
+
+    return preview;
+  }
+
+  function phaseDEnsureStoredEffectivePreview() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (!roi) {
+      phaseDEffectiveRoiPreview = null;
+      phaseDBorderHydrationKey = "";
+      return;
+    }
+
+    const config =
+      phaseDBorderConfigForRoi(roi);
+
+    if (!config.enabled || config.percent <= 0) {
+      return;
+    }
+
+    if (phaseDEffectivePreviewForRoi(roi)?.geometry) {
+      return;
+    }
+
+    const key = [
+      String(featureId(roi)),
+      config.percent.toFixed(3),
+      geometryAreaPixels(roi.geometry).toFixed(3),
+    ].join("|");
+
+    if (key === phaseDBorderHydrationKey) {
+      return;
+    }
+
+    phaseDBorderHydrationKey = key;
+
+    queueMicrotask(() => {
+      const current =
+        phaseDTissueRoiFeature();
+
+      if (
+        !current
+        || String(featureId(current))
+          !== String(featureId(roi))
+      ) {
+        return;
+      }
+
+      phaseDLoadBorderControlsFromRoi();
+
+      phaseDRefreshBorderPreview({
+        saveConfig: false,
+        quiet: true,
+      });
+    });
+  }
+
+  function phaseDRenderBorderPreviewSummary() {
+    const refs = phaseDRefs();
+    const roi = phaseDTissueRoiFeature();
+
+    const baseArea =
+      roi
+        ? geometryAreaPixels(roi.geometry)
+        : 0;
+
+    const preview =
+      phaseDEffectiveRoiPreview;
+
+    const effectiveArea =
+      preview
+        ? Number(preview.effectiveAreaPx2)
+        : baseArea;
+
+    const actualPercent =
+      preview
+        ? Number(preview.actualPercent)
+        : 0;
+
+    if (refs.borderPreviewSummary) {
+      refs.borderPreviewSummary.innerHTML = `
+        <span>
+          Original ROI:
+          <strong>${phaseDFormatAreaCompact(baseArea)}</strong>
+        </span>
+        <span>
+          Effective ROI:
+          <strong>${phaseDFormatAreaCompact(effectiveArea)}</strong>
+        </span>
+        <span>
+          Excluded:
+          <strong>${Number.isFinite(actualPercent) ? actualPercent.toFixed(2) : "0.00"}%</strong>
+        </span>
+      `;
+    }
+
+    if (refs.areaSummary) {
+      refs.areaSummary.hidden =
+        !roi || phaseDActiveRole !== "roi";
+
+      refs.areaSummary.textContent =
+        roi
+          ? (
+              `Base ${phaseDFormatAreaCompact(baseArea)} · `
+              + `ROI ${phaseDFormatAreaCompact(effectiveArea)}`
+              + (
+                  actualPercent > 0
+                    ? ` · −${actualPercent.toFixed(1)}%`
+                    : ""
+                )
+            )
+          : "";
+    }
+  }
+
+  function phaseDUpdateBorderControls() {
+    const refs = phaseDRefs();
+
+    const enabled =
+      Boolean(
+        refs.externalBorderEnabled?.checked
+      );
+
+    if (refs.externalBorderPercentField) {
+      refs.externalBorderPercentField.classList.toggle(
+        "disabled",
+        !enabled
+      );
+    }
+
+    if (refs.externalBorderPercent) {
+      refs.externalBorderPercent.disabled = !enabled;
+
+      if (refs.externalBorderPercentValue) {
+        refs.externalBorderPercentValue.textContent =
+          `${Number(refs.externalBorderPercent.value || 0).toFixed(1)}%`;
+      }
+    }
+  }
+
+  function phaseDLoadBorderControlsFromRoi() {
+    const refs = phaseDRefs();
+    const roi = phaseDTissueRoiFeature();
+
+    if (
+      phaseDEffectiveRoiPreview
+      && (
+        !roi
+        || String(
+          phaseDEffectiveRoiPreview.featureId
+          || ""
+        ) !== String(featureId(roi))
+      )
+    ) {
+      phaseDEffectiveRoiPreview = null;
+    }
+
+    const config =
+      phaseDBorderConfigForRoi(roi);
+
+    if (refs.externalBorderEnabled) {
+      refs.externalBorderEnabled.checked =
+        config.enabled;
+    }
+
+    if (refs.externalBorderPercent) {
+      refs.externalBorderPercent.value =
+        String(config.percent);
+    }
+
+    phaseDUpdateBorderControls();
+  }
+
+  async function phaseDRefreshBorderPreview(
+    {
+      saveConfig = false,
+      quiet = true,
+    } = {}
+  ) {
+    const roi = phaseDTissueRoiFeature();
+    const refs = phaseDRefs();
+
+    phaseDUpdateBorderControls();
+
+    if (!roi) {
+      phaseDEffectiveRoiPreview = null;
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+      return;
+    }
+
+    const enabled =
+      Boolean(
+        refs.externalBorderEnabled?.checked
+      );
+
+    const percent =
+      Math.max(
+        0,
+        Math.min(
+          50,
+          Number(
+            refs.externalBorderPercent?.value
+            || 0
+          )
+        )
+      );
+
+    if (saveConfig) {
+      phaseDSetBorderConfig(
+        roi,
+        enabled,
+        percent,
+        true
+      );
+    }
+
+    if (!enabled || percent <= 0) {
+      const area =
+        geometryAreaPixels(roi.geometry);
+
+      phaseDEffectiveRoiPreview = {
+        featureId:
+          String(featureId(roi)),
+        geometry: deepClone(roi.geometry),
+        originalAreaPx2: area,
+        effectiveAreaPx2: area,
+        requestedPercent: 0,
+        actualPercent: 0,
+        widthPx: 0,
+      };
+
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+      return;
+    }
+
+    const sequence =
+      ++phaseDBorderPreviewSequence;
+
+    try {
+      const response =
+        await apiFetch(
+          `${API}/geometry/tissue-roi-preview`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body:
+              JSON.stringify({
+                geometry: roi.geometry,
+                externalBorderExclusionPct:
+                  percent,
+              }),
+            timeoutMs: 30000,
+          }
+        );
+
+      const payload =
+        await response.json();
+
+      if (
+        sequence !== phaseDBorderPreviewSequence
+      ) {
+        return;
+      }
+
+      if (!payload?.geometry) {
+        throw new Error(
+          payload?.detail
+          || "No effective ROI returned"
+        );
+      }
+
+      phaseDEffectiveRoiPreview = {
+        featureId:
+          String(featureId(roi)),
+        geometry:
+          deepClone(payload.geometry),
+        originalAreaPx2:
+          Number(payload.originalAreaPx2 || 0),
+        effectiveAreaPx2:
+          Number(payload.effectiveAreaPx2 || 0),
+        requestedPercent:
+          Number(payload.requestedPercent || percent),
+        actualPercent:
+          Number(payload.actualPercent || 0),
+        widthPx:
+          Number(payload.widthPx || 0),
+      };
+
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+
+      if (!quiet) {
+        setStatus(
+          `Effective Tissue ROI preview · ${phaseDEffectiveRoiPreview.actualPercent.toFixed(2)}% excluded`,
+          "local"
+        );
+      }
+    } catch (error) {
+      phaseDEffectiveRoiPreview = null;
+      phaseDRenderBorderPreviewSummary();
+      drawAnnotations();
+
+      if (!quiet) {
+        setStatus(
+          `Border preview unavailable: ${error.message}`,
+          "error"
+        );
+      }
+    }
+  }
+
+  function phaseDScheduleBorderPreview(
+    saveConfig = true
+  ) {
+    if (phaseDBorderPreviewTimer) {
+      clearTimeout(
+        phaseDBorderPreviewTimer
+      );
+    }
+
+    phaseDBorderPreviewTimer =
+      setTimeout(
+        () => {
+          phaseDRefreshBorderPreview({
+            saveConfig,
+            quiet: true,
+          });
+        },
+        180
+      );
+  }
+
+  function phaseDRefs() {
+    return {
+      menuButton:
+        document.getElementById(
+          "phaseDTissueRoiMenuButton"
+        ),
+      overlay:
+        document.getElementById(
+          "phaseDTissueRoiOverlay"
+        ),
+      status:
+        document.getElementById(
+          "phaseDTissueRoiStatus"
+        ),
+      draw:
+        document.getElementById(
+          "phaseDDrawRoiButton"
+        ),
+      select:
+        document.getElementById(
+          "phaseDSelectRoiButton"
+        ),
+      remove:
+        document.getElementById(
+          "phaseDDeleteRoiButton"
+        ),
+      close:
+        document.getElementById(
+          "phaseDCloseRoiButton"
+        ),
+      detect:
+        document.getElementById(
+          "phaseDDetectTissueButton"
+        ),
+      detectNote:
+        document.getElementById(
+          "phaseDTissueDetectNote"
+        ),
+      sensitivity:
+        document.getElementById(
+          "phaseDTissueSensitivity"
+        ),
+      sensitivityValue:
+        document.getElementById(
+          "phaseDTissueSensitivityValue"
+        ),
+      smoothing:
+        document.getElementById(
+          "phaseDTissueSmoothing"
+        ),
+      smoothingValue:
+        document.getElementById(
+          "phaseDTissueSmoothingValue"
+        ),
+      minIsland:
+        document.getElementById(
+          "phaseDTissueMinIsland"
+        ),
+      fillHoles:
+        document.getElementById(
+          "phaseDTissueFillHoles"
+        ),
+      externalBorderEnabled:
+        document.getElementById(
+          "phaseDExternalBorderEnabled"
+        ),
+      externalBorderPercent:
+        document.getElementById(
+          "phaseDExternalBorderPercent"
+        ),
+      externalBorderPercentValue:
+        document.getElementById(
+          "phaseDExternalBorderPercentValue"
+        ),
+      externalBorderPercentField:
+        document.getElementById(
+          "phaseDExternalBorderPercentField"
+        ),
+      borderPreviewSummary:
+        document.getElementById(
+          "phaseDRoiBorderPreviewSummary"
+        ),
+      areaSummary:
+        document.getElementById(
+          "phaseDRoiAreaSummary"
+        ),
+      modeAction:
+        document.getElementById(
+          "phaseDRoiModeAction"
+        ),
+      modeHint:
+        document.getElementById(
+          "phaseDRoiModeHint"
+        ),
+      editDetection:
+        document.getElementById(
+          "phaseDEditDetectionButton"
+        ),
+      done:
+        document.getElementById(
+          "phaseDRoiDoneButton"
+        ),
+    };
+  }
+
+  function phaseDSetActiveRole(
+    role,
+    announce = true
+  ) {
+    phaseDActiveRole =
+      phaseDCanonicalRole(role);
+
+    const roiMode =
+      phaseDActiveRole === "roi";
+
+    document.body.classList.toggle(
+      "phase-d-roi-mode",
+      roiMode
+    );
+
+    const refs =
+      phaseDRefs();
+
+    if (refs.modeAction) {
+      refs.modeAction.hidden =
+        !roiMode;
+    }
+
+    if (refs.modeHint) {
+      const roi =
+        phaseDTissueRoiFeature();
+
+      const hasDetector =
+        Boolean(
+          roi?.properties
+            ?.histoannotator
+            ?.roi
+            ?.detector
+        );
+
+      refs.modeHint.textContent =
+        roi
+          ? (
+              hasDetector
+                ? "Detection preview"
+                : "Editing existing ROI"
+            )
+          : "Draw a tissue area";
+
+      if (refs.editDetection) {
+        refs.editDetection.hidden =
+          !roiMode
+          || !hasDetector;
+      }
+    }
+
+    if (
+      roiMode
+      && announce
+    ) {
+      setStatus(
+        "Tissue ROI mode · use an area tool; new areas are merged into the Tissue ROI",
+        "local"
+      );
+    }
+
+    phaseDUpdateRoiUi();
+  }
+
+  function phaseDOpenRoiSettings() {
+    const refs =
+      phaseDRefs();
+
+    phaseBToggleSettings(false);
+
+    phaseDLoadBorderControlsFromRoi();
+    phaseDUpdateRoiUi();
+
+    if (refs.overlay) {
+      refs.overlay.hidden =
+        false;
+    }
+
+    phaseDRefreshBorderPreview({
+      saveConfig: false,
+      quiet: true,
+    });
+  }
+
+  function phaseDCloseRoiSettings() {
+    const refs =
+      phaseDRefs();
+
+    if (refs.overlay) {
+      refs.overlay.hidden =
+        true;
+    }
+  }
+
+  function phaseDUpdateRoiUi() {
+    const refs =
+      phaseDRefs();
+
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (refs.status) {
+      refs.status.textContent =
+        roi
+          ? (
+              phaseDActiveRole === "roi"
+                ? "Tissue ROI present · edit mode active."
+                : "Tissue ROI present."
+            )
+          : (
+              phaseDActiveRole === "roi"
+                ? "No Tissue ROI yet · draw an area to create it."
+                : "No Tissue ROI in this annotation file."
+            );
+    }
+
+    if (refs.select) {
+      refs.select.disabled =
+        !roi;
+    }
+
+    if (refs.remove) {
+      refs.remove.disabled =
+        !roi;
+    }
+
+    if (refs.detect) {
+      refs.detect.disabled =
+        !currentImage
+        || phaseDDetectBusy
+        || Boolean(
+          currentImage?.localNative
+        );
+
+      refs.detect.textContent =
+        phaseDDetectBusy
+          ? "Detecting…"
+          : "Detect tissue";
+    }
+
+    if (refs.detectNote) {
+      if (
+        currentImage?.localNative
+      ) {
+        refs.detectNote.textContent =
+          "This image is Android-local. Detect tissue requires a server-backed image in D1-D3; manual Tissue ROI works offline.";
+      } else {
+        refs.detectNote.textContent =
+          "Detect tissue uses a reduced-resolution server thumbnail. Manual Tissue ROI drawing works offline.";
+      }
+    }
+
+    if (refs.sensitivityValue) {
+      refs.sensitivityValue.textContent =
+        refs.sensitivity?.value
+        || "50";
+    }
+
+    if (refs.smoothingValue) {
+      refs.smoothingValue.textContent =
+        refs.smoothing?.value
+        || "45";
+    }
+
+    if (refs.modeAction) {
+      refs.modeAction.hidden =
+        phaseDActiveRole !== "roi";
+    }
+
+    const hasDetector =
+      Boolean(
+        roi?.properties
+          ?.histoannotator
+          ?.roi
+          ?.detector
+      );
+
+    if (refs.editDetection) {
+      refs.editDetection.hidden =
+        phaseDActiveRole !== "roi"
+        || !hasDetector;
+    }
+
+    if (refs.modeHint) {
+      refs.modeHint.textContent =
+        roi
+          ? (
+              hasDetector
+                ? "Detection preview"
+                : "Editing existing ROI"
+            )
+          : "Draw a tissue area";
+    }
+
+    phaseDRenderBorderPreviewSummary();
+  }
+
+  function phaseDStartManualRoi() {
+    phaseDSetActiveRole(
+      "roi"
+    );
+
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (roi) {
+      setSingleSelection(
+        String(featureId(roi))
+      );
+    } else {
+      clearSelectedFeatures(false);
+    }
+
+    phaseDCloseRoiSettings();
+
+    if (
+      mode === "navigate"
+      || mode === "select"
+    ) {
+      setMode("freehand");
+    }
+
+    updateControls();
+    drawAnnotations();
+  }
+
+  function phaseDFinishManualRoi() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (roi) {
+      const refs =
+        phaseDRefs();
+
+      phaseDSetBorderConfig(
+        roi,
+        Boolean(
+          refs.externalBorderEnabled?.checked
+        ),
+        Number(
+          refs.externalBorderPercent?.value
+          || 0
+        ),
+        true
+      );
+    }
+
+    clearSelectedFeatures(false);
+
+    phaseDSetActiveRole(
+      "annotation",
+      false
+    );
+
+    setEditOperation("new");
+
+    setStatus(
+      "Tissue ROI accepted · effective region will be used for statistics",
+      "saved"
+    );
+
+    updateControls();
+    drawAnnotations();
+  }
+
+  function phaseDSelectTissueRoi() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (!roi) return;
+
+    phaseDSetActiveRole(
+      "roi",
+      false
+    );
+
+    setSingleSelection(
+      String(featureId(roi))
+    );
+
+    phaseDCloseRoiSettings();
+
+    updateControls();
+    drawAnnotations();
+  }
+
+  function phaseDDeleteTissueRoi() {
+    const roi =
+      phaseDTissueRoiFeature();
+
+    if (!roi) return;
+
+    pushUndo();
+
+    const roiId =
+      String(featureId(roi));
+
+    featureCollection.features =
+      featureCollection.features.filter(
+        (feature) =>
+          String(featureId(feature))
+          !== roiId
+      );
+
+    if (
+      selectedIds.has(roiId)
+    ) {
+      clearSelectedFeatures(false);
+    }
+
+    phaseDSetActiveRole(
+      "annotation",
+      false
+    );
+
+    markChanged();
+
+    phaseDUpdateRoiUi();
+
+    setStatus(
+      "Tissue ROI deleted",
+      "saved"
+    );
+  }
+
+  function phaseDDetectionSettings() {
+    const refs =
+      phaseDRefs();
+
+    return {
+      sensitivity:
+        Number(
+          refs.sensitivity?.value
+          || 50
+        ),
+      smoothing:
+        Number(
+          refs.smoothing?.value
+          || 45
+        ),
+      minIslandPct:
+        Math.max(
+          0,
+          Number(
+            refs.minIsland?.value
+            || 0.05
+          )
+        ),
+      fillHoles:
+        Boolean(
+          refs.fillHoles?.checked
+        ),
+      maxSize: 2048,
+    };
+  }
+
+  async function phaseDDetectTissue() {
+    if (
+      !currentImage
+      || phaseDDetectBusy
+    ) {
+      return;
+    }
+
+    if (currentImage.localNative) {
+      setStatus(
+        "Detect tissue currently requires a server-backed image; use manual Tissue ROI for Android-local images",
+        "error"
+      );
+      return;
+    }
+
+    if (imageType === "fluorescence") {
+      setStatus(
+        "Detect tissue D1-D3 is intended for brightfield H&E/H-DAB/RGB images; use manual Tissue ROI for fluorescence",
+        "error"
+      );
+      return;
+    }
+
+    const settings =
+      phaseDDetectionSettings();
+
+    phaseDDetectBusy = true;
+
+    phaseDCloseRoiSettings();
+    phaseDSetActiveRole(
+      "roi",
+      false
+    );
+    phaseDUpdateRoiUi();
+
+    setStatus(
+      "Detecting tissue on reduced-resolution image…",
+      "local"
+    );
+
+    try {
+      const response =
+        await apiFetch(
+          `${API}/images/${currentImage.id}/detect-tissue`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body:
+              JSON.stringify(
+                settings
+              ),
+            timeoutMs: 45000,
+          }
+        );
+
+      const payload =
+        await response.json();
+
+      if (!payload?.geometry) {
+        throw new Error(
+          payload?.detail
+          || "No tissue geometry returned"
+        );
+      }
+
+      pushUndo();
+
+      let roi =
+        phaseDTissueRoiFeature();
+
+      if (roi) {
+        roi.geometry =
+          deepClone(
+            payload.geometry
+          );
+
+        phaseCFinalizeGeometryEdit(
+          roi
+        );
+
+        const previousBorder =
+          phaseDBorderConfigForRoi(
+            roi
+          );
+
+        roi.properties
+          .histoannotator.roi = {
+            kind: "tissue",
+            source:
+              "detect-tissue",
+            detector:
+              deepClone(
+                payload.detector
+                || {}
+              ),
+            externalBorderExclusion: {
+              enabled:
+                previousBorder.enabled,
+              percent:
+                previousBorder.percent,
+            },
+          };
+      } else {
+        roi =
+          phaseDCreateTissueRoiFeature(
+            payload.geometry,
+            "detect-tissue",
+            payload.detector
+          );
+
+        const refs =
+          phaseDRefs();
+
+        phaseDSetBorderConfig(
+          roi,
+          Boolean(
+            refs.externalBorderEnabled?.checked
+          ),
+          Number(
+            refs.externalBorderPercent?.value
+            || 5
+          ),
+          false
+        );
+
+        featureCollection.features.push(
+          roi
+        );
+      }
+
+      setSingleSelection(
+        String(featureId(roi))
+      );
+
+      phaseDSetActiveRole(
+        "roi",
+        false
+      );
+
+      markChanged();
+
+      phaseDUpdateRoiUi();
+      updateControls();
+
+      phaseDLoadBorderControlsFromRoi();
+
+      await phaseDRefreshBorderPreview({
+        saveConfig: false,
+        quiet: true,
+      });
+
+      drawAnnotations();
+
+      const percent =
+        Number.isFinite(
+          Number(
+            payload.detectedFraction
+          )
+        )
+          ? (
+              Number(
+                payload.detectedFraction
+              )
+              * 100
+            ).toFixed(1)
+          : null;
+
+      setStatus(
+        percent
+          ? `Tissue ROI detected · ${percent}% of preview classified as tissue`
+          : "Tissue ROI detected",
+        "saved"
+      );
+    } catch (error) {
+      const message =
+        error?.message
+        || String(error)
+        || "Unknown tissue detection error";
+
+      clearSelectedFeatures(false);
+
+      phaseDSetActiveRole(
+        "annotation",
+        false
+      );
+
+      setStatus(
+        `Tissue detection failed: ${message}`,
+        "error"
+      );
+    } finally {
+      phaseDDetectBusy = false;
+      phaseDUpdateRoiUi();
+    }
+  }
+
+  function phaseDBindEvents() {
+    const refs =
+      phaseDRefs();
+
+    refs.menuButton?.addEventListener(
+      "click",
+      phaseDOpenRoiSettings
+    );
+
+    refs.close?.addEventListener(
+      "click",
+      phaseDCloseRoiSettings
+    );
+
+    refs.overlay?.addEventListener(
+      "click",
+      (event) => {
+        if (
+          event.target
+          === refs.overlay
+        ) {
+          phaseDCloseRoiSettings();
+        }
+      }
+    );
+
+    refs.draw?.addEventListener(
+      "click",
+      phaseDStartManualRoi
+    );
+
+    refs.done?.addEventListener(
+      "click",
+      phaseDFinishManualRoi
+    );
+
+    refs.editDetection?.addEventListener(
+      "click",
+      () => {
+        phaseDOpenRoiSettings();
+      }
+    );
+
+    refs.select?.addEventListener(
+      "click",
+      phaseDSelectTissueRoi
+    );
+
+    refs.remove?.addEventListener(
+      "click",
+      phaseDDeleteTissueRoi
+    );
+
+    refs.detect?.addEventListener(
+      "click",
+      phaseDDetectTissue
+    );
+
+    refs.sensitivity?.addEventListener(
+      "input",
+      phaseDUpdateRoiUi
+    );
+
+    refs.smoothing?.addEventListener(
+      "input",
+      phaseDUpdateRoiUi
+    );
+
+    refs.externalBorderEnabled?.addEventListener(
+      "change",
+      () => {
+        phaseDUpdateBorderControls();
+        phaseDScheduleBorderPreview(
+          true
+        );
+      }
+    );
+
+    refs.externalBorderPercent?.addEventListener(
+      "input",
+      () => {
+        phaseDUpdateBorderControls();
+        phaseDScheduleBorderPreview(
+          true
+        );
+      }
+    );
+  }
+
+  // ========================================================================
+  // Phase C — workflow, review decision, provenance, and lifecycle.
+  // ========================================================================
+
+  const PHASE_C_SCHEMA_VERSION = 1;
+  const PHASE_C_REVIEWER_STORAGE =
+    "histoannotator.reviewer.v1";
+
+  let phaseCSemanticBaseline = null;
+
+  function phaseCDeviceLabel() {
+    if (IS_NATIVE) {
+      const platform =
+        window.Capacitor?.getPlatform?.();
+
+      if (platform === "android") return "Android";
+      if (platform === "ios") return "iOS";
+      return "Native";
+    }
+
+    return "Web/Desktop";
+  }
+
+  function phaseCCanonicalLifecycle(value) {
+    const normalized =
+      String(value || "")
+        .trim()
+        .toLowerCase();
+
+    if (normalized === "approved") return "Approved";
+    if (normalized === "reviewed") return "Reviewed";
+    return "Draft";
+  }
+
+  function phaseCCanonicalDecision(value) {
+    const normalized =
+      String(value || "")
+        .trim()
+        .toLowerCase();
+
+    return ["correct", "maybe", "later"].includes(normalized)
+      ? normalized
+      : null;
+  }
+
+  function phaseCNormalizeMetadata(sourceProperties = {}) {
+    const source =
+      sourceProperties?.histoannotator
+      && typeof sourceProperties.histoannotator === "object"
+        ? deepClone(sourceProperties.histoannotator)
+        : {};
+
+    source.schemaVersion = PHASE_C_SCHEMA_VERSION;
+    source.role = phaseDCanonicalRole(
+      source.role || "annotation"
+    );
+
+    const workflowSource =
+      source.workflow
+      && typeof source.workflow === "object"
+        ? source.workflow
+        : {};
+
+    let decision =
+      phaseCCanonicalDecision(
+        workflowSource.reviewDecision
+      );
+
+    const legacyReview =
+      sourceProperties?.histoannotatorReview;
+
+    if (
+      !decision
+      && legacyReview
+      && typeof legacyReview === "object"
+    ) {
+      decision =
+        phaseCCanonicalDecision(
+          legacyReview.status
+        );
+
+      if (
+        !workflowSource.reviewedAt
+        && legacyReview.reviewedAt
+      ) {
+        workflowSource.reviewedAt =
+          String(legacyReview.reviewedAt);
+      }
+    }
+
+    let status =
+      phaseCCanonicalLifecycle(
+        workflowSource.status
+      );
+
+    if (
+      !workflowSource.status
+      && decision === "correct"
+    ) {
+      status = "Reviewed";
+    }
+
+    if (
+      decision === "maybe"
+      || decision === "later"
+    ) {
+      status = "Draft";
+    }
+
+    source.workflow = {
+      status,
+      reviewDecision: decision,
+      reviewer:
+        String(workflowSource.reviewer || "").trim()
+        || null,
+      reviewedAt:
+        String(workflowSource.reviewedAt || "").trim()
+        || null,
+      approvedAt:
+        String(workflowSource.approvedAt || "").trim()
+        || null,
+    };
+
+    const provenanceSource =
+      source.provenance
+      && typeof source.provenance === "object"
+        ? source.provenance
+        : {};
+
+    const provenance = {};
+
+    for (
+      const key
+      of [
+        "createdAt",
+        "modifiedAt",
+        "createdWith",
+        "modifiedWith",
+        "createdDevice",
+        "modifiedDevice",
+      ]
+    ) {
+      const value =
+        String(provenanceSource[key] || "").trim();
+
+      if (value) provenance[key] = value;
+    }
+
+    const version =
+      Math.max(
+        0,
+        Number(provenanceSource.version || 0)
+      );
+
+    if (Number.isFinite(version) && version > 0) {
+      provenance.version = Math.floor(version);
+    }
+
+    source.provenance = provenance;
+    return source;
+  }
+
+  function phaseCCreateMetadata(role = "annotation") {
+    const now =
+      new Date().toISOString();
+
+    return {
+      schemaVersion: PHASE_C_SCHEMA_VERSION,
+      role: phaseDCanonicalRole(role),
+      workflow: {
+        status: "Draft",
+        reviewDecision: null,
+        reviewer: null,
+        reviewedAt: null,
+        approvedAt: null,
+      },
+      provenance: {
+        createdAt: now,
+        modifiedAt: now,
+        version: 1,
+        createdWith: VERSION,
+        modifiedWith: VERSION,
+        createdDevice: phaseCDeviceLabel(),
+        modifiedDevice: phaseCDeviceLabel(),
+      },
+    };
+  }
+
+  function phaseCEnsureFeatureMetadata(feature) {
+    if (!feature) return null;
+
+    feature.properties ||= {};
+
+    feature.properties.histoannotator =
+      phaseCNormalizeMetadata(
+        feature.properties
+      );
+
+    return feature.properties.histoannotator;
+  }
+
+  function phaseCCurrentReviewer() {
+    return String(
+      localStorage.getItem(
+        PHASE_C_REVIEWER_STORAGE
+      )
+      || ""
+    ).trim();
+  }
+
+  function phaseCSaveReviewerPreference(value) {
+    const reviewer =
+      String(value || "").trim();
+
+    if (reviewer) {
+      localStorage.setItem(
+        PHASE_C_REVIEWER_STORAGE,
+        reviewer
+      );
+    } else {
+      localStorage.removeItem(
+        PHASE_C_REVIEWER_STORAGE
+      );
+    }
+
+    return reviewer;
+  }
+
+  function phaseCTouchFeature(
+    feature,
+    options = {}
+  ) {
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    if (!metadata) return;
+
+    if (options.invalidateReview !== false) {
+      metadata.workflow.status = "Draft";
+      metadata.workflow.reviewDecision = null;
+      metadata.workflow.reviewer = null;
+      metadata.workflow.reviewedAt = null;
+      metadata.workflow.approvedAt = null;
+    }
+
+    const provenance =
+      metadata.provenance;
+
+    const previousVersion =
+      Math.max(
+        0,
+        Number(provenance.version || 0)
+      );
+
+    provenance.version =
+      Math.floor(previousVersion) + 1;
+
+    provenance.modifiedAt =
+      new Date().toISOString();
+
+    provenance.modifiedWith =
+      VERSION;
+
+    provenance.modifiedDevice =
+      phaseCDeviceLabel();
+  }
+
+  function phaseCFinalizeGeometryEdit(feature) {
+    if (!feature) return;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    metadata.workflow.status = "Draft";
+    metadata.workflow.reviewDecision = null;
+    metadata.workflow.reviewer = null;
+    metadata.workflow.reviewedAt = null;
+    metadata.workflow.approvedAt = null;
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+
+    // This edit is now accounted for explicitly. Prevent markChanged() from
+    // applying the semantic-diff provenance update a second time.
+    phaseCSemanticBaseline = null;
+  }
+
+  function phaseCSetReviewDecision(
+    feature,
+    decision
+  ) {
+    const normalized =
+      phaseCCanonicalDecision(decision);
+
+    if (!feature || !normalized) return;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    metadata.workflow.reviewDecision =
+      normalized;
+
+    metadata.workflow.status =
+      normalized === "correct"
+        ? "Reviewed"
+        : "Draft";
+
+    metadata.workflow.reviewer =
+      phaseCCurrentReviewer()
+      || metadata.workflow.reviewer
+      || null;
+
+    metadata.workflow.reviewedAt =
+      new Date().toISOString();
+
+    metadata.workflow.approvedAt = null;
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+  }
+
+  function phaseCResetToDraft(feature) {
+    if (!feature) return;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    metadata.workflow.status = "Draft";
+    metadata.workflow.reviewDecision = null;
+    metadata.workflow.reviewer = null;
+    metadata.workflow.reviewedAt = null;
+    metadata.workflow.approvedAt = null;
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+  }
+
+  function phaseCApproveFeature(feature) {
+    if (!feature) return false;
+
+    const metadata =
+      phaseCEnsureFeatureMetadata(feature);
+
+    if (metadata.workflow.status !== "Reviewed") {
+      return false;
+    }
+
+    metadata.workflow.status = "Approved";
+    metadata.workflow.reviewer =
+      phaseCCurrentReviewer()
+      || metadata.workflow.reviewer
+      || null;
+
+    metadata.workflow.approvedAt =
+      new Date().toISOString();
+
+    phaseCTouchFeature(
+      feature,
+      { invalidateReview: false }
+    );
+
+    return true;
+  }
+
+  function phaseCSemanticFingerprint(feature) {
+    return JSON.stringify({
+      geometry: feature?.geometry || null,
+      classification:
+        feature?.properties?.classification
+        || null,
+      name:
+        feature?.properties?.name
+        ?? null,
+      description:
+        feature?.properties?.description
+        ?? null,
+    });
+  }
+
+  function phaseCCaptureSemanticBaseline() {
+    phaseCSemanticBaseline =
+      new Map();
+
+    for (
+      const feature
+      of featureCollection.features
+      || []
+    ) {
+      phaseCSemanticBaseline.set(
+        String(featureId(feature)),
+        phaseCSemanticFingerprint(feature)
+      );
+    }
+  }
+
+  function phaseCApplySemanticChanges() {
+    if (!phaseCSemanticBaseline) return;
+
+    for (
+      const feature
+      of featureCollection.features
+      || []
+    ) {
+      const id =
+        String(featureId(feature));
+
+      if (!phaseCSemanticBaseline.has(id)) {
+        phaseCEnsureFeatureMetadata(feature);
+        continue;
+      }
+
+      const previous =
+        phaseCSemanticBaseline.get(id);
+
+      const current =
+        phaseCSemanticFingerprint(feature);
+
+      if (previous !== current) {
+        phaseCTouchFeature(
+          feature,
+          { invalidateReview: true }
+        );
+      }
+    }
+
+    phaseCSemanticBaseline = null;
+  }
+
+  function phaseCWorkflowForFeature(feature) {
+    return phaseCEnsureFeatureMetadata(feature)?.workflow
+      || {
+        status: "Draft",
+        reviewDecision: null,
+        reviewer: null,
+        reviewedAt: null,
+        approvedAt: null,
+      };
+  }
+
+  function phaseCSelectedFeature() {
+    if (
+      selectedIds.size !== 1
+      || !selectedId
+    ) {
+      return null;
+    }
+
+    return findFeature(selectedId);
+  }
+
+  function phaseCWorkflowRefs() {
+    return {
+      action:
+        document.getElementById("phaseCWorkflowAction"),
+      button:
+        document.getElementById("phaseCWorkflowButton"),
+      summaryButton:
+        document.getElementById("phaseCWorkflowSummaryButton"),
+      overlay:
+        document.getElementById("phaseCWorkflowOverlay"),
+      content:
+        document.getElementById("phaseCWorkflowContent"),
+      summary:
+        document.getElementById("phaseCWorkflowSummary"),
+      scope:
+        document.getElementById("phaseCWorkflowScope"),
+      reviewerInput:
+        document.getElementById("phaseCReviewerInput"),
+      saveReviewer:
+        document.getElementById("phaseCSaveReviewerButton"),
+      returnDraft:
+        document.getElementById("phaseCReturnDraftButton"),
+      approve:
+        document.getElementById("phaseCApproveButton"),
+      approveReviewed:
+        document.getElementById("phaseCApproveReviewedButton"),
+      close:
+        document.getElementById("phaseCCloseWorkflowButton"),
+    };
+  }
+
+
+  function phaseCCurrentClassName() {
+    return String(
+      currentClass?.name
+      || ""
+    ).trim();
+  }
+
+  function phaseCFeaturesForWorkflowScope(scope) {
+    const all =
+      (
+        featureCollection.features
+        || []
+      ).filter(
+        phaseDIsAnnotationFeature
+      );
+
+    if (scope === "selected") {
+      return all.filter(
+        (feature) =>
+          selectedIds.has(
+            String(featureId(feature))
+          )
+      );
+    }
+
+    if (scope === "class") {
+      const className =
+        phaseCCurrentClassName();
+
+      if (!className) return [];
+
+      return all.filter(
+        (feature) =>
+          String(
+            feature?.properties
+              ?.classification?.name
+            || ""
+          ) === className
+      );
+    }
+
+    return [...all];
+  }
+
+  function phaseCWorkflowSummaryFor(features) {
+    const summary = {
+      total: 0,
+      Draft: 0,
+      Reviewed: 0,
+      Approved: 0,
+      correct: 0,
+      maybe: 0,
+      later: 0,
+      pending: 0,
+    };
+
+    for (const feature of features || []) {
+      const workflow =
+        phaseCWorkflowForFeature(
+          feature
+        );
+
+      summary.total += 1;
+
+      const status =
+        phaseCCanonicalLifecycle(
+          workflow.status
+        );
+
+      summary[status] += 1;
+
+      const decision =
+        phaseCCanonicalDecision(
+          workflow.reviewDecision
+        );
+
+      if (decision) {
+        summary[decision] += 1;
+      } else {
+        summary.pending += 1;
+      }
+    }
+
+    return summary;
+  }
+
+  function phaseCWorkflowScopeLabel(scope, count) {
+    if (scope === "selected") {
+      return `${count} selected`;
+    }
+
+    if (scope === "class") {
+      const className =
+        phaseCCurrentClassName()
+        || "class";
+
+      return `${className} · ${count}`;
+    }
+
+    return `Current file · ${count}`;
+  }
+
+  function phaseCRenderBatchSummary(
+    refs,
+    features,
+    summary
+  ) {
+    if (!refs.summary) return;
+
+    refs.summary.hidden = false;
+    refs.summary.innerHTML = "";
+
+    const addHeading = (text) => {
+      const heading =
+        document.createElement("div");
+
+      heading.className =
+        "phase-c-summary-section";
+
+      heading.textContent = text;
+      refs.summary.append(heading);
+    };
+
+    const addItem = (label, value) => {
+      const item =
+        document.createElement("div");
+
+      item.className =
+        "phase-c-summary-item";
+
+      const strong =
+        document.createElement("strong");
+
+      strong.textContent =
+        String(value);
+
+      const span =
+        document.createElement("span");
+
+      span.textContent = label;
+
+      item.append(strong, span);
+      refs.summary.append(item);
+    };
+
+    addHeading("Lifecycle");
+    addItem("Total", summary.total);
+    addItem("Draft", summary.Draft);
+    addItem("Reviewed", summary.Reviewed);
+    addItem("Approved", summary.Approved);
+
+    addHeading("Review decisions");
+    addItem("Correct", summary.correct);
+    addItem("Maybe", summary.maybe);
+    addItem("Review later", summary.later);
+    addItem("Pending", summary.pending);
+  }
+
+  function phaseCOpenWorkflowSummary(
+    preferredScope = "file"
+  ) {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (!refs.overlay) return;
+
+    let scope =
+      preferredScope;
+
+    if (
+      scope === "selected"
+      && !selectedIds.size
+    ) {
+      scope = "file";
+    }
+
+    if (
+      scope === "class"
+      && !phaseCCurrentClassName()
+    ) {
+      scope = "file";
+    }
+
+    if (refs.scope) {
+      refs.scope.value = scope;
+    }
+
+    phaseCRenderWorkflowModal(
+      scope
+    );
+
+    refs.overlay.hidden = false;
+  }
+
+  function phaseCBatchApproveReviewed(scope) {
+    const features =
+      phaseCFeaturesForWorkflowScope(
+        scope
+      );
+
+    const targets =
+      features.filter(
+        (feature) =>
+          phaseCWorkflowForFeature(feature)
+            .status === "Reviewed"
+      );
+
+    if (!targets.length) {
+      setStatus(
+        "No Reviewed annotations in this scope",
+        "local"
+      );
+      return 0;
+    }
+
+    pushUndo();
+
+    let changed = 0;
+
+    for (const feature of targets) {
+      if (phaseCApproveFeature(feature)) {
+        changed += 1;
+      }
+    }
+
+    if (changed) {
+      markChanged();
+      phaseCUpdateWorkflowAction();
+
+      setStatus(
+        `${changed} Reviewed annotation${changed === 1 ? "" : "s"} Approved`,
+        "saved"
+      );
+    }
+
+    return changed;
+  }
+
+  function phaseCBatchReturnDraft(scope) {
+    const features =
+      phaseCFeaturesForWorkflowScope(
+        scope
+      );
+
+    const targets =
+      features.filter((feature) => {
+        const workflow =
+          phaseCWorkflowForFeature(
+            feature
+          );
+
+        return (
+          workflow.status !== "Draft"
+          || Boolean(
+            workflow.reviewDecision
+          )
+        );
+      });
+
+    if (!targets.length) {
+      setStatus(
+        "All annotations in this scope are already clean Drafts",
+        "local"
+      );
+      return 0;
+    }
+
+    pushUndo();
+
+    for (const feature of targets) {
+      phaseCResetToDraft(feature);
+    }
+
+    markChanged();
+    phaseCUpdateWorkflowAction();
+
+    setStatus(
+      `${targets.length} annotation${targets.length === 1 ? "" : "s"} returned to Draft`,
+      "saved"
+    );
+
+    return targets.length;
+  }
+
+  function phaseCFormatTimestamp(
+    value,
+    legacy = false
+  ) {
+    if (!value) {
+      return legacy
+        ? "— (legacy)"
+        : "—";
+    }
+
+    const parsed =
+      new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
+      return String(value);
+    }
+
+    return parsed.toLocaleString();
+  }
+
+  function phaseCUpdateWorkflowAction() {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (!refs.action || !refs.button) return;
+
+    const selectionCount =
+      selectedIds.size;
+
+    const feature =
+      phaseCSelectedFeature();
+
+    const workflowSelection =
+      selectedFeatures().filter(
+        phaseDIsAnnotationFeature
+      );
+
+    const visible =
+      selectionCount > 0
+      && workflowSelection.length
+        === selectionCount
+      && !reviewState.active;
+
+    refs.action.hidden = !visible;
+
+    if (refs.summaryButton) {
+      refs.summaryButton.disabled =
+        !currentImage
+        || !featureCollection.features.length;
+    }
+
+    if (!visible) return;
+
+    refs.button.classList.remove(
+      "phase-c-workflow-button-draft",
+      "phase-c-workflow-button-reviewed",
+      "phase-c-workflow-button-approved"
+    );
+
+    if (selectionCount > 1) {
+      refs.button.textContent =
+        `Workflow · ${selectionCount} selected`;
+      return;
+    }
+
+    const workflow =
+      phaseCWorkflowForFeature(feature);
+
+    refs.button.textContent =
+      `Workflow · ${workflow.status}`;
+
+    refs.button.classList.add(
+      `phase-c-workflow-button-${workflow.status.toLowerCase()}`
+    );
+  }
+
+  function phaseCRenderWorkflowModal(
+    requestedScope = null
+  ) {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (!refs.content) return false;
+
+    let scope =
+      requestedScope
+      || refs.scope?.value
+      || (
+        selectedIds.size
+          ? "selected"
+          : "file"
+      );
+
+    if (
+      scope === "selected"
+      && !selectedIds.size
+    ) {
+      scope = "file";
+    }
+
+    if (
+      scope === "class"
+      && !phaseCCurrentClassName()
+    ) {
+      scope = "file";
+    }
+
+    if (refs.scope) {
+      refs.scope.value = scope;
+
+      const selectedOption =
+        refs.scope.querySelector(
+          'option[value="selected"]'
+        );
+
+      if (selectedOption) {
+        selectedOption.disabled =
+          selectedIds.size === 0;
+      }
+
+      const classOption =
+        refs.scope.querySelector(
+          'option[value="class"]'
+        );
+
+      if (classOption) {
+        const className =
+          phaseCCurrentClassName();
+
+        classOption.disabled =
+          !className;
+
+        classOption.textContent =
+          className
+            ? `Current class · ${className}`
+            : "Current class";
+      }
+    }
+
+    const features =
+      phaseCFeaturesForWorkflowScope(
+        scope
+      );
+
+    const summary =
+      phaseCWorkflowSummaryFor(
+        features
+      );
+
+    const singleIndividual =
+      scope === "selected"
+      && features.length === 1;
+
+    refs.content.innerHTML = "";
+
+    if (refs.summary) {
+      refs.summary.hidden =
+        singleIndividual;
+    }
+
+    if (singleIndividual) {
+      const feature =
+        features[0];
+
+      const metadata =
+        phaseCEnsureFeatureMetadata(
+          feature
+        );
+
+      const workflow =
+        metadata.workflow;
+
+      const provenance =
+        metadata.provenance;
+
+      const legacy =
+        !provenance.createdAt;
+
+      const rows = [
+        ["Status", workflow.status],
+        [
+          "Review decision",
+          workflow.reviewDecision || "—",
+        ],
+        [
+          "Reviewer",
+          workflow.reviewer || "—",
+        ],
+        [
+          "Created",
+          phaseCFormatTimestamp(
+            provenance.createdAt,
+            legacy
+          ),
+        ],
+        [
+          "Modified",
+          phaseCFormatTimestamp(
+            provenance.modifiedAt
+          ),
+        ],
+        [
+          "Version",
+          provenance.version
+            ? String(provenance.version)
+            : "— (legacy)",
+        ],
+        [
+          "Created with",
+          provenance.createdWith || "—",
+        ],
+        [
+          "Modified with",
+          provenance.modifiedWith || "—",
+        ],
+        [
+          "Created device",
+          provenance.createdDevice || "—",
+        ],
+        [
+          "Modified device",
+          provenance.modifiedDevice || "—",
+        ],
+      ];
+
+      for (
+        const [label, value]
+        of rows
+      ) {
+        const labelElement =
+          document.createElement("span");
+
+        labelElement.textContent =
+          label;
+
+        const valueElement =
+          document.createElement("strong");
+
+        valueElement.textContent =
+          value;
+
+        refs.content.append(
+          labelElement,
+          valueElement
+        );
+      }
+
+      if (refs.reviewerInput) {
+        refs.reviewerInput.value =
+          workflow.reviewer
+          || phaseCCurrentReviewer()
+          || "";
+      }
+
+      if (refs.approve) {
+        refs.approve.hidden = false;
+        refs.approve.disabled =
+          workflow.status !== "Reviewed";
+      }
+
+      if (refs.approveReviewed) {
+        refs.approveReviewed.hidden = true;
+      }
+
+      if (refs.returnDraft) {
+        refs.returnDraft.disabled =
+          workflow.status === "Draft"
+          && !workflow.reviewDecision;
+
+        refs.returnDraft.textContent =
+          "Return to Draft";
+      }
+    } else {
+      phaseCRenderBatchSummary(
+        refs,
+        features,
+        summary
+      );
+
+      const titleLabel =
+        document.createElement("span");
+
+      titleLabel.textContent =
+        "Scope";
+
+      const titleValue =
+        document.createElement("strong");
+
+      titleValue.textContent =
+        phaseCWorkflowScopeLabel(
+          scope,
+          summary.total
+        );
+
+      refs.content.append(
+        titleLabel,
+        titleValue
+      );
+
+      if (refs.reviewerInput) {
+        refs.reviewerInput.value =
+          phaseCCurrentReviewer()
+          || "";
+      }
+
+      if (refs.approve) {
+        refs.approve.hidden = true;
+      }
+
+      if (refs.approveReviewed) {
+        refs.approveReviewed.hidden = false;
+        refs.approveReviewed.disabled =
+          summary.Reviewed === 0;
+
+        refs.approveReviewed.textContent =
+          `Approve Reviewed (${summary.Reviewed})`;
+      }
+
+      if (refs.returnDraft) {
+        const resetCount =
+          features.filter((feature) => {
+            const workflow =
+              phaseCWorkflowForFeature(
+                feature
+              );
+
+            return (
+              workflow.status !== "Draft"
+              || Boolean(
+                workflow.reviewDecision
+              )
+            );
+          }).length;
+
+        refs.returnDraft.disabled =
+          resetCount === 0;
+
+        refs.returnDraft.textContent =
+          `Return to Draft (${resetCount})`;
+      }
+    }
+
+    return true;
+  }
+
+  function phaseCOpenWorkflowModal() {
+    const preferredScope =
+      selectedIds.size
+        ? "selected"
+        : "file";
+
+    phaseCOpenWorkflowSummary(
+      preferredScope
+    );
+  }
+
+  function phaseCCloseWorkflowModal() {
+    const refs =
+      phaseCWorkflowRefs();
+
+    if (refs.overlay) {
+      refs.overlay.hidden = true;
+    }
+  }
+
+  function phaseBBindPhaseCEvents() {
+    const refs =
+      phaseCWorkflowRefs();
+
+    refs.button?.addEventListener(
+      "click",
+      phaseCOpenWorkflowModal
+    );
+
+    refs.summaryButton?.addEventListener(
+      "click",
+      () => {
+        toggleFileMenu(false);
+        phaseCOpenWorkflowSummary("file");
+      }
+    );
+
+    refs.scope?.addEventListener(
+      "change",
+      () => {
+        phaseCRenderWorkflowModal(
+          refs.scope.value
+        );
+      }
+    );
+
+    refs.close?.addEventListener(
+      "click",
+      phaseCCloseWorkflowModal
+    );
+
+    refs.overlay?.addEventListener(
+      "click",
+      (event) => {
+        if (event.target === refs.overlay) {
+          phaseCCloseWorkflowModal();
+        }
+      }
+    );
+
+    refs.saveReviewer?.addEventListener(
+      "click",
+      () => {
+        const reviewer =
+          phaseCSaveReviewerPreference(
+            refs.reviewerInput?.value
+            || ""
+          );
+
+        const scope =
+          refs.scope?.value
+          || "selected";
+
+        const features =
+          phaseCFeaturesForWorkflowScope(
+            scope
+          );
+
+        // For a single selected annotation, Save reviewer also updates that
+        // reviewed/approved feature. For batch scopes it acts as the reviewer
+        // preference for subsequent review decisions, avoiding accidental
+        // rewriting of hundreds of historical reviewer fields.
+        if (
+          scope === "selected"
+          && features.length === 1
+        ) {
+          const feature =
+            features[0];
+
+          const metadata =
+            phaseCEnsureFeatureMetadata(
+              feature
+            );
+
+          if (
+            metadata.workflow.reviewDecision
+            || metadata.workflow.status === "Reviewed"
+            || metadata.workflow.status === "Approved"
+          ) {
+            pushUndo();
+
+            metadata.workflow.reviewer =
+              reviewer || null;
+
+            phaseCTouchFeature(
+              feature,
+              { invalidateReview: false }
+            );
+
+            markChanged();
+          }
+        }
+
+        phaseCRenderWorkflowModal(
+          scope
+        );
+
+        setStatus(
+          reviewer
+            ? `Reviewer set to ${reviewer}`
+            : "Reviewer preference cleared",
+          "saved"
+        );
+      }
+    );
+
+    refs.returnDraft?.addEventListener(
+      "click",
+      () => {
+        const scope =
+          refs.scope?.value
+          || "selected";
+
+        const features =
+          phaseCFeaturesForWorkflowScope(
+            scope
+          );
+
+        if (
+          scope === "selected"
+          && features.length === 1
+        ) {
+          const feature =
+            features[0];
+
+          const workflow =
+            phaseCWorkflowForFeature(
+              feature
+            );
+
+          if (
+            workflow.status === "Draft"
+            && !workflow.reviewDecision
+          ) {
+            return;
+          }
+
+          pushUndo();
+          phaseCResetToDraft(feature);
+          markChanged();
+
+          setStatus(
+            "Annotation returned to Draft",
+            "saved"
+          );
+        } else {
+          phaseCBatchReturnDraft(
+            scope
+          );
+        }
+
+        phaseCRenderWorkflowModal(
+          scope
+        );
+        phaseCUpdateWorkflowAction();
+      }
+    );
+
+    refs.approve?.addEventListener(
+      "click",
+      () => {
+        const feature =
+          phaseCSelectedFeature();
+
+        if (!feature) return;
+
+        pushUndo();
+
+        if (!phaseCApproveFeature(feature)) {
+          setStatus(
+            "Only Reviewed annotations can be Approved",
+            "error"
+          );
+          return;
+        }
+
+        markChanged();
+
+        phaseCRenderWorkflowModal(
+          "selected"
+        );
+        phaseCUpdateWorkflowAction();
+
+        setStatus(
+          "Annotation Approved",
+          "saved"
+        );
+      }
+    );
+
+    refs.approveReviewed?.addEventListener(
+      "click",
+      () => {
+        const scope =
+          refs.scope?.value
+          || "file";
+
+        phaseCBatchApproveReviewed(
+          scope
+        );
+
+        phaseCRenderWorkflowModal(
+          scope
+        );
+      }
+    );
+  }
+
+  // ========================================================================
+  // Phase B — compact Settings, Focus Mode, shortcuts, rectangle information.
+  // ========================================================================
+  let phaseBFocusActive = false;
+  let phaseBShortcutCapture = null;
+
+  const PHASE_B_SHORTCUT_STORAGE = "histoannotator.shortcuts.v1";
+  const PHASE_B_SHORTCUT_ACTIONS = [
+    { id: "tool.navigate", label: "Move", group: "Tools", defaultKey: "1" },
+    { id: "tool.freehand", label: "Freehand", group: "Tools", defaultKey: "2" },
+    { id: "tool.brush", label: "Brush", group: "Tools", defaultKey: "3" },
+    { id: "tool.polygon", label: "Polygon", group: "Tools", defaultKey: "4" },
+    { id: "tool.rectangle", label: "Rectangle", group: "Tools", defaultKey: "5" },
+    { id: "tool.circle", label: "Circle", group: "Tools", defaultKey: "6" },
+    { id: "tool.wand", label: "Wand", group: "Tools", defaultKey: "7" },
+    { id: "tool.select", label: "Select", group: "Tools", defaultKey: "8" },
+    { id: "review.correct", label: "Correct", group: "Review Mode", defaultKey: "Z" },
+    { id: "review.maybe", label: "Maybe", group: "Review Mode", defaultKey: "X" },
+    { id: "review.later", label: "Review later", group: "Review Mode", defaultKey: "C" },
+    { id: "review.delete", label: "Delete", group: "Review Mode", defaultKey: "V" },
+    { id: "general.escape", label: "Exit / cancel", group: "General", defaultKey: "Escape" },
+    { id: "polygon.finish", label: "Finish Polygon", group: "General", defaultKey: "Enter" },
+    { id: "focus.toggle", label: "Toggle Focus Mode", group: "General", defaultKey: "" },
+  ];
+
+  function phaseBRefs() {
+    return {
+      settingsButton: document.getElementById("phaseBSettingsButton"),
+      settingsPanel: document.getElementById("phaseBSettingsPanel"),
+      focusMenuButton: document.getElementById("phaseBFocusMenuButton"),
+      shortcutsMenuButton: document.getElementById("phaseBShortcutsMenuButton"),
+      focusControls: document.getElementById("phaseBFocusControls"),
+      focusClassesButton: document.getElementById("phaseBFocusClassesButton"),
+      focusClassStrip: document.getElementById("phaseBFocusClassStrip"),
+      exitFocusButton: document.getElementById("phaseBExitFocusButton"),
+      shortcutOverlay: document.getElementById("phaseBShortcutOverlay"),
+      shortcutList: document.getElementById("phaseBShortcutList"),
+      shortcutMessage: document.getElementById("phaseBShortcutMessage"),
+      resetShortcutsButton: document.getElementById("phaseBResetShortcutsButton"),
+      closeShortcutsButton: document.getElementById("phaseBCloseShortcutsButton"),
+      rectangleAction: document.getElementById("phaseBRectangleAction"),
+      rectangleInfoButton: document.getElementById("phaseBRectangleInfoButton"),
+      rectangleOverlay: document.getElementById("phaseBRectangleOverlay"),
+      rectangleContent: document.getElementById("phaseBRectangleContent"),
+      closeRectangleButton: document.getElementById("phaseBCloseRectangleButton"),
+    };
+  }
+
+  function phaseBShortcutDefaults() {
+    return Object.fromEntries(
+      PHASE_B_SHORTCUT_ACTIONS.map((action) => [action.id, action.defaultKey])
+    );
+  }
+
+  function phaseBLoadShortcutBindings() {
+    const result = phaseBShortcutDefaults();
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem(PHASE_B_SHORTCUT_STORAGE) || "{}"
+      );
+      if (saved && typeof saved === "object") {
+        for (const action of PHASE_B_SHORTCUT_ACTIONS) {
+          if (typeof saved[action.id] === "string") {
+            result[action.id] = saved[action.id];
+          }
+        }
+      }
+    } catch (_) { /* defaults */ }
+    return result;
+  }
+
+  let phaseBShortcutBindings = phaseBLoadShortcutBindings();
+
+  function phaseBSaveShortcutBindings() {
+    localStorage.setItem(
+      PHASE_B_SHORTCUT_STORAGE,
+      JSON.stringify(phaseBShortcutBindings)
+    );
+  }
+
+  function phaseBNormalizeKey(event) {
+    let key = String(event.key || "");
+    if (!key) return "";
+    if (key.length === 1) key = key.toUpperCase();
+    if (key === "Esc") key = "Escape";
+    if (key === " ") key = "Space";
+
+    const modifiers = [];
+    if (event.ctrlKey) modifiers.push("Ctrl");
+    if (event.altKey) modifiers.push("Alt");
+    if (event.metaKey) modifiers.push("Meta");
+    if (event.shiftKey && key.length > 1) modifiers.push("Shift");
+    return [...modifiers, key].join("+");
+  }
+
+  function phaseBTypingTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest("input, textarea, select, [contenteditable='true']")
+    );
+  }
+
+  function phaseBActionForKey(key) {
+    if (!key) return null;
+    return PHASE_B_SHORTCUT_ACTIONS.find(
+      (action) => phaseBShortcutBindings[action.id] === key
+    ) || null;
+  }
+
+  function phaseBSetShortcutMessage(message = "", error = false) {
+    const refs = phaseBRefs();
+    if (!refs.shortcutMessage) return;
+    refs.shortcutMessage.textContent = message;
+    refs.shortcutMessage.classList.toggle("error", Boolean(error));
+  }
+
+  function phaseBRenderShortcutSettings() {
+    const refs = phaseBRefs();
+    if (!refs.shortcutList) return;
+
+    refs.shortcutList.innerHTML = "";
+    let group = null;
+
+    for (const action of PHASE_B_SHORTCUT_ACTIONS) {
+      if (action.group !== group) {
+        group = action.group;
+        const heading = document.createElement("strong");
+        heading.className = "phase-b-shortcut-group";
+        heading.textContent = group;
+        refs.shortcutList.append(heading);
+      }
+
+      const row = document.createElement("div");
+      row.className = "phase-b-shortcut-row";
+
+      const label = document.createElement("div");
+      label.className = "phase-b-shortcut-label";
+
+      const title = document.createElement("strong");
+      title.textContent = action.label;
+
+      const id = document.createElement("small");
+      id.textContent = action.id;
+
+      label.append(title, id);
+
+      const keyButton = document.createElement("button");
+      keyButton.type = "button";
+      keyButton.className = "phase-b-shortcut-key";
+      keyButton.textContent = phaseBShortcutBindings[action.id] || "—";
+
+      if (phaseBShortcutCapture === action.id) {
+        keyButton.classList.add("capturing");
+      }
+
+      keyButton.addEventListener("click", () => {
+        phaseBShortcutCapture = action.id;
+        phaseBSetShortcutMessage(
+          `Press a key for ${action.label}. Backspace clears it.`
+        );
+        phaseBRenderShortcutSettings();
+      });
+
+      row.append(label, keyButton);
+      refs.shortcutList.append(row);
+    }
+  }
+
+  function phaseBOpenShortcutSettings() {
+    const refs = phaseBRefs();
+    phaseBShortcutCapture = null;
+    phaseBSetShortcutMessage("");
+    phaseBRenderShortcutSettings();
+    if (refs.shortcutOverlay) refs.shortcutOverlay.hidden = false;
+  }
+
+  function phaseBCloseShortcutSettings() {
+    const refs = phaseBRefs();
+    phaseBShortcutCapture = null;
+    if (refs.shortcutOverlay) refs.shortcutOverlay.hidden = true;
+    phaseBSetShortcutMessage("");
+  }
+
+  function phaseBCaptureShortcut(event) {
+    if (!phaseBShortcutCapture) return false;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Backspace" || event.key === "Delete") {
+      phaseBShortcutBindings[phaseBShortcutCapture] = "";
+      phaseBSaveShortcutBindings();
+      phaseBShortcutCapture = null;
+      phaseBSetShortcutMessage("Shortcut cleared.");
+      phaseBRenderShortcutSettings();
+      return true;
+    }
+
+    if (event.key === "Escape") {
+      phaseBShortcutCapture = null;
+      phaseBSetShortcutMessage("Shortcut change cancelled.");
+      phaseBRenderShortcutSettings();
+      return true;
+    }
+
+    const key = phaseBNormalizeKey(event);
+    if (!key) return true;
+
+    const conflict = PHASE_B_SHORTCUT_ACTIONS.find(
+      (action) =>
+        action.id !== phaseBShortcutCapture
+        && phaseBShortcutBindings[action.id] === key
+    );
+
+    if (conflict) {
+      phaseBSetShortcutMessage(
+        `${key} is already assigned to ${conflict.label}.`,
+        true
+      );
+      return true;
+    }
+
+    const actionId = phaseBShortcutCapture;
+    phaseBShortcutBindings[actionId] = key;
+    phaseBSaveShortcutBindings();
+    phaseBShortcutCapture = null;
+
+    const action = PHASE_B_SHORTCUT_ACTIONS.find(
+      (item) => item.id === actionId
+    );
+    phaseBSetShortcutMessage(`${action?.label || "Action"} → ${key}`);
+    phaseBRenderShortcutSettings();
+    return true;
+  }
+
+  function phaseBToggleSettings(force = null) {
+    const refs = phaseBRefs();
+    if (!refs.settingsButton || !refs.settingsPanel) return;
+
+    const open =
+      force === null
+        ? refs.settingsPanel.hidden
+        : Boolean(force);
+
+    refs.settingsPanel.hidden = !open;
+    refs.settingsButton.setAttribute("aria-expanded", String(open));
+  }
+
+  function phaseBRenderFocusClasses() {
+    const refs = phaseBRefs();
+    if (!refs.focusClassStrip) return;
+
+    refs.focusClassStrip.innerHTML = "";
+    const regularButtons =
+      [...document.querySelectorAll("#classList .class-main")];
+
+    classes.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "phase-b-focus-class";
+
+      if (regularButtons[index]?.classList.contains("active")) {
+        button.classList.add("active");
+      }
+
+      const dot = document.createElement("span");
+      dot.className = "phase-b-focus-dot";
+      dot.style.background = item.color;
+
+      const label = document.createElement("span");
+      label.textContent = item.name;
+
+      button.append(dot, label);
+      button.addEventListener("click", () => {
+        regularButtons[index]?.click();
+        phaseBRenderFocusClasses();
+      });
+      refs.focusClassStrip.append(button);
+    });
+  }
+
+  function phaseBSetFocusClassesOpen(open) {
+    const refs = phaseBRefs();
+    if (!refs.focusClassesButton || !refs.focusClassStrip) return;
+
+    refs.focusClassStrip.hidden = !open;
+    refs.focusClassesButton.setAttribute("aria-expanded", String(open));
+    refs.focusClassesButton.textContent = open ? "Classes ▴" : "Classes ▾";
+
+    if (open) phaseBRenderFocusClasses();
+  }
+
+  function phaseBSetFocusMode(active) {
+    const refs = phaseBRefs();
+
+    phaseBFocusActive = Boolean(active);
+    document.body.classList.toggle("phase-b-focus-mode", phaseBFocusActive);
+
+    if (refs.focusControls) refs.focusControls.hidden = !phaseBFocusActive;
+    if (refs.focusMenuButton) {
+      refs.focusMenuButton.textContent =
+        phaseBFocusActive ? "Exit Focus Mode" : "Focus Mode";
+    }
+
+    phaseBToggleSettings(false);
+    phaseBSetFocusClassesOpen(false);
+    if (phaseBFocusActive) phaseBRenderFocusClasses();
+
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new Event("resize"));
+      drawAnnotations();
+    });
+  }
+
+  function phaseBRectangleBounds(feature) {
+    const geometry = feature?.geometry;
+    if (
+      !geometry
+      || geometry.type !== "Polygon"
+      || !Array.isArray(geometry.coordinates)
+      || geometry.coordinates.length !== 1
+    ) return null;
+
+    let points = (geometry.coordinates[0] || []).map((point) => [
+      Number(point?.[0]),
+      Number(point?.[1]),
+    ]);
+
+    if (
+      points.length === 5
+      && Math.hypot(
+        points[0][0] - points[4][0],
+        points[0][1] - points[4][1]
+      ) < 1e-6
+    ) {
+      points = points.slice(0, -1);
+    }
+
+    if (
+      points.length !== 4
+      || points.some((p) => !Number.isFinite(p[0]) || !Number.isFinite(p[1]))
+    ) return null;
+
+    const vectors = [];
+    for (let i = 0; i < 4; i += 1) {
+      const a = points[i];
+      const b = points[(i + 1) % 4];
+      vectors.push([b[0] - a[0], b[1] - a[1]]);
+    }
+
+    for (let i = 0; i < 4; i += 1) {
+      const a = vectors[i];
+      const b = vectors[(i + 1) % 4];
+      const lenA = Math.hypot(a[0], a[1]);
+      const lenB = Math.hypot(b[0], b[1]);
+      if (lenA < 1e-6 || lenB < 1e-6) return null;
+
+      const normalizedDot =
+        Math.abs(a[0] * b[0] + a[1] * b[1])
+        / (lenA * lenB);
+
+      if (normalizedDot > 1e-4) return null;
+    }
+
+    const xs = points.map((p) => p[0]);
+    const ys = points.map((p) => p[1]);
+
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    return {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    };
+  }
+
+  function phaseBSelectedRectangle() {
+    if (selectedIds.size !== 1 || !selectedId) return null;
+    const feature = findFeature(selectedId);
+    const bounds = phaseBRectangleBounds(feature);
+    return bounds ? { feature, bounds } : null;
+  }
+
+  function phaseBUpdateRectangleAction() {
+    const refs = phaseBRefs();
+    if (!refs.rectangleAction) return;
+    refs.rectangleAction.hidden = !phaseBSelectedRectangle();
+  }
+
+  function phaseBFormatNumber(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "—";
+    return Math.abs(number - Math.round(number)) < 1e-6
+      ? String(Math.round(number))
+      : number.toFixed(2);
+  }
+
+  function phaseBShowRectangleInfo() {
+    const refs = phaseBRefs();
+    const selected = phaseBSelectedRectangle();
+    if (!selected || !refs.rectangleContent) return;
+
+    const rows = [
+      ["X", `${phaseBFormatNumber(selected.bounds.x)} px`],
+      ["Y", `${phaseBFormatNumber(selected.bounds.y)} px`],
+      ["Width", `${phaseBFormatNumber(selected.bounds.width)} px`],
+      ["Height", `${phaseBFormatNumber(selected.bounds.height)} px`],
+    ];
+
+    refs.rectangleContent.innerHTML = "";
+    for (const [label, value] of rows) {
+      const labelElement = document.createElement("span");
+      labelElement.textContent = label;
+      const valueElement = document.createElement("strong");
+      valueElement.textContent = value;
+      refs.rectangleContent.append(labelElement, valueElement);
+    }
+
+    if (refs.rectangleOverlay) refs.rectangleOverlay.hidden = false;
+  }
+
+  function phaseBDispatchShortcut(actionId) {
+    const toolMap = {
+      "tool.navigate": "navigate",
+      "tool.freehand": "freehand",
+      "tool.brush": "brush",
+      "tool.polygon": "polygon",
+      "tool.rectangle": "rectangle",
+      "tool.circle": "circle",
+      "tool.wand": "wand",
+      "tool.select": "select",
+    };
+
+    if (toolMap[actionId]) {
+      setMode(toolMap[actionId]);
+      return true;
+    }
+
+    const reviewButtons = {
+      "review.correct": "reviewCorrectButton",
+      "review.maybe": "reviewMaybeButton",
+      "review.later": "reviewLaterButton",
+      "review.delete": "reviewDeleteButton",
+    };
+
+    if (reviewButtons[actionId]) {
+      if (!reviewState.active) return false;
+      document.getElementById(reviewButtons[actionId])?.click();
+      return true;
+    }
+
+    if (actionId === "polygon.finish") {
+      if (mode !== "polygon" || polygonDraft.length < 3) return false;
+      finishPolygon();
+      return true;
+    }
+
+    if (actionId === "focus.toggle") {
+      phaseBSetFocusMode(!phaseBFocusActive);
+      return true;
+    }
+
+    if (actionId === "general.escape") {
+      const refs = phaseBRefs();
+
+      toggleFileMenu(false);
+      phaseBToggleSettings(false);
+
+      if (refs.shortcutOverlay && !refs.shortcutOverlay.hidden) {
+        phaseBCloseShortcutSettings();
+        return true;
+      }
+
+      if (refs.rectangleOverlay && !refs.rectangleOverlay.hidden) {
+        refs.rectangleOverlay.hidden = true;
+        return true;
+      }
+
+      if (reviewState.active) {
+        exitReviewMode();
+        return true;
+      }
+
+      if (phaseBFocusActive) {
+        phaseBSetFocusMode(false);
+        return true;
+      }
+
+      if (polygonDraft.length) {
+        cancelPolygon();
+        return true;
+      }
+
+      if (circleDraft) {
+        cancelCircleDraft();
+        return true;
+      }
+
+      if (els.infoOverlay) els.infoOverlay.hidden = true;
+      return true;
+    }
+
+    return false;
+  }
+
+  function phaseBHandleKeydown(event) {
+    if (phaseBShortcutCapture) {
+      phaseBCaptureShortcut(event);
+      return;
+    }
+
+    if (phaseBTypingTarget(event.target)) return;
+
+    const action =
+      phaseBActionForKey(
+        phaseBNormalizeKey(event)
+      );
+
+    if (!action) return;
+
+    if (phaseBDispatchShortcut(action.id)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function phaseBBindEvents() {
+    const refs = phaseBRefs();
+
+    refs.settingsButton?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      phaseBToggleSettings();
+    });
+
+    refs.settingsPanel?.addEventListener(
+      "click",
+      (event) => event.stopPropagation()
+    );
+
+    refs.focusMenuButton?.addEventListener(
+      "click",
+      () => phaseBSetFocusMode(!phaseBFocusActive)
+    );
+
+    refs.shortcutsMenuButton?.addEventListener("click", () => {
+      phaseBToggleSettings(false);
+      phaseBOpenShortcutSettings();
+    });
+
+    refs.focusClassesButton?.addEventListener("click", () => {
+      phaseBSetFocusClassesOpen(refs.focusClassStrip?.hidden !== false);
+    });
+
+    refs.exitFocusButton?.addEventListener(
+      "click",
+      () => phaseBSetFocusMode(false)
+    );
+
+    refs.closeShortcutsButton?.addEventListener(
+      "click",
+      phaseBCloseShortcutSettings
+    );
+
+    refs.resetShortcutsButton?.addEventListener("click", () => {
+      phaseBShortcutBindings = phaseBShortcutDefaults();
+      phaseBSaveShortcutBindings();
+      phaseBShortcutCapture = null;
+      phaseBSetShortcutMessage("Default shortcuts restored.");
+      phaseBRenderShortcutSettings();
+    });
+
+    refs.shortcutOverlay?.addEventListener("click", (event) => {
+      if (event.target === refs.shortcutOverlay) {
+        phaseBCloseShortcutSettings();
+      }
+    });
+
+    refs.rectangleInfoButton?.addEventListener(
+      "click",
+      phaseBShowRectangleInfo
+    );
+
+    refs.closeRectangleButton?.addEventListener("click", () => {
+      if (refs.rectangleOverlay) refs.rectangleOverlay.hidden = true;
+    });
+
+    refs.rectangleOverlay?.addEventListener("click", (event) => {
+      if (event.target === refs.rectangleOverlay) {
+        refs.rectangleOverlay.hidden = true;
+      }
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!event.target?.closest?.(".phase-b-settings-menu")) {
+        phaseBToggleSettings(false);
+      }
+    });
+
+    phaseBBindPhaseCEvents();
+    phaseDBindEvents();
+  }
+
   function setMode(nextMode) {
+    // Phase D3.3.1 clear structural selection on normal Select
+    if (
+      nextMode === "select"
+      && phaseDActiveRole !== "roi"
+      && selectedFeatures().some(
+        (feature) =>
+          !phaseDIsAnnotationFeature(
+            feature
+          )
+      )
+    ) {
+      clearSelectedFeatures(false);
+    }
+
     mode = nextMode;
     activeDraft = null;
     pointerState = null;
@@ -5724,6 +9747,9 @@
     updatePathologistActions();
     updateCircleActions();
     updateSelectionActions();
+    phaseBUpdateRectangleAction();
+    phaseCUpdateWorkflowAction();
+    phaseDUpdateRoiUi();
     drawAnnotations();
     updateDiagnostics();
   }
@@ -6048,6 +10074,9 @@
     }
   }
 
+  // Standard Freehand gestures staying within this screen-space radius
+  // are treated as selection taps rather than drawings.
+  const FREEHAND_TAP_THRESHOLD_PX = 6;
   async function finalizeActiveDraft() {
     if (!activeDraft || geometryBusy) return;
     const draft = activeDraft;
@@ -6079,10 +10108,41 @@
       const lastScreen = screenPointFromImage(points[points.length - 1] || draft.points[0]);
       const travelPx = firstScreen && lastScreen ? Math.hypot(lastScreen.x - firstScreen.x, lastScreen.y - firstScreen.y) : 0;
       if (points.length < 3 || travelPx < 10) {
-        const id = hitTest(draft.points[draft.points.length - 1] || draft.points[0]);
+        const id =
+          phaseDHitTestNormalAnnotation(
+            draft.points[
+              draft.points.length - 1
+            ]
+            || draft.points[0]
+          );
         if (draft.additive) {
-          if (id && selectedIds.has(String(id))) selectedIds.delete(String(id));
-          else if (id) selectedIds.add(String(id));
+          const selectableId =
+            (
+              id
+              && (
+                phaseDActiveRole === "roi"
+                || phaseDIsAnnotationFeature(
+                  findFeature(id)
+                )
+              )
+            )
+              ? id
+              : null;
+
+          if (
+            selectableId
+            && selectedIds.has(
+              String(selectableId)
+            )
+          ) {
+            selectedIds.delete(
+              String(selectableId)
+            );
+          } else if (selectableId) {
+            selectedIds.add(
+              String(selectableId)
+            );
+          }
           selectedId = selectedIds.has(String(id)) ? String(id) : (selectedIds.size ? [...selectedIds][0] : null);
         } else setSingleSelection(id);
         const feature = selectedId ? findFeature(selectedId) : null;
@@ -6096,7 +10156,13 @@
         if (regionPoints.length < 3) throw new Error("Selection area is too small");
         const ids = await requestGeometrySelection(
           polygonGeometry(regionPoints),
-          featureCollection.features.map(
+          (
+            phaseDActiveRole === "roi"
+              ? featureCollection.features
+              : featureCollection.features.filter(
+                  phaseDIsAnnotationFeature
+                )
+          ).map(
             (feature) => ({
               id: featureId(feature),
               geometry: feature.geometry,
@@ -6107,10 +10173,51 @@
         else setMultiSelection(ids);
         const feature = selectedId ? findFeature(selectedId) : null;
         syncCurrentClassFromFeature(feature);
-        setStatus(ids.length ? `${ids.length} annotations selected` : "No annotations fully inside the selection area", ids.length ? "saved" : "local");
+        setStatus(ids.length ? `${ids.length} annotations selected` : "No annotations intersect the selection area", ids.length ? "saved" : "local");
       } catch (error) { setStatus(`Selection error: ${error.message}`, "error"); }
       finally { geometryBusy = false; updateControls(); drawAnnotations(); }
       return;
+    }
+
+    if (draft.type === "freehand") {
+      const origin = draft.points[0];
+      const originScreen = origin ? screenPointFromImage(origin) : null;
+      let maxTravelPx = 0;
+
+      if (originScreen) {
+        for (const point of draft.points) {
+          const screen = screenPointFromImage(point);
+          if (!screen) continue;
+          maxTravelPx = Math.max(
+            maxTravelPx,
+            Math.hypot(
+              screen.x - originScreen.x,
+              screen.y - originScreen.y
+            )
+          );
+        }
+      }
+
+      if (maxTravelPx <= FREEHAND_TAP_THRESHOLD_PX) {
+        const tapPoint =
+          draft.points[draft.points.length - 1]
+          || draft.points[0];
+
+        const id =
+          phaseDHitTestNormalAnnotation(
+            tapPoint
+          );
+        // A Freehand tap is an intentional selection. With Phase A1,
+        // setSingleSelection() also clears the implicit "just drawn" marker.
+        setSingleSelection(id);
+
+        const feature =
+          selectedId ? findFeature(selectedId) : null;
+        syncCurrentClassFromFeature(feature);
+        updateControls();
+        drawAnnotations();
+        return;
+      }
     }
 
     geometryBusy = true;
@@ -6394,6 +10501,76 @@
     }
   }
 
+  function phaseBGeometryRings(geometry) {
+    if (!geometry) return [];
+    if (geometry.type === "Polygon") return geometry.coordinates || [];
+    if (geometry.type === "MultiPolygon") {
+      return (geometry.coordinates || []).flatMap((polygon) => polygon || []);
+    }
+    return [];
+  }
+
+  function phaseBPointOnSegment(point, a, b, epsilon = 1e-7) {
+    const [px, py] = point;
+    const [ax, ay] = a;
+    const [bx, by] = b;
+    const cross = (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+    if (Math.abs(cross) > epsilon) return false;
+    const dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay);
+    if (dot < -epsilon) return false;
+    const lengthSq = (bx - ax) ** 2 + (by - ay) ** 2;
+    if (dot - lengthSq > epsilon) return false;
+    return true;
+  }
+
+  function phaseBSegmentsTouch(a, b, c, d, epsilon = 1e-7) {
+    const orient = (p, q, r) =>
+      (q[0] - p[0]) * (r[1] - p[1])
+      - (q[1] - p[1]) * (r[0] - p[0]);
+
+    const o1 = orient(a, b, c);
+    const o2 = orient(a, b, d);
+    const o3 = orient(c, d, a);
+    const o4 = orient(c, d, b);
+
+    if (
+      ((o1 > epsilon && o2 < -epsilon) || (o1 < -epsilon && o2 > epsilon))
+      && ((o3 > epsilon && o4 < -epsilon) || (o3 < -epsilon && o4 > epsilon))
+    ) {
+      return true;
+    }
+
+    return (
+      (Math.abs(o1) <= epsilon && phaseBPointOnSegment(c, a, b, epsilon))
+      || (Math.abs(o2) <= epsilon && phaseBPointOnSegment(d, a, b, epsilon))
+      || (Math.abs(o3) <= epsilon && phaseBPointOnSegment(a, c, d, epsilon))
+      || (Math.abs(o4) <= epsilon && phaseBPointOnSegment(b, c, d, epsilon))
+    );
+  }
+
+  function phaseBBoundariesTouch(geometryA, geometryB) {
+    const ringsA = phaseBGeometryRings(geometryA);
+    const ringsB = phaseBGeometryRings(geometryB);
+
+    for (const ringA of ringsA) {
+      if (!Array.isArray(ringA) || ringA.length < 2) continue;
+      for (let i = 0; i < ringA.length - 1; i += 1) {
+        const a = ringA[i];
+        const b = ringA[i + 1];
+
+        for (const ringB of ringsB) {
+          if (!Array.isArray(ringB) || ringB.length < 2) continue;
+          for (let j = 0; j < ringB.length - 1; j += 1) {
+            if (phaseBSegmentsTouch(a, b, ringB[j], ringB[j + 1])) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   function localSelectGeometries(region, features) {
     const engine = window.polygonClipping;
 
@@ -6417,28 +10594,24 @@
             item.geometry
           );
 
-        /*
-         * We want the same concept as:
-         *
-         *     selectionRegion.covers(annotation)
-         *
-         * If:
-         *
-         *     annotation - selectionRegion
-         *
-         * produces nothing, the annotation is fully inside
-         * the selection region.
-         */
-        const outside =
-          engine.difference(
+        const overlap =
+          engine.intersection(
             geometryInput,
             regionInput
           );
 
-        if (
-          Array.isArray(outside) &&
-          outside.length === 0
-        ) {
+        const hasAreaIntersection =
+          Array.isArray(overlap)
+          && overlap.length > 0;
+
+        const touchesBoundary =
+          !hasAreaIntersection
+          && phaseBBoundariesTouch(
+            item.geometry,
+            region
+          );
+
+        if (hasAreaIntersection || touchesBoundary) {
           ids.push(String(item.id));
         }
 
@@ -6508,15 +10681,44 @@
     }
   }
 
-  function createAnnotationFeature(geometry) {
+  function createAnnotationFeature(
+    geometry,
+    options = {}
+  ) {
+    const role =
+      phaseDCanonicalRole(
+        options.role
+        || "annotation"
+      );
+
+    if (role === "roi") {
+      return phaseDCreateTissueRoiFeature(
+        geometry,
+        options.source
+        || "manual",
+        options.detector
+        || null
+      );
+    }
+
     return {
       type: "Feature",
       id: uid(),
       geometry: deepClone(geometry),
       properties: {
         objectType: "annotation",
-        classification: { name: currentClass.name, color: hexToRgbArray(currentClass.color) },
+        classification: {
+          name: currentClass.name,
+          color:
+            hexToRgbArray(
+              currentClass.color
+            ),
+        },
         isLocked: false,
+        histoannotator:
+          phaseCCreateMetadata(
+            role
+          ),
       },
     };
   }
@@ -6525,10 +10727,95 @@
     if (!geometry) return false;
     if (!requireSelectedForOperation(operation)) return false;
     if (operation === "new") {
+      if (phaseDActiveRole === "roi") {
+        const existingRoi =
+          phaseDTissueRoiFeature();
+
+        if (existingRoi) {
+          const merged =
+            await requestBooleanGeometry(
+              existingRoi.geometry,
+              geometry,
+              "union"
+            );
+
+          if (!merged) {
+            setStatus(
+              "The Tissue ROI could not be extended",
+              "error"
+            );
+            return false;
+          }
+
+          pushUndo();
+
+          existingRoi.geometry =
+            merged;
+
+          phaseCFinalizeGeometryEdit(
+            existingRoi
+          );
+
+          existingRoi.properties
+            .histoannotator.roi = {
+              kind: "tissue",
+              source: "manual",
+            };
+
+          setSingleSelection(
+            String(
+              featureId(
+                existingRoi
+              )
+            ),
+            true
+          );
+        } else {
+          pushUndo();
+
+          const feature =
+            createAnnotationFeature(
+              geometry,
+              {
+                role: "roi",
+                source: "manual",
+              }
+            );
+
+          featureCollection.features.push(
+            feature
+          );
+
+          setSingleSelection(
+            String(feature.id),
+            true
+          );
+        }
+
+        markChanged();
+
+        phaseDUpdateRoiUi();
+
+        phaseDLoadBorderControlsFromRoi();
+        phaseDRefreshBorderPreview({
+          saveConfig: false,
+          quiet: true,
+        });
+
+        setStatus(
+          "Tissue ROI updated",
+          "saved"
+        );
+
+        return true;
+      }
+
       pushUndo();
       const feature = createAnnotationFeature(geometry);
       featureCollection.features.push(feature);
-      setSingleSelection(String(feature.id));
+      // Keep the newest annotation selected for rapid Shift + Add/Subtract,
+      // but mark that automatic selection as implicit.
+      setSingleSelection(String(feature.id), true);
       markChanged();
       setStatus(`${metadata.tool || "Area"} annotation created`, "saved");
       return true;
@@ -6548,6 +10835,20 @@
       // Keep the same object id, class, name and QuPath properties; only its ROI
       // changes, matching the way QuPath edits a selected annotation.
       feature.geometry = result;
+      phaseCFinalizeGeometryEdit(feature);
+
+      if (phaseDIsTissueRoi(feature)) {
+        feature.properties
+          .histoannotator.roi.source =
+            "manual-edited";
+
+        phaseDLoadBorderControlsFromRoi();
+        phaseDRefreshBorderPreview({
+          saveConfig: false,
+          quiet: true,
+        });
+      }
+
       setStatus(operation === "add" ? "Area added to selected annotation" : "Area removed from selected annotation", "saved");
     }
     markChanged();
@@ -6584,6 +10885,7 @@
       }
       pushUndo();
       primary.geometry = result;
+      phaseCFinalizeGeometryEdit(primary);
       const removeIds = new Set(others.map(featureId));
       featureCollection.features = featureCollection.features.filter((feature) => !removeIds.has(featureId(feature)));
       setSingleSelection(featureId(primary));
@@ -6605,6 +10907,7 @@
   function deleteSelected() { deleteSelectedAnnotations(); }
 
   function pushUndo() {
+    phaseCCaptureSemanticBaseline();
     undoStack.push(deepClone(featureCollection.features));
     if (undoStack.length > 50) undoStack.shift();
     redoStack = [];
@@ -6613,6 +10916,7 @@
 
   function undo() {
     if (!undoStack.length) return;
+    phaseCCaptureSemanticBaseline();
     redoStack.push(deepClone(featureCollection.features));
     featureCollection.features = undoStack.pop();
     clearSelectedFeatures(false);
@@ -6621,6 +10925,7 @@
 
   function redo() {
     if (!redoStack.length) return;
+    phaseCCaptureSemanticBaseline();
     undoStack.push(deepClone(featureCollection.features));
     featureCollection.features = redoStack.pop();
     clearSelectedFeatures(false);
@@ -6628,16 +10933,46 @@
   }
 
   function markChanged() {
+    phaseDSyncArtifactRoles();
+    phaseCApplySemanticChanges();
+    if (!currentImage) return;
+
     dirty = true;
+    const image = currentImage;
+    const annotationFile = currentAnnotationFile;
+    const payload = deepClone(featureCollection);
+    const revision = nextLocalRevision();
+    currentPendingChangeCount += 1;
+
+    localDraftState = "Saving locally…";
     updateControls();
     drawAnnotations();
-    scheduleLocalDraft();
+    updateDiagnostics();
+
+    // Local durability starts immediately. Drawing never awaits this promise.
+    void persistLocalDraft(
+      true,
+      image,
+      payload,
+      {
+        annotationFile,
+        localRevision: revision,
+        lastSyncedRevision: currentLastSyncedRevision,
+        pendingChangeCount: currentPendingChangeCount,
+      }
+    ).then((saved) => {
+      if (!saved && currentDocumentKey() === localDraftKey(image.id, annotationFile)) {
+        setStatus("Could not persist annotations locally", "error");
+      }
+    });
+
     setStatus(
-      currentImage?.localNative
+      image.localNative
         ? "Saving annotations locally…"
-        : "Saving locally; server sync will follow automatically…",
+        : "Saved locally first; server sync will follow automatically…",
       "local"
     );
+
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => saveAnnotations(false), 1200);
   }
@@ -6645,70 +10980,112 @@
   function scheduleRetry() {
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => {
-      if (dirty && navigator.onLine) saveAnnotations(false);
+      if (navigator.onLine) syncAllPendingDrafts(false);
     }, 10000);
   }
 
   async function saveAnnotations(showConfirmation = true) {
     if (!currentImage || !dirty) return;
     clearTimeout(saveTimer);
-    const image = currentImage;
-    const payload = deepClone(featureCollection);
-    await persistLocalDraft(true, image, payload);
 
-    if (image.localNative) {
-      dirty = false;
-      localDraftState = "Saved locally";
-      updateControls();
-      updateDiagnostics();
+    const image = currentImage;
+    const annotationFile = currentAnnotationFile;
+    const payload = deepClone(featureCollection);
+    const revision = currentLocalRevision;
+    const draftKey = localDraftKey(image.id, annotationFile);
+
+    const savedLocally = await persistLocalDraft(
+      true,
+      image,
+      payload,
+      {
+        annotationFile,
+        localRevision: revision,
+        lastSyncedRevision: currentLastSyncedRevision,
+        pendingChangeCount: currentPendingChangeCount,
+      }
+    );
+
+    if (!savedLocally) {
       setStatus(
-        `Saved locally: ${payload.features?.length || 0} annotations`,
-        "saved"
+        "Local annotation save failed; server sync was not attempted",
+        "error"
       );
       return;
     }
 
+    if (image.localNative) {
+      if (currentDocumentKey() === draftKey && currentLocalRevision === revision) {
+        dirty = false;
+        currentPendingChangeCount = 0;
+        localDraftState = "Saved locally";
+        updateControls();
+        updateDiagnostics();
+      }
+      if (showConfirmation) {
+        setStatus(
+          `Saved locally: ${payload.features?.length || 0} annotations`,
+          "saved"
+        );
+      }
+      return;
+    }
+
     if (IS_NATIVE && !API) {
-      dirty = false;
-      localDraftState = "Saved locally";
-      updateControls();
-      updateDiagnostics();
-      setStatus("Saved locally · no server configured", "local");
+      if (currentDocumentKey() === draftKey && currentLocalRevision === revision) {
+        dirty = false;
+        localDraftState = "Saved locally · sync pending";
+        updateControls();
+        updateDiagnostics();
+      }
+      if (showConfirmation) {
+        setStatus("Saved locally · no server configured", "local");
+      }
       return;
     }
 
     if (!navigator.onLine) {
-      setStatus("Offline: annotations are safe on this device and waiting to sync", "local");
+      if (currentDocumentKey() === draftKey) {
+        localDraftState = "Saved locally · sync pending";
+        updateDiagnostics();
+      }
+      if (showConfirmation) {
+        setStatus(
+          "Offline: annotations are safe on this device and waiting to sync",
+          "local"
+        );
+      }
       scheduleRetry();
       return;
     }
 
+    const job = {
+      draftKey,
+      image: {
+        id: image.id,
+        name: image.name,
+        relativePath: image.relativePath,
+        localNative: false,
+      },
+      annotationFile,
+      payload,
+      revision,
+    };
+
     try {
-      const response = await apiFetch(`${API}/annotations/${image.id}?file=${encodeURIComponent(currentAnnotationFile)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
-      const normalizedPayload = result?.featureCollection?.type === "FeatureCollection" ? normalizeFeatureCollectionClient(result.featureCollection) : payload;
-      await persistLocalDraft(false, image, normalizedPayload);
-      if (currentImage?.id === image.id && currentAnnotationFile === (result.annotationFile || currentAnnotationFile)) {
-        featureCollection = normalizedPayload;
-        featureCollection.features.forEach(featureId);
-        dirty = false;
-        const repaired = Number(result?.report?.repaired || 0);
-        setStatus(`Saved to server: ${result.features} annotations${repaired ? ` · ${repaired} geometry repaired` : ""}`, "saved");
-        updateControls();
-        if (!showConfirmation) setTimeout(() => {
-          if (!dirty && currentImage?.id === image.id) setStatus(`${image.name} • synced`, "saved");
-        }, 1300);
-      }
+      await enqueueAnnotationSync(job, showConfirmation);
     } catch (error) {
-      setStatus(`Saved on this device; server sync pending: ${error.message}`, "local");
+      if (currentDocumentKey() === draftKey) {
+        localDraftState = "Saved locally · sync pending";
+        updateDiagnostics();
+      }
+      setStatus(
+        `Saved on this device; server sync pending: ${error.message}`,
+        "local"
+      );
       scheduleRetry();
     }
   }
-
   function updateControls() {
     const enabled = Boolean(currentImage);
     els.saveButton.disabled = !enabled || !dirty || geometryBusy;
@@ -6719,7 +11096,10 @@
     if (els.downloadOfflineButton) els.downloadOfflineButton.disabled = !enabled || !currentInfo || Boolean(currentImage?.localNative);
     els.imageInfoButton.disabled = !enabled;
     if (els.annotationStatsButton) els.annotationStatsButton.disabled = !enabled || featureCollection.features.length === 0 || Boolean(currentImage?.localNative);
+    if (els.fillUnannotatedButton) els.fillUnannotatedButton.disabled = !enabled || !currentInfo || geometryBusy || Boolean(currentImage?.localNative);
     if (els.reviewModeButton) els.reviewModeButton.disabled = !enabled || featureCollection.features.length === 0;
+    const phaseCWorkflowSummaryButton = document.getElementById("phaseCWorkflowSummaryButton");
+    if (phaseCWorkflowSummaryButton) phaseCWorkflowSummaryButton.disabled = !enabled || featureCollection.features.length === 0;
     if (els.imageTypeSelect) els.imageTypeSelect.disabled = !enabled;
     if (els.eyeButton) els.eyeButton.disabled = !enabled;
     if (els.displayButton) els.displayButton.disabled = !enabled;
@@ -6730,7 +11110,14 @@
     document.querySelectorAll("[data-edit-operation]").forEach((button) => {
       button.disabled = !enabled || geometryBusy;
     });
-    const annotationCount = featureCollection.features.length;
+    const annotationCount =
+      (
+        featureCollection.features
+        || []
+      ).filter(
+        phaseDIsAnnotationFeature
+      ).length;
+
     els.featureCount.textContent = String(annotationCount);
     els.annotationSummary.textContent = `${annotationCount} annotation${annotationCount === 1 ? "" : "s"}`;
     renderClassButtons();
@@ -6738,6 +11125,9 @@
     updatePolygonActions();
     updateCircleActions();
     updateSelectionActions();
+    phaseBUpdateRectangleAction();
+    phaseCUpdateWorkflowAction();
+    phaseDUpdateRoiUi();
   }
 
   function formatBytes(bytes) {
@@ -6765,6 +11155,11 @@
     els.annotationFileSelect.value = currentAnnotationFile;
     els.annotationFileSelect.disabled = !currentImage;
     els.newAnnotationFileButton.disabled = !currentImage;
+    if (els.deleteAnnotationFileButton) {
+      els.deleteAnnotationFileButton.disabled =
+        !currentImage
+        || String(currentAnnotationFile || "Default").toLowerCase() === "default";
+    }
   }
 
   async function loadAnnotationFiles(imageId = currentImage?.id, preserve = true) {
@@ -6778,8 +11173,17 @@
       renderAnnotationFileOptions();
     } catch (error) {
       const cached = await getMeta(`files:${imageId}`);
-      const drafts = (await idbGetAll(DB_STORE)).filter((record) => record?.sourceImageId === imageId).map((record) => record.annotationFile || "Default");
-      annotationFiles = Array.from(new Set(["Default", ...(Array.isArray(cached) ? cached : []), ...drafts]));
+      const deletedMeta = await getMeta(`deletedAnnotationFiles:${imageId}`);
+      const deletedNames = new Set(Array.isArray(deletedMeta) ? deletedMeta : []);
+      const drafts = (await idbGetAll(DB_STORE))
+        .filter((record) => record?.sourceImageId === imageId)
+        .map((record) => record.annotationFile || "Default")
+        .filter((name) => !deletedNames.has(name));
+      annotationFiles = Array.from(
+        new Set(["Default", ...(Array.isArray(cached) ? cached : []), ...drafts])
+      ).filter(
+        (name) => String(name).toLowerCase() === "default" || !deletedNames.has(name)
+      );
       if (!preserve || !annotationFiles.includes(currentAnnotationFile)) currentAnnotationFile = "Default";
       renderAnnotationFileOptions();
       if (navigator.onLine) setStatus(`Annotation-file list unavailable; using the local copy: ${error.message}`, "local");
@@ -6793,6 +11197,7 @@
     renderAnnotationFileOptions();
     clearSelectedFeatures(false); undoStack = []; redoStack = []; pathologistDraft = null; activeDraft = null; pointerState = null;
     const localDraft = await getLocalDraft(currentImage.id, currentAnnotationFile);
+    restoreCurrentRevisionState(localDraft);
     let serverCollection = null;
     if (!currentImage.localNative) {
       try {
@@ -6824,11 +11229,22 @@
     if (!/^[A-Za-z0-9 _.-]{1,80}$/.test(name) || name === "." || name === "..") {
       setStatus("Invalid annotation file name", "error"); return;
     }
+    const deletedFileMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+    const deletedFileNames = Array.isArray(deletedFileMeta) ? deletedFileMeta : [];
+    if (deletedFileNames.includes(name)) {
+      await putMeta(
+        `deletedAnnotationFiles:${currentImage.id}`,
+        deletedFileNames.filter((item) => item !== name)
+      );
+    }
     if (!annotationFiles.includes(name)) annotationFiles.push(name);
     currentAnnotationFile = name;
     await putMeta(`files:${currentImage.id}`, annotationFiles);
     renderAnnotationFileOptions();
     featureCollection = { type: "FeatureCollection", features: [] };
+    currentLocalRevision = 0;
+    currentLastSyncedRevision = 0;
+    currentPendingChangeCount = 0;
     dirty = false; localDraftState = navigator.onLine ? "New local file" : "Offline local file";
     await persistLocalDraft(false, currentImage, featureCollection);
     drawAnnotations(); updateControls(); updateDiagnostics();
@@ -6846,6 +11262,65 @@
       }
     } else {
       setStatus("Annotation file created locally", "local");
+    }
+  }
+
+
+  async function deleteCurrentAnnotationFile() {
+    if (!currentImage) return;
+
+    const name = String(currentAnnotationFile || "Default").trim() || "Default";
+    if (name.toLowerCase() === "default") {
+      setStatus("The Default annotation file cannot be deleted", "error");
+      return;
+    }
+
+    if (dirty || Number(currentPendingChangeCount || 0) > 0) {
+      setStatus(
+        "Sync/save this annotation file before deleting it, so a pending background save cannot recreate it.",
+        "error"
+      );
+      return;
+    }
+
+    if (!currentImage.localNative && !navigator.onLine) {
+      setStatus("Server connection is required to delete a synced annotation file", "error");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete annotation file "${name}"?\n\n`
+      + "This removes the GeoJSON annotation file and its server backup. This action is not part of annotation Undo."
+    );
+    if (!confirmed) return;
+
+    clearTimeout(saveTimer);
+
+    try {
+      let filesAfterDelete = annotationFiles.filter((item) => item !== name);
+
+      if (!currentImage.localNative) {
+        const response = await apiFetch(
+          `${API}/annotations/${currentImage.id}/files?file=${encodeURIComponent(name)}`,
+          { method: "DELETE", timeoutMs: 30000 }
+        );
+        const payload = await response.json();
+        if (Array.isArray(payload.files)) filesAfterDelete = payload.files;
+      }
+
+      const deletedMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+      const deletedNames = Array.isArray(deletedMeta) ? deletedMeta : [];
+      if (!deletedNames.includes(name)) deletedNames.push(name);
+      await putMeta(`deletedAnnotationFiles:${currentImage.id}`, deletedNames);
+
+      annotationFiles = Array.from(new Set(["Default", ...filesAfterDelete]));
+      await putMeta(`files:${currentImage.id}`, annotationFiles);
+      currentAnnotationFile = "Default";
+      renderAnnotationFileOptions();
+      await loadSelectedAnnotationFile("Default");
+      setStatus(`Annotation file "${name}" deleted`, "saved");
+    } catch (error) {
+      setStatus(`Could not delete annotation file: ${error.message}`, "error");
     }
   }
 
@@ -7165,9 +11640,203 @@
     return true;
   }
 
+  function mergeAnnotationFileNames(...collections) {
+    const names = new Set(["Default"]);
+    for (const collection of collections) {
+      for (const raw of collection || []) {
+        const name = String(raw || "").trim();
+        if (name) names.add(name);
+      }
+    }
+    return [...names];
+  }
+
+  async function refreshDownloadedImageAnnotations(imageId, sequence) {
+    if (
+      !imageId
+      || !currentImage
+      || currentImage.id !== imageId
+      || currentImage.localNative
+      || !currentImageUsesOfflineCopy
+      || !navigator.onLine
+      || !API
+    ) {
+      return false;
+    }
+
+    try {
+      const filesResponse = await apiFetch(
+        `${API}/annotations/${imageId}/files`,
+        { timeoutMs: 7000 }
+      );
+      const filesPayload = await filesResponse.json();
+      const serverFiles =
+        Array.isArray(filesPayload?.files) && filesPayload.files.length
+          ? filesPayload.files
+          : ["Default"];
+
+      if (sequence !== openSequence || currentImage?.id !== imageId) {
+        return false;
+      }
+
+      const cachedFiles = await getMeta(`files:${imageId}`);
+      annotationFiles = mergeAnnotationFileNames(
+        serverFiles,
+        annotationFiles,
+        Array.isArray(cachedFiles) ? cachedFiles : []
+      );
+
+      if (!annotationFiles.includes(currentAnnotationFile)) {
+        currentAnnotationFile = "Default";
+      }
+
+      renderAnnotationFileOptions();
+      await putMeta(`files:${imageId}`, deepClone(annotationFiles));
+
+      const imageMeta = await getMeta(`image:${imageId}`);
+      if (imageMeta) {
+        imageMeta.annotationFiles = deepClone(annotationFiles);
+        await putMeta(`image:${imageId}`, imageMeta);
+      }
+
+      serverReachable = true;
+      localDraftState = currentSyncPending()
+        ? "Local copy · Connected · sync pending"
+        : "Local copy · Connected";
+      updateDiagnostics();
+
+      // Local pending work always wins and syncs before remote refresh.
+      await syncAllPendingDrafts(false);
+
+      // Cache every server file that is not protected by a newer/pending
+      // local draft. This makes newly discovered files available offline.
+      for (const annotationFile of serverFiles) {
+        if (sequence !== openSequence || currentImage?.id !== imageId) {
+          return false;
+        }
+
+        const before = await getLocalDraft(imageId, annotationFile);
+        if (before?.pending) continue;
+
+        const beforeRevision = Math.max(
+          0,
+          Number(before?.localRevision || 0)
+        );
+        const isCurrent =
+          annotationFile === currentAnnotationFile
+          && currentImage?.id === imageId;
+        const liveRevisionBefore = isCurrent
+          ? currentLocalRevision
+          : null;
+
+        let serverCollection;
+        try {
+          const response = await apiFetch(
+            `${API}/annotations/${imageId}?file=${encodeURIComponent(annotationFile)}`,
+            { timeoutMs: 10000 }
+          );
+          serverCollection = normalizeFeatureCollectionClient(
+            await response.json()
+          );
+        } catch (error) {
+          console.warn(
+            `Could not refresh annotation file ${annotationFile}`,
+            error
+          );
+          continue;
+        }
+
+        // The user may have edited while the request was in flight.
+        const latest = await getLocalDraft(imageId, annotationFile);
+        const latestRevision = Math.max(
+          0,
+          Number(latest?.localRevision || 0)
+        );
+        const liveChanged =
+          isCurrent
+          && (
+            dirty
+            || currentLocalRevision !== liveRevisionBefore
+          );
+
+        if (
+          latest?.pending
+          || latestRevision > beforeRevision
+          || liveChanged
+        ) {
+          continue;
+        }
+
+        const syncedRevision = Math.max(
+          beforeRevision,
+          Number(latest?.lastSyncedRevision || 0)
+        );
+
+        await persistLocalDraft(
+          false,
+          currentImage,
+          serverCollection,
+          {
+            annotationFile,
+            localRevision: syncedRevision,
+            lastSyncedRevision: syncedRevision,
+          }
+        );
+
+        if (
+          isCurrent
+          && sequence === openSequence
+          && currentImage?.id === imageId
+          && !dirty
+          && currentLocalRevision === liveRevisionBefore
+        ) {
+          featureCollection = deepClone(serverCollection);
+          featureCollection.features.forEach(featureId);
+          const refreshedRecord =
+            await getLocalDraft(imageId, annotationFile);
+          restoreCurrentRevisionState(refreshedRecord);
+          clearSelectedFeatures(false);
+          undoStack = [];
+          redoStack = [];
+          drawAnnotations();
+          updateControls();
+        }
+      }
+
+      if (sequence === openSequence && currentImage?.id === imageId) {
+        localDraftState = currentSyncPending()
+          ? "Local copy · Connected · sync pending"
+          : "Local copy · Connected · Synced";
+        updateDiagnostics();
+        setStatus(
+          `Local image · ${annotationFiles.length} annotation file${
+            annotationFiles.length === 1 ? "" : "s"
+          } available`,
+          "saved"
+        );
+      }
+
+      return true;
+    } catch (error) {
+      serverReachable = false;
+      if (sequence === openSequence && currentImage?.id === imageId) {
+        localDraftState = currentSyncPending()
+          ? "Local copy · Offline · sync pending"
+          : "Local copy · Offline";
+        updateDiagnostics();
+      }
+      console.warn(
+        "Downloaded-image annotation refresh unavailable",
+        error
+      );
+      return false;
+    }
+  }
+
   async function openImage(imageId) {
     if (reviewState.active) exitReviewMode();
     const sequence = ++openSequence;
+    currentImageUsesOfflineCopy = false;
     if (dirty) await saveAnnotations(false);
     if (!imageId) {
       currentImage = null;
@@ -7233,6 +11902,7 @@
       let cachedRecord = await getMeta(`image:${imageId}`);
       let offlinePackage = await offlineRecordForImage(imageId);
       const preferOffline = Boolean(offlinePackage && (offlinePackage.info || cachedRecord?.info));
+      currentImageUsesOfflineCopy = preferOffline;
 
       // A fully downloaded image opens immediately from local metadata/cache.
       // VPN/server checks happen later and never hold the viewer on “Preparing”.
@@ -7268,7 +11938,12 @@
         if (!offlinePackage) throw new Error("This image has not been downloaded for offline use");
         currentInfo = offlinePackage.info || cachedRecord?.info;
         if (!currentInfo) throw new Error("Offline image metadata is missing");
-        annotationFiles = offlinePackage.annotationFiles || cachedRecord?.annotationFiles || ["Default"];
+        const refreshedCachedFiles = await getMeta(`files:${imageId}`);
+        annotationFiles = mergeAnnotationFileNames(
+          offlinePackage.annotationFiles || [],
+          cachedRecord?.annotationFiles || [],
+          Array.isArray(refreshedCachedFiles) ? refreshedCachedFiles : []
+        );
         currentAnnotationFile = annotationFiles.includes(currentAnnotationFile) ? currentAnnotationFile : "Default";
         renderAnnotationFileOptions();
         if (offlinePackage.displayQuery) applyOfflineDisplayQuery(offlinePackage.displayQuery);
@@ -7286,6 +11961,7 @@
       }
 
       const localDraft = await getLocalDraft(imageId, currentAnnotationFile);
+      restoreCurrentRevisionState(localDraft);
       if (localDraft?.pending && localDraft.featureCollection?.type === "FeatureCollection") {
         featureCollection = localDraft.featureCollection;
         dirty = true;
@@ -7335,15 +12011,10 @@
       updateControls();
       updateDiagnostics();
 
-      if (preferOffline && navigator.onLine) {
-        // Do not await: local opening is complete already. This only updates
-        // reachability and pushes pending local annotations when possible.
-        apiFetch(`${API}/images/${imageId}/info`, { timeoutMs: 5000 })
-          .then(() => {
-            serverReachable = true;
-            return syncAllPendingDrafts(false);
-          })
-          .catch(() => { serverReachable = false; });
+      if (preferOffline && navigator.onLine && API) {
+        // Do not await: local pixels are already open. Refresh annotations
+        // independently so a downloaded image never freezes an old catalog.
+        void refreshDownloadedImageAnnotations(imageId, sequence);
       }
     } catch (error) {
       if (sequence !== openSequence) return;
@@ -7561,7 +12232,78 @@
       const drawableFeatures = reviewState.active
         ? (reviewState.currentId ? [findFeature(reviewState.currentId)].filter(Boolean) : [])
         : featureCollection.features;
-      drawableFeatures.forEach(drawGeometry);
+
+      drawableFeatures.forEach((feature) => {
+        if (!phaseDIsTissueRoi(feature)) {
+          drawGeometry(feature);
+          return;
+        }
+
+        const previousFilled =
+          annotationsFilled;
+
+        const borderConfig =
+          phaseDBorderConfigForRoi(feature);
+
+        const effectivePreview =
+          phaseDEffectivePreviewForRoi(feature);
+
+        const hasReduction =
+          borderConfig.enabled
+          && borderConfig.percent > 0;
+
+        try {
+          if (
+            hasReduction
+            && effectivePreview?.geometry
+          ) {
+            // Base/original Tissue ROI:
+            // dashed reference outline.
+            ctx.save();
+            ctx.setLineDash([7, 5]);
+            annotationsFilled = false;
+            drawGeometry(feature);
+            ctx.restore();
+
+            // Effective/analysis ROI:
+            // solid outline; filled only while editing.
+            const effectiveFeature =
+              deepClone(feature);
+
+            effectiveFeature.id =
+              `${featureId(feature)}::effective-roi`;
+
+            effectiveFeature.geometry =
+              deepClone(effectivePreview.geometry);
+
+            ctx.save();
+            ctx.setLineDash([]);
+            annotationsFilled =
+              phaseDActiveRole === "roi";
+            drawGeometry(effectiveFeature);
+            ctx.restore();
+          } else {
+            // No reduction: only one ROI.
+            ctx.save();
+            ctx.setLineDash([]);
+            annotationsFilled =
+              phaseDActiveRole === "roi";
+            drawGeometry(feature);
+            ctx.restore();
+
+            if (
+              hasReduction
+              && !effectivePreview?.geometry
+            ) {
+              phaseDEnsureStoredEffectivePreview();
+            }
+          }
+        } finally {
+          annotationsFilled =
+            previousFilled;
+          ctx.setLineDash([]);
+        }
+      });
     }
     if (pathologistDraft && drawingProfile === "pathologist" && mode === "freehand") {
       if (pathologistDraft.outer.length) drawRing(pathologistDraft.outer, drawingColor(pathologistDraft.operation), false, true);
@@ -7584,6 +12326,7 @@
       if (geometry?.type === "Polygon") drawPolygonRings(geometry.coordinates, drawingColor(circleDraft.operation), false);
     }
     if (activeDraft?.type === "selection" && activeDraft.points.length > 1) drawRing(activeDraft.points, "#65b8ff", false, true);
+    phaseDDrawFillUnannotatedPreview();
     drawBrushCursor();
     drawWandCursor();
   }
@@ -8159,17 +12902,38 @@
     return feature?.properties?.classification?.name || "Unclassified";
   }
   function reviewStatus(feature) {
-    const status = feature?.properties?.[REVIEW_PROPERTY]?.status;
-    return status === "correct"
-      || status === "maybe"
-      || status === "later"
-      ? status
-      : "pending";
+    if (!phaseDIsAnnotationFeature(feature)) {
+      return "excluded";
+    }
+
+    const workflow =
+      phaseCWorkflowForFeature(feature);
+
+    const decision =
+      phaseCCanonicalDecision(
+        workflow.reviewDecision
+      );
+
+    return decision || "pending";
   }
+
   function setReviewStatus(feature, status) {
-    feature.properties ||= {};
-    feature.properties[REVIEW_PROPERTY] = { status, reviewedAt: new Date().toISOString() };
+    phaseCSetReviewDecision(
+      feature,
+      status
+    );
+
+    if (
+      feature?.properties?.[
+        REVIEW_PROPERTY
+      ]
+    ) {
+      delete feature.properties[
+        REVIEW_PROPERTY
+      ];
+    }
   }
+
   function featuresForReviewScope(scope) {
     return (featureCollection.features || []).filter((feature) =>
       feature?.geometry && (scope === "all" || getFeatureClassName(feature) === scope)
@@ -8409,8 +13173,16 @@
       pushUndo();
 
       for (const feature of scoped) {
-        if (feature?.properties?.[REVIEW_PROPERTY]) {
-          delete feature.properties[REVIEW_PROPERTY];
+        phaseCResetToDraft(feature);
+
+        if (
+          feature?.properties?.[
+            REVIEW_PROPERTY
+          ]
+        ) {
+          delete feature.properties[
+            REVIEW_PROPERTY
+          ];
         }
       }
 
@@ -8469,7 +13241,16 @@
     clearSelectedFeatures(false);
     updateControls();
     drawAnnotations();
-  }
+
+    // Phase C6.1: completing/exiting review should lead naturally to the
+    // batch summary instead of requiring per-annotation Workflow clicks.
+    const phaseCReviewExitSummaryScheduled = true;
+    if (phaseCReviewExitSummaryScheduled && currentImage) {
+      queueMicrotask(
+        () => phaseCOpenWorkflowSummary("file")
+      );
+    }
+}
   function assignReviewFeatureClass(className) {
     const feature = currentReviewFeature();
     const classItem = classes.find((item) => item.name === className);
@@ -8477,7 +13258,6 @@
     pushUndo();
     feature.properties ||= {};
     feature.properties.classification = { name:classItem.name, color:hexToRgbArray(classItem.color) };
-    delete feature.properties.histoannotator;
     currentClass = classItem;
     markChanged(); populateReviewClassSelect(feature); updateReviewProgress();
   }
@@ -8534,69 +13314,477 @@
     }).format(Number(value) || 0);
   }
 
-  async function showAnnotationStatistics() {
-    if (!currentImage || !currentInfo || !featureCollection.features.length) return;
 
-    toggleFileMenu(false);
-    els.annotationStatsContent.innerHTML = '<p class="modal-note">Calculating geometric unions…</p>';
-    els.annotationStatsModal.hidden = false;
+  function phaseDFillUnannotatedTargetClass() {
+    const requested = String(els.fillUnannotatedClassSelect?.value || "");
+    return classes.find((item) => item.name === requested) || currentClass || classes[0] || null;
+  }
+
+  function phaseDPopulateFillUnannotatedClasses() {
+    if (!els.fillUnannotatedClassSelect) return;
+    const previous = els.fillUnannotatedClassSelect.value;
+    els.fillUnannotatedClassSelect.innerHTML = "";
+    for (const item of classes) {
+      const option = document.createElement("option");
+      option.value = item.name;
+      option.textContent = item.name;
+      els.fillUnannotatedClassSelect.append(option);
+    }
+    const preferred = classes.some((item) => item.name === previous)
+      ? previous
+      : (currentClass?.name || classes[0]?.name || "");
+    els.fillUnannotatedClassSelect.value = preferred;
+  }
+
+  function phaseDFormatArea(value) {
+    return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+
+  function phaseDRenderFillUnannotatedSummary(payload = null) {
+    if (!els.fillUnannotatedSummary) return;
+    if (!payload) {
+      els.fillUnannotatedSummary.innerHTML = '<p class="modal-note">Calculating preview…</p>';
+      return;
+    }
+
+    const valid = Number(payload.validAreaPx2 || 0);
+    const annotated = Number(payload.annotatedAreaPx2 || 0);
+    const remaining = Number(payload.remainingAreaPx2 || 0);
+    const percent = Number(payload.remainingPercentValid || 0);
+    const source = payload.analysis?.source === "tissue-roi" ? "Tissue ROI" : "Full image";
+    const target = phaseDFillUnannotatedTargetClass();
+    const artifactWarning = phaseDIsArtifactClassName(target?.name)
+      ? '<p class="modal-note"><strong>Artifact:</strong> creating the remainder as Artifact will exclude that new area from Valid Tissue.</p>'
+      : "";
+
+    els.fillUnannotatedSummary.innerHTML = `
+      <div class="stats-summary">
+        <p><strong>Analysis region:</strong> ${source}</p>
+        <p><strong>Valid tissue:</strong> ${phaseDFormatArea(valid)} px² · 100%</p>
+        <p><strong>Already annotated:</strong> ${phaseDFormatArea(annotated)} px²</p>
+        <p><strong>Remaining:</strong> ${phaseDFormatArea(remaining)} px² · ${percent.toFixed(2)}%</p>
+      </div>
+      ${artifactWarning}
+    `;
+  }
+
+  function phaseDDrawFillUnannotatedPreview() {
+    const geometry = phaseDFillUnannotatedPreview?.geometry;
+    if (!geometry || reviewState.active) return;
+    const target = phaseDFillUnannotatedTargetClass();
+    if (!target) return;
+
+    const previewFeature = {
+      type: "Feature",
+      id: "__fill_unannotated_preview__",
+      geometry,
+      properties: {
+        objectType: "annotation",
+        classification: { name: target.name, color: hexToRgbArray(target.color) },
+        isLocked: false,
+        histoannotator: phaseCCreateMetadata(),
+      },
+    };
+
+    const previousFilled = annotationsFilled;
+    try {
+      annotationsFilled = true;
+      drawGeometry(previewFeature);
+    } finally {
+      annotationsFilled = previousFilled;
+    }
+  }
+
+  function phaseDCloseFillUnannotated() {
+    phaseDFillUnannotatedPreview = null;
+    phaseDFillUnannotatedBusy = false;
+    if (els.fillUnannotatedModal) els.fillUnannotatedModal.hidden = true;
+    if (els.fillUnannotatedCreateButton) els.fillUnannotatedCreateButton.disabled = true;
+    drawAnnotations();
+  }
+
+  async function phaseDRefreshFillUnannotatedPreview() {
+    if (!currentImage || !currentInfo || phaseDFillUnannotatedBusy) return;
+    if (currentImage.localNative) {
+      setStatus("Fill unannotated tissue currently requires the server-backed geometry engine", "error");
+      return;
+    }
+
+    phaseDFillUnannotatedBusy = true;
+    phaseDFillUnannotatedPreview = null;
+    if (els.fillUnannotatedCreateButton) els.fillUnannotatedCreateButton.disabled = true;
+    phaseDRenderFillUnannotatedSummary(null);
+    drawAnnotations();
 
     try {
-      const response = await apiFetch(`${API}/geojson/statistics`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(featureCollection),
-        timeoutMs: 30000,
-      });
+      const response = await apiFetch(
+        `${API}/geojson/fill-unannotated`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            featureCollection,
+            imageWidth: Number(currentInfo.width || 0),
+            imageHeight: Number(currentInfo.height || 0),
+          }),
+          timeoutMs: 30000,
+        }
+      );
+      const payload = await response.json();
+      phaseDFillUnannotatedPreview = {
+        geometry: payload.geometry || null,
+        payload,
+        revision: Number(currentLocalRevision || 0),
+      };
+      phaseDRenderFillUnannotatedSummary(payload);
+      if (els.fillUnannotatedCreateButton) {
+        els.fillUnannotatedCreateButton.disabled =
+          !payload.geometry || Number(payload.remainingAreaPx2 || 0) <= 0;
+      }
+      if (!payload.geometry) setStatus("No unannotated Valid Tissue remains", "saved");
+      drawAnnotations();
+    } catch (error) {
+      phaseDFillUnannotatedPreview = null;
+      if (els.fillUnannotatedSummary) {
+        els.fillUnannotatedSummary.innerHTML =
+          `<p class="modal-note">Could not calculate preview: ${escapeHtml(error.message)}</p>`;
+      }
+      setStatus(`Could not calculate remaining tissue: ${error.message}`, "error");
+    } finally {
+      phaseDFillUnannotatedBusy = false;
+    }
+  }
+
+  async function phaseDOpenFillUnannotated() {
+    if (!currentImage || !currentInfo) return;
+    toggleFileMenu(false);
+
+    phaseBToggleSettings(false);if (currentImage.localNative) {
+      setStatus("Fill unannotated tissue currently requires a server-backed image", "error");
+      return;
+    }
+    phaseDPopulateFillUnannotatedClasses();
+    if (els.fillUnannotatedModal) els.fillUnannotatedModal.hidden = false;
+    await phaseDRefreshFillUnannotatedPreview();
+  }
+
+  function phaseDCreateFillUnannotated() {
+    const preview = phaseDFillUnannotatedPreview;
+    if (!preview?.geometry) return;
+    if (Number(preview.revision) !== Number(currentLocalRevision || 0)) {
+      setStatus("Annotations changed after the preview. Refresh the preview before creating the remainder.", "error");
+      return;
+    }
+
+    const target = phaseDFillUnannotatedTargetClass();
+    if (!target) {
+      setStatus("Choose a target class", "error");
+      return;
+    }
+
+    pushUndo();
+
+    const feature = {
+      type: "Feature",
+      id: uid(),
+      geometry:
+        deepClone(
+          preview.geometry
+        ),
+      properties: {
+        objectType:
+          "annotation",
+        classification: {
+          name:
+            target.name,
+          color:
+            hexToRgbArray(
+              target.color
+            ),
+        },
+        isLocked:
+          false,
+        histoannotator:
+          phaseCCreateMetadata(),
+      },
+    };
+
+    phaseDSyncArtifactRole(
+      feature
+    );
+    featureCollection.features.push(feature);
+    phaseDFillUnannotatedPreview = null;
+    if (els.fillUnannotatedModal) els.fillUnannotatedModal.hidden = true;
+    setSingleSelection(String(feature.id), true);
+    markChanged();
+
+    const area = Number(preview.payload?.remainingAreaPx2 || 0);
+    const percent = Number(preview.payload?.remainingPercentValid || 0);
+    setStatus(
+      `Created "${target.name}" from remaining tissue · ${phaseDFormatArea(area)} px² · ${percent.toFixed(2)}% of Valid Tissue`,
+      "saved"
+    );
+  }
+
+  async function showAnnotationStatistics() {
+    if (
+      !currentImage
+      || !currentInfo
+      || !featureCollection.features.length
+    ) {
+      return;
+    }
+
+    toggleFileMenu(false);
+
+    els.annotationStatsContent.innerHTML =
+      '<p class="modal-note">Calculating valid tissue and Artifact exclusion…</p>';
+
+    els.annotationStatsModal.hidden =
+      false;
+
+    try {
+      const response =
+        await apiFetch(
+          `${API}/geojson/statistics`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body:
+              JSON.stringify({
+                featureCollection,
+                imageWidth:
+                  Number(
+                    currentInfo.width
+                    || 0
+                  ),
+                imageHeight:
+                  Number(
+                    currentInfo.height
+                    || 0
+                  ),
+              }),
+            timeoutMs: 30000,
+          }
+        );
 
       const stats = await response.json();
-      const imageArea = Number(currentInfo.width || 0) * Number(currentInfo.height || 0);
+      const analysis = stats.analysis || {};
 
-      const rowsHtml = (stats.rows || []).map((row) => {
-        const area = Number(row.areaPx2 || 0);
-        const percent = imageArea > 0 ? (area / imageArea) * 100 : 0;
-        return `
-          <tr>
-            <td>${escapeHtml(row.className)}</td>
-            <td>${formatStatNumber(row.count)}</td>
-            <td>${formatStatNumber(area)}</td>
-            <td>${formatStatNumber(percent, 2)}%</td>
-          </tr>
-        `;
-      }).join("");
+      const sourceIsRoi =
+        analysis.source === "tissue-roi";
 
-      const totalArea = Number(stats.totalUnionAreaPx2 || 0);
-      const totalPercent = imageArea > 0 ? (totalArea / imageArea) * 100 : 0;
+      const sourceLabel =
+        sourceIsRoi
+          ? "Tissue ROI"
+          : "Full image";
+
+      const baseArea =
+        Number(
+          analysis.baseAreaPx2
+          || 0
+        );
+
+      const postBorderArea =
+        Number(
+          analysis.postBorderAreaPx2
+          || baseArea
+        );
+
+      const artifactArea =
+        Number(
+          analysis.artifactAreaPx2
+          || 0
+        );
+
+      const artifactPercent =
+        Number(
+          analysis.artifactPercentPostBorder
+          || 0
+        );
+
+      const artifactCount =
+        Number(
+          analysis.artifactCount
+          || 0
+        );
+
+      const validArea =
+        Number(
+          analysis.validAreaPx2
+          || 0
+        );
+
+      const percentHeader =
+        sourceIsRoi
+          ? "% valid tissue"
+          : "% valid area";
+
+      const rowsHtml =
+        (stats.rows || [])
+          .map((row) => `
+            <tr>
+              <td>${escapeHtml(row.className)}</td>
+              <td>${formatStatNumber(row.count)}</td>
+              <td>${formatStatNumber(Number(row.areaPx2 || 0))}</td>
+              <td>${formatStatNumber(Number(row.percentValid || 0), 2)}%</td>
+            </tr>
+          `)
+          .join("");
+
+      const totalArea =
+        Number(
+          stats.totalUnionAreaPx2
+          || 0
+        );
+
+      const totalPercent =
+        Number(
+          stats.totalPercentValid
+          || 0
+        );
+
+      const borderEnabled =
+        Boolean(
+          analysis.externalBorderEnabled
+        );
+
+      const borderActual =
+        Number(
+          analysis.externalBorderActualPct
+          || 0
+        );
+
+      const borderRequested =
+        Number(
+          analysis.externalBorderRequestedPct
+          || 0
+        );
+
+      const borderWidth =
+        Number(
+          analysis.externalBorderWidthPx
+          || 0
+        );
+
+      const baseSummary =
+        sourceIsRoi
+          ? `
+            <span>
+              Original Tissue ROI:
+              ${formatStatNumber(baseArea)} px²
+            </span>
+          `
+          : `
+            <span>
+              Full image area:
+              ${formatStatNumber(baseArea)} px²
+            </span>
+          `;
+
+      const borderSummary =
+        (
+          sourceIsRoi
+          && borderEnabled
+        )
+          ? `
+            <span>
+              External border:
+              ${formatStatNumber(borderActual, 2)}%
+              excluded
+              ${Math.abs(borderActual - borderRequested) > 0.05
+                ? ` (requested ${formatStatNumber(borderRequested, 1)}%)`
+                : ""}
+              ${borderWidth > 0
+                ? ` · ≈${formatStatNumber(borderWidth, 1)} px inward`
+                : ""}
+            </span>
+            <span>
+              Tissue after border:
+              ${formatStatNumber(postBorderArea)} px²
+            </span>
+          `
+          : "";
+
+      const artifactSummary =
+        artifactCount > 0
+          ? `
+            <span>
+              Artifact excluded:
+              ${formatStatNumber(artifactArea)} px²
+              · ${formatStatNumber(artifactPercent, 2)}%
+              of ${sourceIsRoi ? "post-border tissue" : "image"}
+              · ${formatStatNumber(artifactCount)}
+              feature${artifactCount === 1 ? "" : "s"}
+            </span>
+          `
+          : `
+            <span>
+              Artifact excluded:
+              0 px² · 0.00%
+            </span>
+          `;
+
+      const validLabel =
+        sourceIsRoi
+          ? "Valid tissue"
+          : "Valid analysis area";
 
       els.annotationStatsContent.innerHTML = `
         <div class="stats-summary">
           <strong>${escapeHtml(currentImage.name)}</strong>
-          <span>${formatStatNumber(currentInfo.width)} × ${formatStatNumber(currentInfo.height)} px</span>
-          <span>Full image area: ${formatStatNumber(imageArea)} px²</span>
+          <span>
+            Analysis region:
+            ${escapeHtml(sourceLabel)}
+          </span>
+          ${baseSummary}
+          ${borderSummary}
+          ${artifactSummary}
+          <span>
+            <strong>${escapeHtml(validLabel)}:</strong>
+            ${formatStatNumber(validArea)} px²
+            · 100%
+          </span>
         </div>
+
         <div class="stats-table-wrap">
           <table class="stats-table">
-            <thead><tr><th>Class</th><th>Annotations</th><th>Union area (px²)</th><th>% image</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Class</th>
+                <th>Annotations</th>
+                <th>Area in valid region (px²)</th>
+                <th>${escapeHtml(percentHeader)}</th>
+              </tr>
+            </thead>
+
             <tbody>${rowsHtml}</tbody>
+
             <tfoot>
               <tr>
-                <td>All annotations</td>
-                <td>${formatStatNumber(stats.totalAnnotations)}</td>
-                <td>${formatStatNumber(totalArea)}</td>
-                <td>${formatStatNumber(totalPercent, 2)}%</td>
+                <th>Union of biological classes</th>
+                <th>${formatStatNumber(stats.totalAnnotations || 0)}</th>
+                <th>${formatStatNumber(totalArea)}</th>
+                <th>${formatStatNumber(totalPercent, 2)}%</th>
               </tr>
             </tfoot>
           </table>
         </div>
+
         <p class="stats-note">
-          Area uses the geometric union within each class, so overlap between
-          annotations of the same class is counted once. Different classes may
-          overlap, therefore class percentages do not necessarily sum to 100%.
+          Artifact is a reviewable annotation class, but it is used as an
+          exclusion mask for these biological-area statistics and therefore
+          is not listed as a biological class row. Same-class overlaps are
+          unioned once. Different biological classes may overlap, so their
+          percentages do not need to sum to 100%.
         </p>
       `;
+
     } catch (error) {
       els.annotationStatsContent.innerHTML =
-        `<p class="modal-note">Statistics could not be calculated: ${escapeHtml(error.message)}</p>`;
+        `<p class="modal-note error-text">${escapeHtml(error.message || String(error))}</p>`;
     }
   }
 
@@ -9285,16 +14473,80 @@
 
   function updateDiagnostics() {
     if (!els.diagnostics) return;
-    let state = "Ready";
-    if (currentImage) {
-      if (!navigator.onLine) state = "Offline · saved locally";
-      else if (dirty) state = "Saving";
-      else state = localDraftState === "Ready" ? "Synced" : localDraftState;
-    }
-    const source = IS_NATIVE ? (NATIVE_SERVER ? "Server" : "Local") : "Web";
-    els.diagnostics.textContent = `v${VERSION} · ${source} · ${state}`;
-  }
 
+    const pendingCount = Math.max(
+      0,
+      Number(currentPendingChangeCount || 0)
+    );
+    const pendingLabel =
+      pendingCount === 1
+        ? "1 pending"
+        : `${pendingCount} pending`;
+
+    if (!currentImage) {
+      const source =
+        IS_NATIVE
+          ? (NATIVE_SERVER ? "Server" : "Local")
+          : "Web";
+      els.diagnostics.textContent =
+        `v${VERSION} · ${source} · Ready`;
+      return;
+    }
+
+    const key = currentDocumentKey();
+    const syncing = annotationSyncInFlight.has(key);
+
+    if (currentImageUsesOfflineCopy) {
+      const connected = serverReachable === true;
+
+      let state;
+      if (!connected) {
+        state = pendingCount
+          ? `Offline · ${pendingLabel}`
+          : "Offline";
+      } else if (syncing) {
+        state = pendingCount
+          ? `Connected · Syncing… · ${pendingLabel}`
+          : "Connected · Syncing…";
+      } else if (currentSyncPending()) {
+        state = pendingCount
+          ? `Connected · ${pendingLabel}`
+          : "Connected · sync pending";
+      } else {
+        state = "Connected · Synced";
+      }
+
+      els.diagnostics.textContent =
+        `v${VERSION} · Local copy · ${state}`;
+      return;
+    }
+
+    let state;
+    if (syncing) {
+      state = pendingCount
+        ? `Syncing… · ${pendingLabel}`
+        : "Syncing…";
+    } else if (!navigator.onLine) {
+      state = pendingCount
+        ? `Saved locally · ${pendingLabel}`
+        : "Offline · saved locally";
+    } else if (currentSyncPending()) {
+      state = pendingCount
+        ? `Saved locally · ${pendingLabel}`
+        : "Saved locally · sync pending";
+    } else if (currentImage.localNative) {
+      state = "Saved locally";
+    } else {
+      state = "Synced";
+    }
+
+    const source =
+      IS_NATIVE
+        ? (NATIVE_SERVER ? "Server" : "Local")
+        : "Web";
+    els.diagnostics.textContent =
+      `v${VERSION} · ${source} · ${state}`;
+  }
   async function removeLegacyServiceWorker() {
     const result = {
       registrations: 0,
@@ -9410,6 +14662,7 @@
   }
 
   function bindEvents() {
+    phaseBBindEvents();
     document.querySelectorAll(".tool").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
     document.querySelectorAll("[data-edit-operation]").forEach((button) => {
       button.addEventListener("click", () => setEditOperation(button.dataset.editOperation));
@@ -9422,6 +14675,7 @@
     els.drawingProfileSelect?.addEventListener("change", () => setDrawingProfile(els.drawingProfileSelect.value));
     els.annotationFileSelect?.addEventListener("change", () => loadSelectedAnnotationFile(els.annotationFileSelect.value).catch((error) => setStatus(`Could not switch annotation file: ${error.message}`, "error")));
     els.newAnnotationFileButton?.addEventListener("click", createAnnotationFile);
+    els.deleteAnnotationFileButton?.addEventListener("click", deleteCurrentAnnotationFile);
     els.finishPathologistContour?.addEventListener("click", () => completePathologistDraft());
     els.addPathologistHole?.addEventListener("click", beginPathologistHole);
     els.cancelPathologistContour?.addEventListener("click", cancelPathologistDraft);
@@ -9560,6 +14814,15 @@
     els.intersectSelection?.addEventListener("click", () => combineSelected("intersect"));
     els.subtractSelection?.addEventListener("click", () => combineSelected("subtract"));
     els.clearSelection?.addEventListener("click", () => clearSelectedFeatures(true));
+    els.fillUnannotatedButton?.addEventListener("click", () => phaseDOpenFillUnannotated());
+    els.fillUnannotatedRefreshButton?.addEventListener("click", () => phaseDRefreshFillUnannotatedPreview());
+    els.fillUnannotatedCancelButton?.addEventListener("click", phaseDCloseFillUnannotated);
+    els.fillUnannotatedCreateButton?.addEventListener("click", phaseDCreateFillUnannotated);
+    els.fillUnannotatedClassSelect?.addEventListener("change", () => {
+      phaseDRenderFillUnannotatedSummary(phaseDFillUnannotatedPreview?.payload || null);
+      drawAnnotations();
+    });
+
     els.fillAnnotationsButton.addEventListener("click", () => {
       annotationsFilled = !annotationsFilled;
       els.fillAnnotationsButton.textContent = `${annotationsFilled ? "✓" : "○"} Fill annotations`;
@@ -9576,16 +14839,7 @@
       if (event.key === "Enter") saveClassEditor();
       if (event.key === "Escape") closeClassEditor();
     });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        toggleFileMenu(false);
-        if (polygonDraft.length) cancelPolygon();
-        if (circleDraft) cancelCircleDraft();
-        els.infoOverlay.hidden = true;
-      } else if (event.key === "Enter" && mode === "polygon" && polygonDraft.length >= 3) {
-        finishPolygon();
-      }
-    });
+    document.addEventListener("keydown", phaseBHandleKeydown);
     window.addEventListener("resize", drawAnnotations);
     window.addEventListener("offline", () => {
       setStatus("Connection lost: changes will continue to be saved on this device", "local");

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.2.0">
+  <link rel="stylesheet" href="./static/styles.css?v=1.3.0-alpha.3">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.2.0</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.3.0-dev</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -57,9 +57,12 @@
             <option value="rgb">RGB / Other</option>
           </select>
         </label>
-        <button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
+
+
+
         <div class="menu-separator"></div>
         <button id="reviewModeButton" class="menu-item" type="button" disabled>Review annotations</button>
+        <button id="phaseCWorkflowSummaryButton" class="menu-item" type="button" disabled>Workflow summary</button>
         <button id="annotationStatsButton" class="menu-item" type="button" disabled>Annotation statistics</button>
         <button id="imageInfoButton" class="menu-item" type="button" disabled>Image information</button>
       </div>
@@ -72,6 +75,19 @@
         <input id="brightnessSlider" type="range" min="40" max="200" step="5" value="100">
         <div id="stainChannelControls" class="channel-controls"></div>
         <p id="displayHint" class="display-hint">Image display only. Annotations and original pixels are unchanged.</p>
+      </div>
+    </div>
+    <div class="phase-b-settings-menu">
+      <button id="phaseBSettingsButton" class="top-icon-button" type="button"
+              title="Settings" aria-label="Settings"
+              aria-expanded="false">⚙</button>
+      <div id="phaseBSettingsPanel" class="phase-b-settings-panel" hidden>
+        <button id="phaseBFocusMenuButton" class="menu-item" type="button">Focus Mode</button>
+        <button id="phaseBShortcutsMenuButton" class="menu-item" type="button">Keyboard shortcuts</button>
+        <button id="phaseDTissueRoiMenuButton" class="menu-item" type="button">Tissue ROI…</button>
+<div class="phase-d7-1-v2-settings-separator"></div>
+<button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
+<button id="fillUnannotatedButton" class="menu-item" type="button" disabled>Fill unannotated tissue…</button>
       </div>
     </div>
 
@@ -87,20 +103,7 @@
         <input id="brushSize" type="range" min="12" max="100" step="2" value="42">
         <output id="brushSizeValue" for="brushSize">42 px</output>
       </div>
-      <button class="tool" data-mode="wand" type="button">Wand</button>
-      <div id="wandControls" class="wand-controls" hidden>
-        <label for="wandTolerance">Similarity</label>
-        <input id="wandTolerance" type="range" min="6" max="100" step="2" value="38">
-        <output id="wandToleranceValue" for="wandTolerance">38</output>
-        <label for="wandRadius">Search area</label>
-        <input id="wandRadius" type="range" min="70" max="260" step="10" value="150">
-        <output id="wandRadiusValue" for="wandRadius">150 px</output>
-        <label for="wandMetric">Compare</label>
-        <select id="wandMetric">
-          <option value="color">Visible color</option>
-          <option value="brightness">Brightness</option>
-        </select>
-      </div>
+
       <button class="tool" data-mode="polygon" type="button">Polygon</button>
       <button class="tool" data-mode="rectangle" type="button">Rectangle</button>
       <button class="tool" data-mode="circle" type="button">Circle</button>
@@ -114,6 +117,21 @@
         <input id="circleWidthScale" type="range" min="40" max="220" step="5" value="100">
         <label for="circleHeightScale">Height <output id="circleHeightValue">100%</output></label>
         <input id="circleHeightScale" type="range" min="40" max="220" step="5" value="100">
+      </div>
+      <!-- data-phase-b-order="1" -->
+      <button class="tool" data-mode="wand" type="button">Wand</button>
+      <div id="wandControls" class="wand-controls" hidden>
+        <label for="wandTolerance">Similarity</label>
+        <input id="wandTolerance" type="range" min="6" max="100" step="2" value="38">
+        <output id="wandToleranceValue" for="wandTolerance">38</output>
+        <label for="wandRadius">Search area</label>
+        <input id="wandRadius" type="range" min="70" max="260" step="10" value="150">
+        <output id="wandRadiusValue" for="wandRadius">150 px</output>
+        <label for="wandMetric">Compare</label>
+        <select id="wandMetric">
+          <option value="color">Visible color</option>
+          <option value="brightness">Brightness</option>
+        </select>
       </div>
       <button class="tool" data-mode="select" type="button">Select</button>
       <div id="editOperationControls" class="edit-operation-controls" hidden>
@@ -130,6 +148,14 @@
     </aside>
 
     <section class="viewer-shell">
+      <div id="phaseBFocusControls" class="phase-b-focus-controls" hidden>
+        <div class="phase-b-focus-class-wrap">
+          <button id="phaseBFocusClassesButton" class="phase-b-focus-button" type="button"
+                  aria-expanded="false">Classes ▾</button>
+          <div id="phaseBFocusClassStrip" class="phase-b-focus-class-strip" hidden></div>
+        </div>
+        <button id="phaseBExitFocusButton" class="phase-b-focus-button" type="button">Exit</button>
+      </div>
       <div id="viewer"></div>
       <canvas id="annotationCanvas" aria-label="Annotation layer"></canvas>
       <div id="emptyMessage" class="empty-message">Select an image</div>
@@ -159,6 +185,27 @@
         <button id="subtractSelection" type="button" hidden>Subtract</button>
         <button id="clearSelection" type="button">Clear</button>
       </div>
+      <div id="phaseDRoiModeAction"
+           class="context-actions phase-d-roi-mode-action"
+           hidden>
+        <strong>Tissue ROI</strong>
+        <span id="phaseDRoiModeHint">Draw/edit mode</span>
+        <span id="phaseDRoiAreaSummary"
+              class="phase-d-roi-area-summary"
+              hidden></span>
+        <button id="phaseDEditDetectionButton"
+                type="button"
+                hidden>Edit parameters</button>
+        <button id="phaseDRoiDoneButton"
+                type="button">Done</button>
+      </div>
+
+      <div id="phaseCWorkflowAction" class="context-actions phase-c-workflow-action" hidden>
+        <button id="phaseCWorkflowButton" type="button">Workflow · Draft</button>
+      </div>
+      <div id="phaseBRectangleAction" class="context-actions phase-b-rectangle-action" hidden>
+        <button id="phaseBRectangleInfoButton" type="button">ⓘ Rectangle</button>
+      </div>
       <div id="reviewDecisionBar" class="context-actions review-decision-bar" hidden>
         <button id="reviewCorrectButton" class="review-correct" type="button">✓ Correct</button>
         <button id="reviewMaybeButton" class="review-maybe" type="button">? Maybe</button>
@@ -178,10 +225,15 @@
       <section class="annotation-file-section">
         <label for="annotationFileSelect">Annotation file</label>
         <div class="annotation-file-row">
-          <select id="annotationFileSelect" aria-label="Annotation file" disabled>
+          <div class="phase-d7-1-v2-annotation-file-row">
+  <select id="annotationFileSelect" aria-label="Annotation file" disabled>
             <option value="Default">Default</option>
           </select>
-          <button id="newAnnotationFileButton" class="small-button" type="button" title="Create a separate annotation file" disabled>+</button>
+  <div class="phase-d7-1-v2-file-actions" aria-label="Annotation file actions">
+    <button id="newAnnotationFileButton" class="small-button" type="button" title="Create a separate annotation file" disabled>+</button>
+    <button id="deleteAnnotationFileButton" class="small-button" type="button" title="Delete the current annotation file" aria-label="Delete current annotation file" disabled>−</button>
+  </div>
+</div>
         </div>
       </section>
       <section class="class-section">
@@ -333,9 +385,33 @@
     </section>
   </div>
 
+
+  <div id="fillUnannotatedModal" class="modal-overlay" hidden>
+    <section class="modal-card stats-card" role="dialog" aria-modal="true" aria-labelledby="fillUnannotatedTitle">
+      <h2 id="fillUnannotatedTitle">Fill unannotated tissue</h2>
+      <p class="modal-note">
+        Preview of Valid Tissue not covered by any biological annotation.
+        Tissue ROI border exclusion and Artifact are already removed.
+      </p>
+      <label class="menu-field">
+        <span>Target class</span>
+        <select id="fillUnannotatedClassSelect"></select>
+      </label>
+      <div id="fillUnannotatedSummary">
+        <p class="modal-note">Calculating preview…</p>
+      </div>
+      <div class="modal-actions">
+        <button id="fillUnannotatedRefreshButton" type="button">Refresh preview</button>
+        <button id="fillUnannotatedCancelButton" type="button">Cancel</button>
+        <button id="fillUnannotatedCreateButton" type="button" disabled>Create annotation</button>
+      </div>
+    </section>
+  </div>
+
   <div id="annotationStatsModal" class="modal-overlay" hidden>
     <section class="modal-card stats-card" role="dialog" aria-modal="true" aria-labelledby="annotationStatsTitle">
       <h2 id="annotationStatsTitle">Annotation statistics</h2>
+
       <div id="annotationStatsContent"></div>
       <div class="modal-actions">
         <button id="annotationStatsCloseButton" type="button">Close</button>
@@ -379,7 +455,165 @@
       <button id="closeInfoButton" type="button">Close</button>
     </section>
   </div>
+  <div id="phaseDTissueRoiOverlay" class="modal-overlay" hidden>
+    <section class="modal-card phase-d-roi-card"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="phaseDTissueRoiTitle">
 
-  <script src="./static/app.js?v=1.2.0"></script>
+      <div class="phase-d-roi-header">
+        <div>
+          <h2 id="phaseDTissueRoiTitle">Tissue ROI</h2>
+          <p id="phaseDTissueRoiStatus" class="modal-note">
+            No Tissue ROI in this annotation file.
+          </p>
+        </div>
+
+        <div class="phase-d-roi-actions phase-d-roi-actions-top">
+          <button id="phaseDDrawRoiButton" type="button">Draw / edit ROI</button>
+          <button id="phaseDSelectRoiButton" type="button">Select ROI</button>
+          <button id="phaseDDeleteRoiButton" class="danger-action" type="button">Delete</button>
+        </div>
+      </div>
+
+      <div class="phase-d-roi-layout">
+        <section class="phase-d-roi-panel">
+          <h3>Detect tissue</h3>
+          <p class="modal-note">Fast reduced-resolution detection.</p>
+
+          <label class="phase-d-roi-setting phase-d-roi-setting-compact">
+            <span>Sensitivity <output id="phaseDTissueSensitivityValue">50</output></span>
+            <input id="phaseDTissueSensitivity" type="range"
+                   min="0" max="100" step="5" value="50">
+          </label>
+
+          <label class="phase-d-roi-setting phase-d-roi-setting-compact">
+            <span>Smoothing <output id="phaseDTissueSmoothingValue">45</output></span>
+            <input id="phaseDTissueSmoothing" type="range"
+                   min="0" max="100" step="5" value="45">
+          </label>
+
+          <div class="phase-d-roi-inline-settings">
+            <label class="phase-d-roi-setting phase-d-roi-min-island">
+              <span>Minimum tissue island (%)</span>
+              <input id="phaseDTissueMinIsland" type="number"
+                     min="0" max="5" step="0.01" value="0.05"
+                     inputmode="decimal">
+            </label>
+
+            <label class="phase-d-roi-checkbox phase-d-roi-fill-holes">
+              <input id="phaseDTissueFillHoles" type="checkbox" checked>
+              <span>Fill holes</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="phase-d-roi-panel">
+          <h3>Analysis border</h3>
+          <p class="modal-note">Optional exterior-only exclusion.</p>
+
+          <label class="phase-d-roi-checkbox phase-d-roi-border-toggle">
+            <input id="phaseDExternalBorderEnabled" type="checkbox">
+            <span>Exclude external tissue border</span>
+          </label>
+
+          <label id="phaseDExternalBorderPercentField"
+                 class="phase-d-roi-setting phase-d-roi-setting-compact">
+            <span>
+              Exclude from exterior
+              <output id="phaseDExternalBorderPercentValue">5.0%</output>
+            </span>
+            <input id="phaseDExternalBorderPercent" type="range"
+                   min="0" max="50" step="0.5" value="5">
+          </label>
+
+          <p class="modal-note phase-d-roi-border-note">
+            Outer tissue contours only. Internal hole borders stay unchanged.
+          </p>
+
+          <div id="phaseDRoiBorderPreviewSummary"
+               class="phase-d-roi-preview-summary">
+            <span>Original <strong>—</strong></span>
+            <span>Effective <strong>—</strong></span>
+            <span>Excluded <strong>0.00%</strong></span>
+          </div>
+        </section>
+      </div>
+
+      <div class="phase-d-roi-footer">
+        <p id="phaseDTissueDetectNote" class="modal-note">
+          Detect tissue uses the connected HistoAnnotator server.
+          Manual ROI drawing works offline.
+        </p>
+
+        <div class="modal-actions phase-d-roi-footer-actions">
+          <button id="phaseDDetectTissueButton" type="button">Detect tissue</button>
+          <button id="phaseDCloseRoiButton" type="button">Close</button>
+        </div>
+      </div>
+
+    </section>
+  </div>
+
+  <div id="phaseCWorkflowOverlay" class="modal-overlay" hidden>
+    <section class="modal-card phase-c-workflow-card" role="dialog" aria-modal="true">
+      <h2>Annotation workflow</h2>
+
+      <div class="phase-c-batch-toolbar">
+        <label for="phaseCWorkflowScope">Scope</label>
+        <select id="phaseCWorkflowScope">
+          <option value="selected">Selected</option>
+          <option value="class">Current class</option>
+          <option value="file">Current file</option>
+        </select>
+      </div>
+
+      <div id="phaseCWorkflowSummary" class="phase-c-summary-grid" hidden></div>
+
+      <div id="phaseCWorkflowContent" class="phase-c-workflow-grid"></div>
+
+      <label class="phase-c-reviewer-field">
+        Reviewer (optional)
+        <input id="phaseCReviewerInput" type="text" maxlength="120"
+               placeholder="Name or initials">
+      </label>
+
+      <div class="modal-actions phase-c-workflow-actions">
+        <button id="phaseCSaveReviewerButton" type="button">Save reviewer</button>
+        <button id="phaseCReturnDraftButton" type="button">Return to Draft</button>
+        <button id="phaseCApproveButton" type="button">Approve</button>
+        <button id="phaseCApproveReviewedButton" type="button" hidden>Approve Reviewed</button>
+        <button id="phaseCCloseWorkflowButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="phaseBShortcutOverlay" class="modal-overlay" hidden>
+    <section class="modal-card phase-b-shortcut-card" role="dialog" aria-modal="true">
+      <h2>Keyboard shortcuts</h2>
+      <p class="modal-note">Choose an action, then press a new key. Backspace clears it. Duplicate shortcuts are blocked.</p>
+      <div id="phaseBShortcutList" class="phase-b-shortcut-list"></div>
+      <p id="phaseBShortcutMessage" class="phase-b-shortcut-message" aria-live="polite"></p>
+      <div class="modal-actions">
+        <button id="phaseBResetShortcutsButton" type="button">Reset defaults</button>
+        <button id="phaseBCloseShortcutsButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="phaseBRectangleOverlay" class="modal-overlay" hidden>
+    <section class="modal-card phase-b-rectangle-card" role="dialog" aria-modal="true">
+      <h2>Rectangle geometry</h2>
+      <div id="phaseBRectangleContent" class="phase-b-rectangle-grid"></div>
+      <p class="modal-note">Level-0 image coordinates.</p>
+      <div class="modal-actions">
+        <button id="phaseBCloseRectangleButton" type="button">Close</button>
+      </div>
+    </section>
+  </div>
+
+
+
+  <script src="./static/app.js?v=1.3.0-alpha.3"></script>
 </body>
 </html>
