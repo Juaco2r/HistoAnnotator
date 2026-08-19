@@ -27,8 +27,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from openslide import ImageSlide, OpenSlide
 from openslide.deepzoom import DeepZoomGenerator
-from PIL import Image, UnidentifiedImageError
-from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon, mapping, shape
+from PIL import Image, ImageDraw, UnidentifiedImageError
+from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon, mapping, shape, box
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely.validation import make_valid
@@ -1089,7 +1089,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-G2"}
+    return {"status": "ok", "version": "1.4.0-dev-IL1.3"}
 
 
 @app.get("/health")
@@ -4501,6 +4501,904 @@ def pairing_qr_png(server: str = Query(...)) -> Response:
         media_type="image/png",
         headers={"Cache-Control": "no-store"},
     )
+
+
+
+# ============================================================================
+# Phase IL1 — interactive learning foundation
+#
+# Exploratory appearance model:
+# - positives: current annotations of the target class
+# - negatives: other biological annotations when available, otherwise
+#   unlabeled valid tissue
+# - features: RGB + optical density + saturation + darkness + local gradient
+# - classifier: standardized diagonal-distance two-centroid model
+# - inference: reduced-resolution thumbnail only
+#
+# Suggestions are transient. This endpoint never writes annotation files.
+# ============================================================================
+
+
+def _il1_feature_role(feature: dict[str, Any]) -> str:
+    try:
+        value = (
+            feature.get("properties", {})
+            .get("histoannotator", {})
+            .get("role", "annotation")
+        )
+    except AttributeError:
+        value = "annotation"
+    return str(value or "annotation").strip().lower()
+
+
+def _il1_feature_class(feature: dict[str, Any]) -> str:
+    try:
+        value = (
+            feature.get("properties", {})
+            .get("classification", {})
+            .get("name", "")
+        )
+    except AttributeError:
+        value = ""
+    return str(value or "").strip()
+
+
+def _il1_geometry_mask(
+    geometry_payload: Any,
+    width: int,
+    height: int,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    mask_image = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask_image)
+
+    try:
+        geometry = shape(geometry_payload)
+    except Exception:
+        return np.zeros((height, width), dtype=bool)
+
+    def scaled_points(coords: Any) -> list[tuple[float, float]]:
+        output: list[tuple[float, float]] = []
+        for item in coords:
+            try:
+                x = float(item[0]) / scale_x
+                y = float(item[1]) / scale_y
+            except (
+                TypeError,
+                ValueError,
+                IndexError,
+                ZeroDivisionError,
+            ):
+                continue
+            output.append((x, y))
+        return output
+
+    def paint_polygon(polygon: Polygon) -> None:
+        exterior = scaled_points(polygon.exterior.coords)
+        if len(exterior) >= 3:
+            draw.polygon(exterior, fill=255)
+
+        for interior in polygon.interiors:
+            hole = scaled_points(interior.coords)
+            if len(hole) >= 3:
+                draw.polygon(hole, fill=0)
+
+    if isinstance(geometry, Polygon):
+        paint_polygon(geometry)
+
+    elif isinstance(geometry, MultiPolygon):
+        for polygon in geometry.geoms:
+            paint_polygon(polygon)
+
+    elif isinstance(geometry, GeometryCollection):
+        for part in geometry.geoms:
+            if isinstance(part, Polygon):
+                paint_polygon(part)
+            elif isinstance(part, MultiPolygon):
+                for polygon in part.geoms:
+                    paint_polygon(polygon)
+
+    return np.asarray(mask_image, dtype=np.uint8) > 0
+
+
+def _il1_feature_cube(rgb: np.ndarray) -> np.ndarray:
+    rgb_f = np.asarray(rgb, dtype=np.float32) / 255.0
+
+    optical_density = -np.log(
+        np.clip(
+            (rgb_f * 255.0 + 1.0) / 256.0,
+            1e-4,
+            1.0,
+        )
+    )
+
+    maximum = np.max(rgb_f, axis=2)
+    minimum = np.min(rgb_f, axis=2)
+    saturation = (
+        (maximum - minimum)
+        / np.maximum(maximum, 1e-4)
+    )
+    darkness = 1.0 - np.mean(rgb_f, axis=2)
+
+    gray = np.mean(rgb_f, axis=2)
+    dx = np.abs(
+        np.diff(
+            gray,
+            axis=1,
+            prepend=gray[:, :1],
+        )
+    )
+    dy = np.abs(
+        np.diff(
+            gray,
+            axis=0,
+            prepend=gray[:1, :],
+        )
+    )
+    gradient = np.clip(dx + dy, 0.0, 1.0)
+
+    return np.dstack([
+        rgb_f,
+        optical_density,
+        saturation,
+        darkness,
+        gradient,
+    ]).astype(np.float32, copy=False)
+
+
+def _il1_sample_features(
+    feature_cube: np.ndarray,
+    mask: np.ndarray,
+    maximum: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    flat_indices = np.flatnonzero(mask.reshape(-1))
+
+    if flat_indices.size == 0:
+        return np.empty(
+            (0, feature_cube.shape[2]),
+            dtype=np.float32,
+        )
+
+    if flat_indices.size > maximum:
+        flat_indices = rng.choice(
+            flat_indices,
+            size=maximum,
+            replace=False,
+        )
+
+    flattened = feature_cube.reshape(
+        -1,
+        feature_cube.shape[2],
+    )
+    return flattened[flat_indices]
+
+
+def _il1_majority_smooth(
+    mask: np.ndarray,
+    passes: int,
+) -> np.ndarray:
+    result = np.asarray(mask, dtype=bool)
+
+    for _ in range(max(0, int(passes))):
+        padded = np.pad(
+            result.astype(np.uint8),
+            1,
+            mode="constant",
+        )
+        counts = np.zeros(
+            result.shape,
+            dtype=np.uint8,
+        )
+
+        for dy in range(3):
+            for dx in range(3):
+                counts += padded[
+                    dy:dy + result.shape[0],
+                    dx:dx + result.shape[1],
+                ]
+
+        result = counts >= 5
+
+    return result
+
+
+def _il1_mask_to_geometry(
+    mask: np.ndarray,
+    scale_x: float,
+    scale_y: float,
+) -> Any:
+    rectangles: list[Any] = []
+    height, _width = mask.shape
+
+    for y in range(height):
+        row = mask[y]
+        padded = np.pad(
+            row.astype(np.int8),
+            (1, 1),
+        )
+        changes = np.diff(padded)
+        starts = np.flatnonzero(changes == 1)
+        ends = np.flatnonzero(changes == -1)
+
+        for start, end in zip(starts, ends):
+            if end <= start:
+                continue
+
+            rectangles.append(
+                box(
+                    float(start) * scale_x,
+                    float(y) * scale_y,
+                    float(end) * scale_x,
+                    float(y + 1) * scale_y,
+                )
+            )
+
+        if len(rectangles) > 30000:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Suggestions are too fragmented at this "
+                    "sensitivity. Increase smoothing or lower "
+                    "sensitivity."
+                ),
+            )
+
+    if not rectangles:
+        return GeometryCollection()
+
+    geometry = unary_union(rectangles)
+
+    try:
+        geometry = make_valid(geometry)
+    except Exception:
+        pass
+
+    return geometry
+
+
+def _il1_polygon_parts(geometry: Any) -> list[Polygon]:
+    if geometry is None or geometry.is_empty:
+        return []
+
+    if isinstance(geometry, Polygon):
+        return [geometry]
+
+    if isinstance(geometry, MultiPolygon):
+        return [
+            item
+            for item in geometry.geoms
+            if not item.is_empty
+        ]
+
+    if isinstance(geometry, GeometryCollection):
+        output: list[Polygon] = []
+        for item in geometry.geoms:
+            output.extend(_il1_polygon_parts(item))
+        return output
+
+    return []
+
+
+@app.post("/api/interactive-learning/{image_id}/suggest")
+def interactive_learning_suggest(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    target_class = str(
+        payload.get("targetClass", "")
+    ).strip()
+
+    if not target_class:
+        raise HTTPException(
+            status_code=422,
+            detail="targetClass is required",
+        )
+
+    if target_class.casefold() == "artifact":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Artifact is an exclusion class and cannot "
+                "be an IL1 target"
+            ),
+        )
+
+    collection_payload = payload.get(
+        "featureCollection"
+    )
+    if not isinstance(collection_payload, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="featureCollection is required",
+        )
+
+    collection, _report = sanitize_qupath_feature_collection(
+        collection_payload
+    )
+    features = collection.get("features", [])
+
+    max_side = min(
+        1024,
+        max(
+            384,
+            int(payload.get("maxSide", 768) or 768),
+        ),
+    )
+    sensitivity = min(
+        100.0,
+        max(
+            0.0,
+            float(
+                payload.get("sensitivity", 50)
+                or 50
+            ),
+        ),
+    )
+    smoothing = min(
+        100.0,
+        max(
+            0.0,
+            float(
+                payload.get("smoothing", 45)
+                or 45
+            ),
+        ),
+    )
+    min_area_percent = min(
+        5.0,
+        max(
+            0.0,
+            float(
+                payload.get("minAreaPercent", 0.02)
+                or 0.02
+            ),
+        ),
+    )
+    max_suggestions = min(
+        80,
+        max(
+            1,
+            int(
+                payload.get("maxSuggestions", 40)
+                or 40
+            ),
+        ),
+    )
+    exclude_annotated = bool(
+        payload.get("excludeAnnotated", True)
+    )
+
+    path, relative = safe_image_path(image_id)
+
+    if (
+        preparation_required(path)
+        and not read_ready_manifest(path, relative)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Image is not ready yet",
+        )
+
+    render_path = resolve_render_path(
+        path,
+        relative,
+    )
+    handle = get_slide(render_path)
+
+    full_width, full_height = map(
+        int,
+        handle.slide.dimensions,
+    )
+
+    thumbnail = handle.slide.get_thumbnail(
+        (max_side, max_side)
+    ).convert("RGB")
+
+    rgb = np.asarray(
+        thumbnail,
+        dtype=np.uint8,
+    )
+
+    thumb_height, thumb_width = rgb.shape[:2]
+
+    if thumb_width <= 1 or thumb_height <= 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not create a usable learning "
+                "thumbnail"
+            ),
+        )
+
+    scale_x = full_width / float(thumb_width)
+    scale_y = full_height / float(thumb_height)
+
+    roi_mask = np.zeros(
+        (thumb_height, thumb_width),
+        dtype=bool,
+    )
+    roi_present = False
+
+    artifact_mask = np.zeros_like(roi_mask)
+    positive_mask = np.zeros_like(roi_mask)
+    explicit_negative_mask = np.zeros_like(roi_mask)
+    all_annotation_mask = np.zeros_like(roi_mask)
+
+    positive_annotation_count = 0
+    negative_annotation_count = 0
+    artifact_count = 0
+
+    target_cf = target_class.casefold()
+
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+
+        role = _il1_feature_role(feature)
+        class_name = _il1_feature_class(feature)
+        class_cf = class_name.casefold()
+
+        geometry_payload = feature.get("geometry")
+        if not geometry_payload:
+            continue
+
+        feature_mask = _il1_geometry_mask(
+            geometry_payload,
+            thumb_width,
+            thumb_height,
+            scale_x,
+            scale_y,
+        )
+
+        if not np.any(feature_mask):
+            continue
+
+        if role == "roi":
+            roi_present = True
+            roi_mask |= feature_mask
+            continue
+
+        if (
+            role == "artifact"
+            or class_cf == "artifact"
+        ):
+            artifact_count += 1
+            artifact_mask |= feature_mask
+            continue
+
+        if role != "annotation":
+            continue
+
+        all_annotation_mask |= feature_mask
+
+        if class_cf == target_cf:
+            positive_annotation_count += 1
+            positive_mask |= feature_mask
+        else:
+            negative_annotation_count += 1
+            explicit_negative_mask |= feature_mask
+
+    valid_mask = (
+        roi_mask.copy()
+        if roi_present
+        else np.ones_like(roi_mask)
+    )
+    valid_mask &= ~artifact_mask
+
+    positive_mask &= valid_mask
+    explicit_negative_mask &= valid_mask
+    explicit_negative_mask &= ~positive_mask
+    all_annotation_mask &= valid_mask
+
+    positive_pixels = int(
+        np.count_nonzero(positive_mask)
+    )
+    valid_pixels = int(
+        np.count_nonzero(valid_mask)
+    )
+
+    if (
+        positive_annotation_count < 1
+        or positive_pixels < 24
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f'Class "{target_class}" needs more '
+                "annotated area before Interactive Learning "
+                "can suggest regions."
+            ),
+        )
+
+    if valid_pixels < 64:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The valid tissue region is too small "
+                "for Interactive Learning"
+            ),
+        )
+
+    explicit_negative_pixels = int(
+        np.count_nonzero(
+            explicit_negative_mask
+        )
+    )
+
+    minimum_explicit_negative = max(
+        64,
+        int(positive_pixels * 0.20),
+    )
+
+    if (
+        explicit_negative_pixels
+        >= minimum_explicit_negative
+    ):
+        negative_mask = explicit_negative_mask
+        negative_source = "other annotated classes"
+    else:
+        negative_mask = (
+            valid_mask
+            & ~positive_mask
+            & ~all_annotation_mask
+        )
+        negative_source = "unlabeled valid tissue"
+
+    negative_pixels = int(
+        np.count_nonzero(negative_mask)
+    )
+
+    if negative_pixels < 24:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Interactive Learning needs negative/context "
+                "examples. Annotate another class or leave "
+                "some valid tissue unannotated."
+            ),
+        )
+
+    feature_cube = _il1_feature_cube(rgb)
+    rng = np.random.default_rng(1729)
+
+    positive_samples = _il1_sample_features(
+        feature_cube,
+        positive_mask,
+        40000,
+        rng,
+    )
+    negative_samples = _il1_sample_features(
+        feature_cube,
+        negative_mask,
+        40000,
+        rng,
+    )
+
+    combined = np.vstack([
+        positive_samples,
+        negative_samples,
+    ])
+    center = np.mean(combined, axis=0)
+    spread = np.std(combined, axis=0)
+    spread = np.where(
+        spread < 1e-4,
+        1.0,
+        spread,
+    )
+
+    pos_z = (
+        positive_samples - center
+    ) / spread
+    neg_z = (
+        negative_samples - center
+    ) / spread
+
+    pos_center = np.mean(pos_z, axis=0)
+    neg_center = np.mean(neg_z, axis=0)
+
+    pos_var = np.var(pos_z, axis=0) + 0.25
+    neg_var = np.var(neg_z, axis=0) + 0.25
+
+    def sample_scores(
+        samples_z: np.ndarray,
+    ) -> np.ndarray:
+        d_pos = np.mean(
+            (
+                (samples_z - pos_center) ** 2
+            ) / pos_var,
+            axis=1,
+        )
+        d_neg = np.mean(
+            (
+                (samples_z - neg_center) ** 2
+            ) / neg_var,
+            axis=1,
+        )
+        return d_neg - d_pos
+
+    pos_scores = sample_scores(pos_z)
+    neg_scores = sample_scores(neg_z)
+
+    model_center = (
+        float(np.median(pos_scores))
+        + float(np.median(neg_scores))
+    ) / 2.0
+
+    score_spread = max(
+        0.25,
+        float(
+            np.std(
+                np.concatenate([
+                    pos_scores,
+                    neg_scores,
+                ])
+            )
+        ),
+    )
+
+    threshold = (
+        model_center
+        + (
+            (50.0 - sensitivity)
+            / 50.0
+        )
+        * score_spread
+        * 0.75
+    )
+
+    full_z = (
+        feature_cube
+        - center.reshape(1, 1, -1)
+    ) / spread.reshape(1, 1, -1)
+
+    d_pos = np.mean(
+        (
+            (
+                full_z
+                - pos_center.reshape(1, 1, -1)
+            ) ** 2
+        )
+        / pos_var.reshape(1, 1, -1),
+        axis=2,
+    )
+
+    d_neg = np.mean(
+        (
+            (
+                full_z
+                - neg_center.reshape(1, 1, -1)
+            ) ** 2
+        )
+        / neg_var.reshape(1, 1, -1),
+        axis=2,
+    )
+
+    score_map = d_neg - d_pos
+
+    candidate_mask = valid_mask.copy()
+
+    if exclude_annotated:
+        candidate_mask &= ~all_annotation_mask
+    else:
+        candidate_mask &= ~positive_mask
+
+    prediction = (
+        (score_map >= threshold)
+        & candidate_mask
+    )
+
+    smoothing_passes = int(
+        round(
+            (smoothing / 100.0) * 3.0
+        )
+    )
+
+    prediction = _il1_majority_smooth(
+        prediction,
+        smoothing_passes,
+    )
+    prediction &= candidate_mask
+
+    predicted_pixels = int(
+        np.count_nonzero(prediction)
+    )
+
+    model_payload = {
+        "type": "appearance-centroid-v1",
+        "targetClass": target_class,
+        "positiveAnnotations":
+            positive_annotation_count,
+        "negativeAnnotations":
+            negative_annotation_count,
+        "positiveTrainingPixels":
+            int(positive_samples.shape[0]),
+        "negativeTrainingPixels":
+            int(negative_samples.shape[0]),
+        "negativeSource": negative_source,
+        "thumbnailWidth": thumb_width,
+        "thumbnailHeight": thumb_height,
+        "sensitivity": sensitivity,
+        "smoothing": smoothing,
+        "analysisRegion": (
+            "Tissue ROI - Artifact"
+            if roi_present
+            else "Full image - Artifact"
+        ),
+    }
+
+    if predicted_pixels == 0:
+        return {
+            "suggestions": [],
+            "model": model_payload,
+            "summary": {
+                "predictedPixelsThumbnail": 0,
+                "candidatePixelsThumbnail": int(
+                    np.count_nonzero(
+                        candidate_mask
+                    )
+                ),
+                "validPixelsThumbnail":
+                    valid_pixels,
+                "artifactCount":
+                    artifact_count,
+                "returnedSuggestions": 0,
+            },
+        }
+
+    geometry = _il1_mask_to_geometry(
+        prediction,
+        scale_x,
+        scale_y,
+    )
+
+    image_bounds = box(
+        0.0,
+        0.0,
+        float(full_width),
+        float(full_height),
+    )
+    geometry = geometry.intersection(
+        image_bounds
+    )
+
+    valid_area_approx = (
+        valid_pixels
+        * scale_x
+        * scale_y
+    )
+
+    min_area_px2 = max(
+        scale_x * scale_y * 3.0,
+        valid_area_approx
+        * (min_area_percent / 100.0),
+    )
+
+    simplify_tolerance = max(
+        scale_x,
+        scale_y,
+    ) * 0.75
+
+    candidates: list[dict[str, Any]] = []
+
+    for polygon in _il1_polygon_parts(
+        geometry
+    ):
+        if polygon.area < min_area_px2:
+            continue
+
+        simplified = polygon.simplify(
+            simplify_tolerance,
+            preserve_topology=True,
+        )
+
+        if simplified.is_empty:
+            continue
+
+        for part in _il1_polygon_parts(
+            simplified
+        ):
+            if part.area < min_area_px2:
+                continue
+
+            point = part.representative_point()
+
+            tx = min(
+                thumb_width - 1,
+                max(
+                    0,
+                    int(point.x / scale_x),
+                ),
+            )
+            ty = min(
+                thumb_height - 1,
+                max(
+                    0,
+                    int(point.y / scale_y),
+                ),
+            )
+
+            margin = (
+                float(score_map[ty, tx])
+                - threshold
+            ) / score_spread
+
+            margin = float(
+                np.clip(
+                    margin,
+                    -8.0,
+                    8.0,
+                )
+            )
+
+            confidence = (
+                1.0
+                / (
+                    1.0
+                    + np.exp(-margin)
+                )
+            )
+
+            candidates.append({
+                "geometry": mapping(part),
+                "areaPx2": float(part.area),
+                "confidence":
+                    float(confidence),
+            })
+
+    candidates.sort(
+        key=lambda item: (
+            float(
+                item.get(
+                    "confidence",
+                    0.0,
+                )
+            ),
+            float(
+                item.get(
+                    "areaPx2",
+                    0.0,
+                )
+            ),
+        ),
+        reverse=True,
+    )
+
+    suggestions = []
+
+    for index, item in enumerate(
+        candidates[:max_suggestions],
+        start=1,
+    ):
+        suggestions.append({
+            "id": f"il1-{index}",
+            **item,
+        })
+
+    model_payload["threshold"] = float(
+        threshold
+    )
+
+    return {
+        "suggestions": suggestions,
+        "model": model_payload,
+        "summary": {
+            "predictedPixelsThumbnail":
+                predicted_pixels,
+            "candidatePixelsThumbnail": int(
+                np.count_nonzero(
+                    candidate_mask
+                )
+            ),
+            "validPixelsThumbnail":
+                valid_pixels,
+            "artifactCount":
+                artifact_count,
+            "returnedSuggestions":
+                len(suggestions),
+        },
+    }
 
 
 @app.get("/service-worker.js")

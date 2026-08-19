@@ -1945,3 +1945,495 @@ body.phase-d-roi-mode #phaseDRoiModeAction {
   }
 }
 
+/* Phase IL1 — interactive learning foundation */
+.phase-il1-settings-separator {
+  margin: 5px 0;
+}
+
+.phase-il1-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 175;
+  pointer-events: none;
+}
+
+.phase-il1-card {
+  position: absolute;
+  top: 72px;
+  right: 14px;
+  width: min(390px, calc(100vw - 28px));
+  max-height: calc(100vh - 92px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #111a2a;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .48);
+  pointer-events: auto;
+}
+
+.phase-il1-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.phase-il1-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.phase-il1-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.3;
+}
+
+.phase-il1-close {
+  flex: 0 0 auto;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 20px;
+}
+
+.phase-il1-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.phase-il1-grid
+  > label:not(.phase-il1-checkbox) {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.phase-il1-grid select,
+.phase-il1-grid input[type="number"],
+.phase-il1-grid input[type="range"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.phase-il1-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.3;
+}
+
+.phase-il1-run-row,
+.phase-il1-actions,
+.phase-il1-suggestion-top {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.phase-il1-run-row {
+  margin-top: 12px;
+}
+
+.phase-il1-run-row
+  button:first-child {
+  flex: 1 1 auto;
+}
+
+.phase-il1-training-info {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border-radius: 9px;
+  background:
+    rgba(255, 255, 255, .035);
+  color: var(--muted);
+  font-size: .76rem;
+  line-height: 1.35;
+}
+
+.phase-il1-suggestion-panel {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 10px;
+  border:
+    1px solid
+    rgba(255, 212, 59, .34);
+  border-radius: 11px;
+  background:
+    rgba(255, 212, 59, .045);
+}
+
+.phase-il1-suggestion-panel[hidden] {
+  display: none;
+}
+
+.phase-il1-suggestion-top {
+  justify-content: space-between;
+}
+
+.phase-il1-suggestion-top button {
+  width: 34px;
+  min-height: 30px;
+  padding: 0;
+}
+
+.phase-il1-suggestion-info {
+  color: var(--muted);
+  font-size: .76rem;
+  line-height: 1.35;
+}
+
+.phase-il1-actions {
+  justify-content: flex-end;
+}
+
+#phaseIL1AcceptButton {
+  border-color:
+    rgba(56, 217, 169, .7);
+}
+
+#phaseIL1RejectButton {
+  border-color:
+    rgba(255, 107, 107, .6);
+}
+
+.phase-il1-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: .7rem;
+  line-height: 1.3;
+}
+
+@media (max-width: 700px) {
+  .phase-il1-card {
+    top: 58px;
+    right: 8px;
+    width:
+      min(
+        360px,
+        calc(100vw - 16px)
+      );
+    max-height:
+      calc(100vh - 70px);
+  }
+}
+
+/* ==========================================================================
+   Phase IL1.1 — suggestion review, effective ROI, Focus/mobile UX
+   ========================================================================== */
+
+/* File menu: allow real vertical scrolling on short tablet/phone viewports. */
+#fileMenuPanel {
+  max-height: calc(
+    100dvh
+    - max(76px, env(safe-area-inset-top, 0px))
+    - max(12px, env(safe-area-inset-bottom, 0px))
+  );
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+/* Compact M/F/S control next to Classes in Focus Mode. */
+.phase-il11-focus-top-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.phase-il11-focus-mode-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.phase-il11-focus-mode-button {
+  width: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 6px;
+  border-radius: 999px;
+  font-weight: 700;
+  background: rgba(17, 26, 42, .90);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .30);
+}
+
+.phase-il11-focus-mode-strip {
+  position: absolute;
+  z-index: 96;
+  top: calc(100% + 7px);
+  left: 0;
+  display: flex;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(17, 26, 42, .95);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .34);
+  white-space: nowrap;
+}
+
+.phase-il11-focus-mode-strip[hidden] {
+  display: none;
+}
+
+.phase-il11-focus-mode-choice {
+  width: 34px;
+  min-width: 34px;
+  min-height: 32px;
+  padding: 4px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.phase-il11-focus-mode-choice.active {
+  outline: 2px solid var(--accent);
+}
+
+/*
+ * The old Focus layout used 100vh. 100dvh follows the actually visible
+ * viewport more reliably when Android system bars are shown/hidden.
+ */
+body.phase-b-focus-mode #workspace,
+body.phase-b-focus-mode .viewer-shell {
+  height: 100dvh !important;
+  min-height: 100dvh !important;
+}
+
+/* Keep OpenSeadragon's thumbnail fully inside the usable mobile safe area. */
+body.phase-b-focus-mode .navigator {
+  top: auto !important;
+  left: auto !important;
+  right: max(
+    10px,
+    calc(env(safe-area-inset-right, 0px) + 8px)
+  ) !important;
+  bottom: max(
+    10px,
+    calc(env(safe-area-inset-bottom, 0px) + 8px)
+  ) !important;
+}
+
+/* Keep the contextual Workflow · Draft/Reviewed/Approved pill reachable. */
+body.phase-b-focus-mode .phase-c-workflow-action {
+  left: max(
+    14px,
+    calc(env(safe-area-inset-left, 0px) + 8px)
+  ) !important;
+  bottom: max(
+    66px,
+    calc(env(safe-area-inset-bottom, 0px) + 14px)
+  ) !important;
+}
+
+/* Also keep the IL panel within dynamic/safe mobile viewport bounds. */
+@media (max-width: 700px) {
+  .phase-il1-card {
+    top: max(
+      58px,
+      calc(env(safe-area-inset-top, 0px) + 8px)
+    );
+    right: max(
+      8px,
+      calc(env(safe-area-inset-right, 0px) + 8px)
+    );
+    max-height: calc(
+      100dvh
+      - max(66px, env(safe-area-inset-top, 0px))
+      - max(8px, env(safe-area-inset-bottom, 0px))
+    );
+  }
+}
+
+/* ==========================================================================
+   Phase IL1.2 - Focus Android system-bar hotfix
+   ========================================================================== */
+
+:root {
+  --ha-focus-inset-left: 0px;
+  --ha-focus-inset-right: 0px;
+  --ha-focus-inset-bottom: 0px;
+}
+
+/*
+ * Workflow was too close to the physical left edge on tablet.
+ * Give it a stable inward margin, then add any measured phone inset.
+ */
+body.phase-b-focus-mode .phase-c-workflow-action {
+  left: max(
+    30px,
+    calc(
+      var(--ha-focus-inset-left, 0px)
+      + 24px
+    )
+  ) !important;
+
+  bottom: max(
+    66px,
+    calc(
+      var(--ha-focus-inset-bottom, 0px)
+      + 18px
+    )
+  ) !important;
+}
+
+/*
+ * In native Android, the system navigation area can overlay the WebView.
+ * Shrink/move the Focus workspace into the actual usable region.
+ */
+body.phase-b-focus-mode #workspace {
+  width: calc(
+    100vw
+    - var(--ha-focus-inset-left, 0px)
+    - var(--ha-focus-inset-right, 0px)
+  ) !important;
+
+  height: calc(
+    100dvh
+    - var(--ha-focus-inset-bottom, 0px)
+  ) !important;
+
+  margin-left:
+    var(--ha-focus-inset-left, 0px) !important;
+
+  margin-right:
+    var(--ha-focus-inset-right, 0px) !important;
+
+  margin-bottom:
+    var(--ha-focus-inset-bottom, 0px) !important;
+
+  box-sizing: border-box;
+}
+
+body.phase-b-focus-mode .viewer-shell {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/*
+ * Navigator is inside the safe viewer, so it only needs normal padding.
+ */
+body.phase-b-focus-mode .navigator {
+  right: 10px !important;
+  bottom: 10px !important;
+}
+
+/*
+ * Classes + M/F/S live outside the viewer in Focus Mode.
+ * Move that compact row inside a lateral Android navigation strip.
+ */
+body.phase-b-focus-mode .phase-il11-focus-top-row {
+  margin-left:
+    var(--ha-focus-inset-left, 0px);
+}
+
+/*
+ * Protect Exit Focus on the opposite edge.
+ */
+body.phase-b-focus-mode #phaseBExitFocusButton {
+  right: calc(
+    10px
+    + var(--ha-focus-inset-right, 0px)
+  ) !important;
+}
+
+/*
+ * Phone landscape: give Workflow enough room after the lateral reserve.
+ */
+@media (orientation: landscape) and (max-height: 600px) {
+  body.phase-b-focus-mode .phase-c-workflow-action {
+    left: calc(
+      var(--ha-focus-inset-left, 0px)
+      + 22px
+    ) !important;
+  }
+}
+
+/* ==========================================================================
+   Phase IL1.3 - full-width Focus and Freehand default
+   ========================================================================== */
+
+/* Settings actions should remain compact, scannable single-line items. */
+#settingsMenuPanel .menu-item,
+.settings-menu .menu-item {
+  white-space: nowrap;
+}
+
+/*
+ * IL1.2 protected Android system bars by shrinking the whole viewer
+ * horizontally. That kept controls safe but created a visible black strip.
+ *
+ * Keep the WSI/viewer edge-to-edge instead. Only UI controls are moved
+ * inward using the measured/fallback insets.
+ */
+body.phase-b-focus-mode #workspace {
+  width: 100vw !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+/*
+ * The image may extend visually under a lateral Android system bar, but the
+ * Navigator itself must remain fully usable.
+ */
+body.phase-b-focus-mode .navigator {
+  left: auto !important;
+  right: calc(
+    10px
+    + var(--ha-focus-inset-right, 0px)
+  ) !important;
+
+  bottom: calc(
+    10px
+    + var(--ha-focus-inset-bottom, 0px)
+  ) !important;
+}
+
+/*
+ * Classes + M/F/S remain on the left, but only the controls move inward
+ * when Android really needs a lateral reserve.
+ */
+body.phase-b-focus-mode
+.phase-il11-focus-top-row {
+  margin-left:
+    var(--ha-focus-inset-left, 0px);
+}
+
+/*
+ * Workflow keeps the improved tablet margin and also respects a left-side
+ * Android navigation strip in reverse landscape.
+ */
+body.phase-b-focus-mode
+.phase-c-workflow-action {
+  left: max(
+    30px,
+    calc(
+      var(--ha-focus-inset-left, 0px)
+      + 24px
+    )
+  ) !important;
+}
+
+/*
+ * Exit Focus remains protected on the right without shrinking the viewer.
+ */
+body.phase-b-focus-mode
+#phaseBExitFocusButton {
+  right: calc(
+    10px
+    + var(--ha-focus-inset-right, 0px)
+  ) !important;
+}
+

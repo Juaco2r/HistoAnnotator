@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-G2";
+  const VERSION = "1.4.0-dev-IL1.3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -10243,6 +10243,7 @@
     phaseBUpdateRectangleAction();
     phaseCUpdateWorkflowAction();
     phaseDUpdateRoiUi();
+    phaseIL11UpdateFocusModeControl();
     drawAnnotations();
     updateDiagnostics();
   }
@@ -11447,6 +11448,7 @@ if (!geometry) {
   }
 
   function markChanged() {
+    phaseIL1AnnotationsChanged();
     phaseDSyncArtifactRoles();
     phaseCApplySemanticChanges();
     if (!currentImage) return;
@@ -12819,6 +12821,7 @@ if (!geometry) {
         }
       });
     }
+    phaseIL1DrawSuggestions();
     if (pathologistDraft && drawingProfile === "pathologist" && mode === "freehand") {
       if (pathologistDraft.outer.length) drawRing(pathologistDraft.outer, drawingColor(pathologistDraft.operation), false, true);
       pathologistDraft.holes.forEach((ring) => { if (ring.length) drawRing(ring, "#ffcf66", false, true); });
@@ -16306,6 +16309,2087 @@ function phaseGInitialize() {
 }
 
 
+
+// ========================================================================
+// Phase IL1 — interactive learning foundation
+//
+// Suggestions stay outside featureCollection until Accept/Edit.
+// Therefore Review, Statistics, GeoJSON and sync remain unchanged.
+// ========================================================================
+
+const PHASE_IL1_REJECTION_KEY =
+  "histoannotator.il1.rejections.v1";
+
+let phaseIL1State = {
+  open: false,
+  busy: false,
+  suggestions: [],
+  index: 0,
+  targetClass: null,
+  model: null,
+  summary: null,
+  documentKey: null,
+  applyingSuggestion: false,
+};
+
+
+function phaseIL1Refs() {
+  return {
+    menu:
+      document.getElementById(
+        "phaseIL1MenuButton"
+      ),
+    overlay:
+      document.getElementById(
+        "phaseIL1Overlay"
+      ),
+    close:
+      document.getElementById(
+        "phaseIL1CloseButton"
+      ),
+    classSelect:
+      document.getElementById(
+        "phaseIL1ClassSelect"
+      ),
+    sensitivity:
+      document.getElementById(
+        "phaseIL1Sensitivity"
+      ),
+    sensitivityValue:
+      document.getElementById(
+        "phaseIL1SensitivityValue"
+      ),
+    smoothing:
+      document.getElementById(
+        "phaseIL1Smoothing"
+      ),
+    smoothingValue:
+      document.getElementById(
+        "phaseIL1SmoothingValue"
+      ),
+    minArea:
+      document.getElementById(
+        "phaseIL1MinArea"
+      ),
+    excludeAnnotated:
+      document.getElementById(
+        "phaseIL1ExcludeAnnotated"
+      ),
+    run:
+      document.getElementById(
+        "phaseIL1RunButton"
+      ),
+    clear:
+      document.getElementById(
+        "phaseIL1ClearButton"
+      ),
+    trainingInfo:
+      document.getElementById(
+        "phaseIL1TrainingInfo"
+      ),
+    suggestionPanel:
+      document.getElementById(
+        "phaseIL1SuggestionPanel"
+      ),
+    counter:
+      document.getElementById(
+        "phaseIL1SuggestionCounter"
+      ),
+    info:
+      document.getElementById(
+        "phaseIL1SuggestionInfo"
+      ),
+    previous:
+      document.getElementById(
+        "phaseIL1PrevButton"
+      ),
+    next:
+      document.getElementById(
+        "phaseIL1NextButton"
+      ),
+    reject:
+      document.getElementById(
+        "phaseIL1RejectButton"
+      ),
+    edit:
+      document.getElementById(
+        "phaseIL1EditButton"
+      ),
+    accept:
+      document.getElementById(
+        "phaseIL1AcceptButton"
+      ),
+  };
+}
+
+
+function phaseIL1EnsureUi() {
+  if (
+    document.getElementById(
+      "phaseIL1Overlay"
+    )
+  ) {
+    return;
+  }
+
+  const duplicate =
+    document.getElementById(
+      "phaseGDuplicateAnnotationButton"
+    );
+
+  if (!duplicate?.parentElement) {
+    throw new Error(
+      "Interactive Learning could not find Settings"
+    );
+  }
+
+  const separator =
+    document.createElement("div");
+
+  separator.className =
+    "menu-separator phase-il1-settings-separator";
+
+  const menuButton =
+    document.createElement("button");
+
+  menuButton.id =
+    "phaseIL1MenuButton";
+  menuButton.type =
+    "button";
+  menuButton.className =
+    duplicate.className || "menu-item";
+  menuButton.textContent =
+    "Interactive Learning…";
+
+  duplicate.insertAdjacentElement(
+    "afterend",
+    separator
+  );
+
+  separator.insertAdjacentElement(
+    "afterend",
+    menuButton
+  );
+
+  const overlay =
+    document.createElement("div");
+
+  overlay.id =
+    "phaseIL1Overlay";
+  overlay.className =
+    "phase-il1-overlay";
+  overlay.hidden =
+    true;
+
+  overlay.innerHTML = `
+    <section class="phase-il1-card"
+             role="dialog"
+             aria-labelledby="phaseIL1Title">
+      <div class="phase-il1-header">
+        <div>
+          <h2 id="phaseIL1Title">
+            Interactive Learning
+          </h2>
+          <p>
+            Learn from annotations in the current
+            file and preview suggestions.
+          </p>
+        </div>
+        <button id="phaseIL1CloseButton"
+                type="button"
+                class="phase-il1-close"
+                aria-label="Close">×</button>
+      </div>
+
+      <div class="phase-il1-grid">
+        <label>
+          <span>Target class</span>
+          <select id="phaseIL1ClassSelect"></select>
+        </label>
+
+        <label>
+          <span>
+            Sensitivity
+            <output id="phaseIL1SensitivityValue">
+              50
+            </output>
+          </span>
+          <input id="phaseIL1Sensitivity"
+                 type="range"
+                 min="0"
+                 max="100"
+                 step="5"
+                 value="50">
+        </label>
+
+        <label>
+          <span>
+            Smoothing
+            <output id="phaseIL1SmoothingValue">
+              45
+            </output>
+          </span>
+          <input id="phaseIL1Smoothing"
+                 type="range"
+                 min="0"
+                 max="100"
+                 step="5"
+                 value="45">
+        </label>
+
+        <label>
+          <span>
+            Minimum suggestion area
+            (% valid region)
+          </span>
+          <input id="phaseIL1MinArea"
+                 type="number"
+                 min="0"
+                 max="5"
+                 step="0.01"
+                 value="0.02">
+        </label>
+
+        <label class="phase-il1-checkbox">
+          <input id="phaseIL1ExcludeAnnotated"
+                 type="checkbox"
+                 checked>
+          <span>
+            Suggest only currently unannotated tissue
+          </span>
+        </label>
+      </div>
+
+      <div class="phase-il1-run-row">
+        <button id="phaseIL1RunButton"
+                type="button">
+          Learn & suggest
+        </button>
+        <button id="phaseIL1ClearButton"
+                type="button">
+          Clear
+        </button>
+      </div>
+
+      <div id="phaseIL1TrainingInfo"
+           class="phase-il1-training-info">
+        Choose a class with existing annotations.
+      </div>
+
+      <div id="phaseIL1SuggestionPanel"
+           class="phase-il1-suggestion-panel"
+           hidden>
+        <div class="phase-il1-suggestion-top">
+          <button id="phaseIL1PrevButton"
+                  type="button">‹</button>
+
+          <strong id="phaseIL1SuggestionCounter">
+            Suggestion
+          </strong>
+
+          <button id="phaseIL1NextButton"
+                  type="button">›</button>
+        </div>
+
+        <div id="phaseIL1SuggestionInfo"
+             class="phase-il1-suggestion-info">
+        </div>
+
+        <div class="phase-il1-actions">
+          <button id="phaseIL1RejectButton"
+                  type="button">
+            Reject
+          </button>
+
+          <button id="phaseIL1EditButton"
+                  type="button">
+            Edit
+          </button>
+
+          <button id="phaseIL1AcceptButton"
+                  type="button">
+            Accept
+          </button>
+        </div>
+      </div>
+
+      <p class="phase-il1-note">
+        Suggestions are temporary. Accept/Edit creates
+        a normal Draft annotation; Reject does not
+        modify the GeoJSON.
+      </p>
+    </section>
+  `;
+
+  document.body.append(overlay);
+}
+
+
+function phaseIL1DocumentKey() {
+  if (!currentImage?.id) return "";
+
+  return (
+    `${currentImage.id}::`
+    + `${currentAnnotationFile || "Default"}`
+  );
+}
+
+
+function phaseIL1BiologicalClasses() {
+  return (classes || []).filter(
+    (item) => {
+      const name =
+        String(
+          item?.name || ""
+        ).trim();
+
+      return (
+        name
+        && name.toLowerCase()
+          !== "artifact"
+      );
+    }
+  );
+}
+
+
+function phaseIL1TargetAnnotationCount(
+  name
+) {
+  const wanted =
+    String(name || "")
+      .trim()
+      .toLowerCase();
+
+  return (
+    featureCollection.features
+    || []
+  ).filter(
+    (feature) => {
+      if (
+        !phaseDIsAnnotationFeature(
+          feature
+        )
+      ) {
+        return false;
+      }
+
+      const className =
+        String(
+          feature?.properties
+            ?.classification
+            ?.name
+          || ""
+        )
+        .trim()
+        .toLowerCase();
+
+      return className === wanted;
+    }
+  ).length;
+}
+
+
+function phaseIL1PopulateClasses() {
+  const refs =
+    phaseIL1Refs();
+
+  if (!refs.classSelect) return;
+
+  const options =
+    phaseIL1BiologicalClasses();
+
+  const previous =
+    String(
+      refs.classSelect.value
+      || phaseIL1State.targetClass
+      || currentClass?.name
+      || ""
+    );
+
+  refs.classSelect.innerHTML =
+    "";
+
+  for (const item of options) {
+    const option =
+      document.createElement(
+        "option"
+      );
+
+    option.value =
+      item.name;
+    option.textContent =
+      item.name;
+
+    refs.classSelect.append(
+      option
+    );
+  }
+
+  const matched =
+    options.find(
+      (item) =>
+        String(
+          item.name
+        ).toLowerCase()
+        === previous.toLowerCase()
+    );
+
+  if (matched) {
+    refs.classSelect.value =
+      matched.name;
+  } else if (options.length) {
+    refs.classSelect.value =
+      options[0].name;
+  }
+
+  phaseIL1UpdateTrainingHint();
+}
+
+
+function phaseIL1UpdateTrainingHint(
+  message = ""
+) {
+  const refs =
+    phaseIL1Refs();
+
+  if (!refs.trainingInfo) return;
+
+  if (message) {
+    refs.trainingInfo.textContent =
+      message;
+    return;
+  }
+
+  const target =
+    String(
+      refs.classSelect?.value
+      || ""
+    );
+
+  const count =
+    phaseIL1TargetAnnotationCount(
+      target
+    );
+
+  refs.trainingInfo.textContent =
+    target
+      ? (
+          `${count} existing ${target} `
+          + `annotation${count === 1 ? "" : "s"} `
+          + "will be used as positive examples."
+        )
+      : "Choose a target class.";
+}
+
+
+function phaseIL1CurrentSuggestion() {
+  if (
+    phaseIL1State.documentKey
+    !== phaseIL1DocumentKey()
+  ) {
+    phaseIL1ClearSuggestions(
+      "Image or annotation file changed. Run Learn & suggest again.",
+      true
+    );
+    return null;
+  }
+
+  if (
+    !phaseIL1State.suggestions.length
+  ) {
+    return null;
+  }
+
+  phaseIL1State.index =
+    Math.max(
+      0,
+      Math.min(
+        phaseIL1State.index,
+        phaseIL1State
+          .suggestions.length - 1
+      )
+    );
+
+  return (
+    phaseIL1State
+      .suggestions[
+        phaseIL1State.index
+      ]
+    || null
+  );
+}
+
+
+function phaseIL1FormatArea(area) {
+  const value =
+    Number(area || 0);
+
+  const calibration =
+    effectiveCalibration();
+
+  if (
+    calibration?.mpp
+    && Number.isFinite(
+      Number(calibration.mpp)
+    )
+    && Number(calibration.mpp) > 0
+  ) {
+    const mpp =
+      Number(calibration.mpp);
+
+    const mm2 =
+      value
+      * mpp
+      * mpp
+      / 1000000;
+
+    return (
+      `${formatStatNumber(value)} px²`
+      + ` · ${mm2.toFixed(4)} mm²`
+    );
+  }
+
+  return (
+    `${formatStatNumber(value)} px²`
+  );
+}
+
+
+function phaseIL1RenderSuggestionState() {
+  const refs =
+    phaseIL1Refs();
+
+  const suggestion =
+    phaseIL1CurrentSuggestion();
+
+  const total =
+    phaseIL1State
+      .suggestions.length;
+
+  if (!refs.suggestionPanel) return;
+
+  refs.suggestionPanel.hidden =
+    !suggestion;
+
+  if (!suggestion) {
+    drawAnnotations();
+    return;
+  }
+
+  if (refs.counter) {
+    refs.counter.textContent =
+      `Suggestion ${phaseIL1State.index + 1} / ${total}`;
+  }
+
+  if (refs.info) {
+    const confidence =
+      Number(
+        suggestion.confidence || 0
+      ) * 100;
+
+    refs.info.textContent =
+      `${phaseIL1State.targetClass}`
+      + ` · ${phaseIL1FormatArea(suggestion.areaPx2)}`
+      + ` · confidence ${confidence.toFixed(0)}%`;
+  }
+
+  if (refs.previous) {
+    refs.previous.disabled =
+      total < 2;
+  }
+
+  if (refs.next) {
+    refs.next.disabled =
+      total < 2;
+  }
+
+  phaseIL11CenterCurrentSuggestion();
+  drawAnnotations();
+}
+
+
+function phaseIL1ClearSuggestions(
+  message = "",
+  redraw = true
+) {
+  phaseIL1State.suggestions =
+    [];
+  phaseIL1State.index =
+    0;
+  phaseIL1State.model =
+    null;
+  phaseIL1State.summary =
+    null;
+  phaseIL1State.documentKey =
+    phaseIL1DocumentKey();
+
+  const refs =
+    phaseIL1Refs();
+
+  if (refs.suggestionPanel) {
+    refs.suggestionPanel.hidden =
+      true;
+  }
+
+  if (message) {
+    phaseIL1UpdateTrainingHint(
+      message
+    );
+  } else {
+    phaseIL1UpdateTrainingHint();
+  }
+
+  if (redraw) {
+    drawAnnotations();
+  }
+}
+
+
+function phaseIL1Close() {
+  phaseIL1State.open =
+    false;
+
+  phaseIL1ClearSuggestions(
+    "",
+    false
+  );
+
+  const refs =
+    phaseIL1Refs();
+
+  if (refs.overlay) {
+    refs.overlay.hidden =
+      true;
+  }
+
+  drawAnnotations();
+}
+
+
+function phaseIL1Open() {
+  phaseBToggleSettings(false);
+
+  if (
+    !currentImage
+    || !currentInfo
+  ) {
+    setStatus(
+      "Open an image before Interactive Learning",
+      "error"
+    );
+    return;
+  }
+
+  if (currentImage.localNative) {
+    setStatus(
+      "Interactive Learning currently requires a connected HistoAnnotator server",
+      "error"
+    );
+    return;
+  }
+
+  if (
+    String(
+      imageType || ""
+    ).toLowerCase()
+    === "fluorescence"
+  ) {
+    setStatus(
+      "IL1 currently supports H&E, H-DAB and RGB appearance learning",
+      "error"
+    );
+    return;
+  }
+
+  const refs =
+    phaseIL1Refs();
+
+  if (!refs.overlay) return;
+
+  phaseIL1State.open =
+    true;
+  phaseIL1State.documentKey =
+    phaseIL1DocumentKey();
+
+  phaseIL1ClearSuggestions(
+    "",
+    false
+  );
+
+  phaseIL1PopulateClasses();
+
+  refs.overlay.hidden =
+    false;
+
+  drawAnnotations();
+}
+
+
+function phaseIL1SetBusy(busy) {
+  phaseIL1State.busy =
+    Boolean(busy);
+
+  const refs =
+    phaseIL1Refs();
+
+  for (const control of [
+    refs.run,
+    refs.classSelect,
+    refs.sensitivity,
+    refs.smoothing,
+    refs.minArea,
+    refs.excludeAnnotated,
+  ]) {
+    if (control) {
+      control.disabled =
+        phaseIL1State.busy;
+    }
+  }
+
+  if (refs.run) {
+    refs.run.textContent =
+      phaseIL1State.busy
+        ? "Learning…"
+        : "Learn & suggest";
+  }
+}
+
+
+async function phaseIL1Run() {
+  if (
+    phaseIL1State.busy
+    || !currentImage
+    || currentImage.localNative
+  ) {
+    return;
+  }
+
+  const refs =
+    phaseIL1Refs();
+
+  const targetClass =
+    String(
+      refs.classSelect?.value
+      || ""
+    ).trim();
+
+  if (!targetClass) {
+    phaseIL1UpdateTrainingHint(
+      "Choose a target class."
+    );
+    return;
+  }
+
+  const count =
+    phaseIL1TargetAnnotationCount(
+      targetClass
+    );
+
+  if (count < 1) {
+    phaseIL1UpdateTrainingHint(
+      `Annotate some ${targetClass} first, then run learning again.`
+    );
+    return;
+  }
+
+  const minArea =
+    Number(
+      refs.minArea?.value
+      || 0.02
+    );
+
+  if (
+    !Number.isFinite(minArea)
+    || minArea < 0
+    || minArea > 5
+  ) {
+    phaseIL1UpdateTrainingHint(
+      "Minimum suggestion area must be between 0 and 5%."
+    );
+    return;
+  }
+
+  phaseIL1SetBusy(true);
+
+  phaseIL1State.targetClass =
+    targetClass;
+
+  phaseIL1ClearSuggestions(
+    (
+      `Learning ${targetClass} appearance `
+      + `from ${count} annotation`
+      + `${count === 1 ? "" : "s"}…`
+    ),
+    true
+  );
+
+  try {
+    const response =
+      await apiFetch(
+        `${API}/interactive-learning/${currentImage.id}/suggest`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            targetClass,
+            featureCollection: await phaseIL11FeatureCollectionForLearning(),
+            sensitivity:
+              Number(
+                refs.sensitivity?.value
+                || 50
+              ),
+            smoothing:
+              Number(
+                refs.smoothing?.value
+                || 45
+              ),
+            minAreaPercent:
+              minArea,
+            excludeAnnotated:
+              Boolean(
+                refs.excludeAnnotated
+                  ?.checked
+              ),
+            maxSuggestions:
+              40,
+            maxSide:
+              768,
+          }),
+          timeoutMs:
+            60000,
+        }
+      );
+
+    const payload =
+      await response.json();
+
+    phaseIL1State.suggestions =
+      Array.isArray(
+        payload?.suggestions
+      )
+        ? payload.suggestions
+            .filter(
+              (item) =>
+                item?.geometry
+            )
+            .map(
+              (item, index) => ({
+                ...item,
+                id:
+                  item.id
+                  || `il1-${index + 1}`,
+              })
+            )
+        : [];
+
+    phaseIL1State.index =
+      0;
+    phaseIL1State.model =
+      payload?.model || null;
+    phaseIL1State.summary =
+      payload?.summary || null;
+    phaseIL1State.documentKey =
+      phaseIL1DocumentKey();
+
+    const model =
+      phaseIL1State.model;
+
+    const suggestionCount =
+      phaseIL1State
+        .suggestions.length;
+
+    phaseIL1UpdateTrainingHint(
+      (
+        `${model?.type || "IL1"}`
+        + ` · ${model?.positiveTrainingPixels || 0} positive`
+        + ` + ${model?.negativeTrainingPixels || 0} negative samples`
+        + ` · negatives: ${model?.negativeSource || "context"}`
+        + ` · ${suggestionCount} suggestion`
+        + `${suggestionCount === 1 ? "" : "s"}.`
+      )
+    );
+
+    phaseIL1RenderSuggestionState();
+
+    setStatus(
+      suggestionCount
+        ? (
+            `Interactive Learning found `
+            + `${suggestionCount} suggestion`
+            + `${suggestionCount === 1 ? "" : "s"}`
+          )
+        : (
+            "Interactive Learning found no suggestions at these settings"
+          ),
+      suggestionCount
+        ? "saved"
+        : "local"
+    );
+  } catch (error) {
+    phaseIL1ClearSuggestions(
+      (
+        "Interactive Learning could not run: "
+        + `${error?.message || error}`
+      ),
+      true
+    );
+
+    setStatus(
+      (
+        "Interactive Learning failed: "
+        + `${error?.message || error}`
+      ),
+      "error"
+    );
+  } finally {
+    phaseIL1SetBusy(false);
+  }
+}
+
+
+function phaseIL1DrawRing(
+  ring,
+  color,
+  width = 2.0
+) {
+  if (
+    !Array.isArray(ring)
+    || ring.length < 2
+  ) {
+    return;
+  }
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.setLineDash([7, 5]);
+  ctx.lineWidth = width;
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.95;
+
+  let started = false;
+
+  for (const point of ring) {
+    const screen =
+      screenPointFromImage(
+        point
+      );
+
+    if (!screen) continue;
+
+    if (!started) {
+      ctx.moveTo(
+        screen.x,
+        screen.y
+      );
+      started = true;
+    } else {
+      ctx.lineTo(
+        screen.x,
+        screen.y
+      );
+    }
+  }
+
+  if (started) {
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+
+function phaseIL1DrawGeometry(
+  geometry,
+  color,
+  width
+) {
+  if (!geometry) return;
+
+  if (
+    geometry.type === "Polygon"
+  ) {
+    for (
+      const ring
+      of geometry.coordinates || []
+    ) {
+      phaseIL1DrawRing(
+        ring,
+        color,
+        width
+      );
+    }
+    return;
+  }
+
+  if (
+    geometry.type
+    === "MultiPolygon"
+  ) {
+    for (
+      const polygon
+      of geometry.coordinates || []
+    ) {
+      for (
+        const ring
+        of polygon || []
+      ) {
+        phaseIL1DrawRing(
+          ring,
+          color,
+          width
+        );
+      }
+    }
+  }
+}
+
+
+function phaseIL1DrawSuggestions() {
+  
+  // IL1.1: current suggestion magenta; others yellow.
+if (
+    !phaseIL1State.open
+    || !phaseIL1State
+      .suggestions.length
+    || phaseIL1State.documentKey
+      !== phaseIL1DocumentKey()
+  ) {
+    return;
+  }
+
+  for (
+    let index = 0;
+    index < phaseIL1State
+      .suggestions.length;
+    index += 1
+  ) {
+    const suggestion =
+      phaseIL1State
+        .suggestions[index];
+
+    const current =
+      index
+      === phaseIL1State.index;
+
+    phaseIL1DrawGeometry(
+      suggestion.geometry,
+      current
+        ? "#ff4fd8"
+        : "#ffd43b",
+      current
+        ? 3.2
+        : 1.8
+    );
+  }
+}
+
+
+function phaseIL1RemoveCurrentSuggestion() {
+  if (
+    !phaseIL1State
+      .suggestions.length
+  ) {
+    return;
+  }
+
+  phaseIL1State
+    .suggestions.splice(
+      phaseIL1State.index,
+      1
+    );
+
+  if (
+    phaseIL1State.index
+    >= phaseIL1State
+      .suggestions.length
+  ) {
+    phaseIL1State.index =
+      Math.max(
+        0,
+        phaseIL1State
+          .suggestions.length - 1
+      );
+  }
+
+  phaseIL1RenderSuggestionState();
+}
+
+
+function phaseIL1StoreRejection(
+  suggestion
+) {
+  if (
+    !suggestion
+    || !currentImage
+  ) {
+    return;
+  }
+
+  let items = [];
+
+  try {
+    const parsed =
+      JSON.parse(
+        localStorage.getItem(
+          PHASE_IL1_REJECTION_KEY
+        )
+        || "[]"
+      );
+
+    if (Array.isArray(parsed)) {
+      items = parsed;
+    }
+  } catch (_) {
+    items = [];
+  }
+
+  items.unshift({
+    imageId:
+      currentImage.id,
+    annotationFile:
+      currentAnnotationFile,
+    targetClass:
+      phaseIL1State.targetClass,
+    rejectedAt:
+      new Date().toISOString(),
+    model:
+      phaseIL1State.model?.type
+      || "appearance-centroid-v1",
+    confidence:
+      Number(
+        suggestion.confidence
+        || 0
+      ),
+    areaPx2:
+      Number(
+        suggestion.areaPx2
+        || 0
+      ),
+  });
+
+  try {
+    localStorage.setItem(
+      PHASE_IL1_REJECTION_KEY,
+      JSON.stringify(
+        items.slice(0, 200)
+      )
+    );
+  } catch (_) {}
+}
+
+
+function phaseIL1Reject() {
+  const suggestion =
+    phaseIL1CurrentSuggestion();
+
+  if (!suggestion) return;
+
+  phaseIL1StoreRejection(
+    suggestion
+  );
+
+  phaseIL1RemoveCurrentSuggestion();
+
+  setStatus(
+    "Suggestion rejected · feedback stored locally",
+    "local"
+  );
+}
+
+
+function phaseIL1AcceptedFeature(
+  suggestion,
+  targetClass
+) {
+  const classInfo =
+    (classes || []).find(
+      (item) =>
+        String(
+          item?.name || ""
+        ).toLowerCase()
+        === String(
+          targetClass || ""
+        ).toLowerCase()
+    );
+
+  if (!classInfo) {
+    return null;
+  }
+
+  const metadata =
+    phaseCCreateMetadata();
+
+  metadata.interactiveLearning = {
+    source:
+      "IL1",
+    model:
+      phaseIL1State.model?.type
+      || "appearance-centroid-v1",
+    acceptedAt:
+      new Date().toISOString(),
+    confidence:
+      Number(
+        suggestion.confidence
+        || 0
+      ),
+    targetClass:
+      classInfo.name,
+  };
+
+  return {
+    type: "Feature",
+    id: uid(),
+    geometry:
+      deepClone(
+        suggestion.geometry
+      ),
+    properties: {
+      objectType:
+        "annotation",
+      classification: {
+        name:
+          classInfo.name,
+        color:
+          hexToRgbArray(
+            classInfo.color
+          ),
+      },
+      isLocked:
+        false,
+      histoannotator:
+        metadata,
+    },
+  };
+}
+
+
+function phaseIL1AcceptCurrent(
+  editAfter = false
+) {
+  const suggestion =
+    phaseIL1CurrentSuggestion();
+
+  if (!suggestion) return;
+
+  const feature =
+    phaseIL1AcceptedFeature(
+      suggestion,
+      phaseIL1State.targetClass
+    );
+
+  if (!feature) {
+    setStatus(
+      "Target class no longer exists",
+      "error"
+    );
+    return;
+  }
+
+  pushUndo();
+
+  featureCollection.features.push(
+    feature
+  );
+
+  phaseIL1State.applyingSuggestion =
+    true;
+
+  setSingleSelection(
+    String(feature.id),
+    !editAfter
+  );
+
+  markChanged();
+
+  phaseIL1State.applyingSuggestion =
+    false;
+
+  if (editAfter) {
+    phaseIL1ClearSuggestions(
+      (
+        "Suggestion converted to a Draft annotation. "
+        + "Edit it normally, then run Learn & suggest again."
+      ),
+      false
+    );
+
+    setMode("select");
+    drawAnnotations();
+
+    setStatus(
+      "Suggestion converted to Draft and selected for editing",
+      "saved"
+    );
+    return;
+  }
+
+  phaseIL1RemoveCurrentSuggestion();
+
+  setStatus(
+    (
+      `${phaseIL1State.targetClass} `
+      + "suggestion accepted as Draft"
+    ),
+    "saved"
+  );
+}
+
+
+function phaseIL1AnnotationsChanged() {
+  if (
+    phaseIL1State.applyingSuggestion
+    || !phaseIL1State
+      .suggestions.length
+  ) {
+    return;
+  }
+
+  phaseIL1ClearSuggestions(
+    (
+      "Annotations changed. Run Learn & suggest "
+      + "again so predictions use the latest examples."
+    ),
+    false
+  );
+}
+
+
+
+// ========================================================================
+// Phase IL1.1 — suggestion review, effective ROI, Focus/mobile UX
+// ========================================================================
+
+async function phaseIL11FeatureCollectionForLearning() {
+  const learningCollection =
+    deepClone(featureCollection);
+
+  const roi =
+    phaseDTissueRoiFeature();
+
+  if (!roi) {
+    return learningCollection;
+  }
+
+  const borderConfig =
+    phaseDBorderConfigForRoi(roi);
+
+  const usesExternalBorder =
+    Boolean(borderConfig?.enabled)
+    && Number(borderConfig?.percent || 0) > 0;
+
+  if (!usesExternalBorder) {
+    return learningCollection;
+  }
+
+  let effectivePreview =
+    phaseDEffectivePreviewForRoi(roi);
+
+  if (!effectivePreview?.geometry) {
+    /*
+     * After reopening a file, the effective preview may not yet be hydrated.
+     * Rebuild it now and wait, rather than running IL1 against the larger
+     * base ROI for one cycle.
+     */
+    try {
+      phaseDLoadBorderControlsFromRoi();
+
+      await phaseDRefreshBorderPreview({
+        saveConfig: false,
+        quiet: true,
+      });
+    } catch (_) {
+      try {
+        phaseDEnsureStoredEffectivePreview();
+      } catch (_) {}
+    }
+
+    effectivePreview =
+      phaseDEffectivePreviewForRoi(roi);
+  }
+
+  if (!effectivePreview?.geometry) {
+    throw new Error(
+      "The effective Tissue ROI could not be prepared for Interactive Learning."
+    );
+  }
+
+  const roiId =
+    String(roi?.id || "");
+
+  const learningRoi =
+    (learningCollection.features || []).find(
+      (feature) => {
+        if (
+          roiId
+          && String(feature?.id || "") === roiId
+        ) {
+          return true;
+        }
+
+        return phaseDIsTissueRoi(feature);
+      }
+    );
+
+  if (!learningRoi) {
+    throw new Error(
+      "Tissue ROI could not be prepared for Interactive Learning."
+    );
+  }
+
+  /*
+   * The backend already subtracts Artifact. By replacing only the ROI
+   * geometry in this transient payload, IL1 learns/infers inside:
+   *
+   *   effective Tissue ROI - Artifact
+   *
+   * without modifying the stored/base Tissue ROI.
+   */
+  learningRoi.geometry =
+    deepClone(effectivePreview.geometry);
+
+  return learningCollection;
+}
+
+
+function phaseIL11GeometryBounds(
+  geometry
+) {
+  if (!geometry?.coordinates) {
+    return null;
+  }
+
+  const bounds = {
+    minX: Infinity,
+    minY: Infinity,
+    maxX: -Infinity,
+    maxY: -Infinity,
+  };
+
+  const visit = (value) => {
+    if (!Array.isArray(value)) {
+      return;
+    }
+
+    if (
+      value.length >= 2
+      && Number.isFinite(Number(value[0]))
+      && Number.isFinite(Number(value[1]))
+      && !Array.isArray(value[0])
+      && !Array.isArray(value[1])
+    ) {
+      const x = Number(value[0]);
+      const y = Number(value[1]);
+
+      bounds.minX = Math.min(bounds.minX, x);
+      bounds.minY = Math.min(bounds.minY, y);
+      bounds.maxX = Math.max(bounds.maxX, x);
+      bounds.maxY = Math.max(bounds.maxY, y);
+      return;
+    }
+
+    for (const child of value) {
+      visit(child);
+    }
+  };
+
+  visit(geometry.coordinates);
+
+  if (
+    !Number.isFinite(bounds.minX)
+    || !Number.isFinite(bounds.minY)
+    || !Number.isFinite(bounds.maxX)
+    || !Number.isFinite(bounds.maxY)
+  ) {
+    return null;
+  }
+
+  return bounds;
+}
+
+
+function phaseIL11CenterCurrentSuggestion() {
+  const suggestion =
+    phaseIL1CurrentSuggestion();
+
+  if (
+    !suggestion?.geometry
+    || !viewer
+    || !viewer.world?.getItemCount?.()
+  ) {
+    return;
+  }
+
+  const bounds =
+    phaseIL11GeometryBounds(
+      suggestion.geometry
+    );
+
+  if (!bounds) return;
+
+  const centerX =
+    (bounds.minX + bounds.maxX) / 2;
+  const centerY =
+    (bounds.minY + bounds.maxY) / 2;
+
+  const tiledImage =
+    viewer.world.getItemAt(0);
+
+  if (
+    !tiledImage
+    || typeof tiledImage
+      .imageToViewportCoordinates
+      !== "function"
+  ) {
+    return;
+  }
+
+  const viewportPoint =
+    tiledImage.imageToViewportCoordinates(
+      centerX,
+      centerY
+    );
+
+  if (!viewportPoint) return;
+
+  /*
+   * Preserve the user's zoom. Only pan, matching Review-style
+   * annotation-by-annotation navigation.
+   */
+  viewer.viewport.panTo(
+    viewportPoint,
+    false
+  );
+
+  viewer.viewport.applyConstraints(
+    false
+  );
+}
+
+
+function phaseIL11FocusModeLetter() {
+  if (mode === "navigate") {
+    return "M";
+  }
+
+  if (mode === "select") {
+    return "S";
+  }
+
+  return "F";
+}
+
+
+function phaseIL11EnsureFocusModeControl() {
+  if (
+    document.getElementById(
+      "phaseIL11FocusModeButton"
+    )
+  ) {
+    return;
+  }
+
+  const classButton =
+    document.getElementById(
+      "phaseBFocusClassesButton"
+    );
+
+  const classWrap =
+    classButton?.parentElement;
+
+  if (!classButton || !classWrap) {
+    return;
+  }
+
+  const topRow =
+    document.createElement("div");
+
+  topRow.className =
+    "phase-il11-focus-top-row";
+
+  classWrap.insertBefore(
+    topRow,
+    classButton
+  );
+
+  topRow.append(classButton);
+
+  const modeWrap =
+    document.createElement("div");
+
+  modeWrap.className =
+    "phase-il11-focus-mode-wrap";
+
+  const modeButton =
+    document.createElement("button");
+
+  modeButton.id =
+    "phaseIL11FocusModeButton";
+  modeButton.type =
+    "button";
+  modeButton.className =
+    "phase-il11-focus-mode-button";
+  modeButton.setAttribute(
+    "aria-expanded",
+    "false"
+  );
+  modeButton.title =
+    "Mode · M Move · F Draw · S Select";
+
+  const strip =
+    document.createElement("div");
+
+  strip.id =
+    "phaseIL11FocusModeStrip";
+  strip.className =
+    "phase-il11-focus-mode-strip";
+  strip.hidden =
+    true;
+
+  const choices = [
+    ["navigate", "M", "Move"],
+    ["freehand", "F", "Draw · Freehand"],
+    ["select", "S", "Select"],
+  ];
+
+  for (
+    const [modeName, letter, label]
+    of choices
+  ) {
+    const button =
+      document.createElement("button");
+
+    button.type =
+      "button";
+    button.className =
+      "phase-il11-focus-mode-choice";
+    button.dataset.mode =
+      modeName;
+    button.textContent =
+      letter;
+    button.title =
+      `${letter} · ${label}`;
+    button.setAttribute(
+      "aria-label",
+      `${letter} · ${label}`
+    );
+
+    button.addEventListener(
+      "click",
+      () => {
+        setMode(modeName);
+        phaseIL11SetFocusModesOpen(
+          false
+        );
+      }
+    );
+
+    strip.append(button);
+  }
+
+  modeWrap.append(
+    modeButton,
+    strip
+  );
+
+  topRow.append(modeWrap);
+
+  modeButton.addEventListener(
+    "click",
+    () => {
+      const open =
+        strip.hidden;
+
+      if (open) {
+        phaseBSetFocusClassesOpen(
+          false
+        );
+      }
+
+      phaseIL11SetFocusModesOpen(
+        open
+      );
+    }
+  );
+
+  classButton.addEventListener(
+    "click",
+    () =>
+      phaseIL11SetFocusModesOpen(
+        false
+      )
+  );
+
+  document
+    .getElementById(
+      "phaseBExitFocusButton"
+    )
+    ?.addEventListener(
+      "click",
+      () =>
+        phaseIL11SetFocusModesOpen(
+          false
+        )
+    );
+
+  phaseIL11UpdateFocusModeControl();
+}
+
+
+function phaseIL11SetFocusModesOpen(
+  open
+) {
+  const button =
+    document.getElementById(
+      "phaseIL11FocusModeButton"
+    );
+
+  const strip =
+    document.getElementById(
+      "phaseIL11FocusModeStrip"
+    );
+
+  if (!button || !strip) return;
+
+  strip.hidden =
+    !Boolean(open);
+
+  button.setAttribute(
+    "aria-expanded",
+    String(Boolean(open))
+  );
+}
+
+
+function phaseIL11UpdateFocusModeControl() {
+  const button =
+    document.getElementById(
+      "phaseIL11FocusModeButton"
+    );
+
+  const strip =
+    document.getElementById(
+      "phaseIL11FocusModeStrip"
+    );
+
+  if (!button) return;
+
+  const letter =
+    phaseIL11FocusModeLetter();
+
+  button.textContent =
+    letter;
+
+  const label =
+    mode === "navigate"
+      ? "Move"
+      : mode === "select"
+        ? "Select"
+        : (
+            mode === "freehand"
+              ? "Draw · Freehand"
+              : `Draw · ${mode}`
+          );
+
+  button.title =
+    `${letter} · ${label}`;
+
+  strip
+    ?.querySelectorAll(
+      ".phase-il11-focus-mode-choice"
+    )
+    .forEach(
+      (choice) => {
+        const choiceMode =
+          choice.dataset.mode;
+
+        const active =
+          choiceMode === "navigate"
+            ? mode === "navigate"
+            : choiceMode === "select"
+              ? mode === "select"
+              : (
+                  mode !== "navigate"
+                  && mode !== "select"
+                );
+
+        choice.classList.toggle(
+          "active",
+          active
+        );
+      }
+    );
+}
+
+
+
+// ========================================================================
+// Phase IL1.2 - Focus Android system-bar hotfix
+// ========================================================================
+
+function phaseIL12UpdateFocusInsets() {
+  const root = document.documentElement;
+  const vv = window.visualViewport;
+
+  const layoutWidth =
+    Math.max(0, Number(window.innerWidth || 0));
+  const layoutHeight =
+    Math.max(0, Number(window.innerHeight || 0));
+
+  const visibleWidth =
+    Math.max(0, Number(vv?.width || layoutWidth));
+  const visibleHeight =
+    Math.max(0, Number(vv?.height || layoutHeight));
+
+  const offsetLeft =
+    Math.max(0, Number(vv?.offsetLeft || 0));
+  const offsetTop =
+    Math.max(0, Number(vv?.offsetTop || 0));
+
+  let left = offsetLeft;
+
+  let right = Math.max(
+    0,
+    layoutWidth - visibleWidth - offsetLeft
+  );
+
+  let bottom = Math.max(
+    0,
+    layoutHeight - visibleHeight - offsetTop
+  );
+
+  const nativeAndroid =
+    Boolean(IS_NATIVE)
+    && /Android/i.test(navigator.userAgent || "");
+
+  const shortSide =
+    Math.min(
+      layoutWidth || Infinity,
+      layoutHeight || Infinity
+    );
+
+  const phoneSized =
+    nativeAndroid
+    && Number.isFinite(shortSide)
+    && shortSide <= 600;
+
+  if (phoneSized) {
+    const landscape =
+      layoutWidth > layoutHeight;
+
+    if (landscape) {
+      // Android can move the navigation bar to either lateral edge.
+      // Some WebViews incorrectly report zero safe-area inset, so keep
+      // a conservative reserve on both sides for phone landscape.
+      left = Math.max(left, 46);
+      right = Math.max(right, 46);
+      bottom = Math.max(bottom, 8);
+    } else {
+      // Portrait navigation/gesture bar fallback.
+      bottom = Math.max(bottom, 42);
+    }
+  }
+
+  root.style.setProperty(
+    "--ha-focus-inset-left",
+    `${Math.round(left)}px`
+  );
+
+  root.style.setProperty(
+    "--ha-focus-inset-right",
+    `${Math.round(right)}px`
+  );
+
+  root.style.setProperty(
+    "--ha-focus-inset-bottom",
+    `${Math.round(bottom)}px`
+  );
+}
+
+
+function phaseIL12Initialize() {
+  phaseIL12UpdateFocusInsets();
+
+  window.addEventListener(
+    "resize",
+    phaseIL12UpdateFocusInsets,
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "orientationchange",
+    () => {
+      window.setTimeout(
+        phaseIL12UpdateFocusInsets,
+        80
+      );
+
+      window.setTimeout(
+        phaseIL12UpdateFocusInsets,
+        320
+      );
+    },
+    { passive: true }
+  );
+
+  window.visualViewport?.addEventListener(
+    "resize",
+    phaseIL12UpdateFocusInsets,
+    { passive: true }
+  );
+
+  window.visualViewport?.addEventListener(
+    "scroll",
+    phaseIL12UpdateFocusInsets,
+    { passive: true }
+  );
+}
+
+
+function phaseIL11Initialize() {
+  phaseIL11EnsureFocusModeControl();
+  phaseIL11UpdateFocusModeControl();
+}
+
+function phaseIL1Initialize() {
+  phaseIL1EnsureUi();
+
+  const refs =
+    phaseIL1Refs();
+
+  refs.menu?.addEventListener(
+    "click",
+    phaseIL1Open
+  );
+
+  refs.close?.addEventListener(
+    "click",
+    phaseIL1Close
+  );
+
+  refs.clear?.addEventListener(
+    "click",
+    () =>
+      phaseIL1ClearSuggestions()
+  );
+
+  refs.run?.addEventListener(
+    "click",
+    phaseIL1Run
+  );
+
+  refs.classSelect
+    ?.addEventListener(
+      "change",
+      () => {
+        phaseIL1State.targetClass =
+          refs.classSelect.value;
+
+        phaseIL1ClearSuggestions(
+          "",
+          true
+        );
+      }
+    );
+
+  refs.sensitivity
+    ?.addEventListener(
+      "input",
+      () => {
+        if (
+          refs.sensitivityValue
+        ) {
+          refs.sensitivityValue
+            .textContent =
+              refs.sensitivity.value;
+        }
+      }
+    );
+
+  refs.smoothing
+    ?.addEventListener(
+      "input",
+      () => {
+        if (
+          refs.smoothingValue
+        ) {
+          refs.smoothingValue
+            .textContent =
+              refs.smoothing.value;
+        }
+      }
+    );
+
+  refs.previous
+    ?.addEventListener(
+      "click",
+      () => {
+        const total =
+          phaseIL1State
+            .suggestions.length;
+
+        if (!total) return;
+
+        phaseIL1State.index =
+          (
+            phaseIL1State.index
+            - 1
+            + total
+          ) % total;
+
+        phaseIL1RenderSuggestionState();
+      }
+    );
+
+  refs.next
+    ?.addEventListener(
+      "click",
+      () => {
+        const total =
+          phaseIL1State
+            .suggestions.length;
+
+        if (!total) return;
+
+        phaseIL1State.index =
+          (
+            phaseIL1State.index
+            + 1
+          ) % total;
+
+        phaseIL1RenderSuggestionState();
+      }
+    );
+
+  refs.reject
+    ?.addEventListener(
+      "click",
+      phaseIL1Reject
+    );
+
+  refs.accept
+    ?.addEventListener(
+      "click",
+      () =>
+        phaseIL1AcceptCurrent(
+          false
+        )
+    );
+
+  refs.edit
+    ?.addEventListener(
+      "click",
+      () =>
+        phaseIL1AcceptCurrent(
+          true
+        )
+    );
+}
+
+
   function bindEvents() {
     phaseBBindEvents();
     document.querySelectorAll(".tool").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
@@ -16528,11 +18612,15 @@ function phaseGInitialize() {
     bindEvents();
     phaseGInitialize();
     phaseG2Initialize();
+    phaseIL1Initialize();
+    phaseIL11Initialize();
+    phaseIL12Initialize();
     setClassManagerOpen(false);
     els.inputGuide.hidden = false;
     setDrawingProfile("default");
     renderChannelControls();
-    setMode("navigate");
+    // Phase IL1.3 - full-width Focus and Freehand default
+    setMode("freehand");
     updateControls();
     updateDiagnostics();
     requestPersistentStorage();
