@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL2.4";
+  const VERSION = "1.4.0-dev-IL3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -17065,6 +17065,167 @@ function phaseIL1SetBusy(busy) {
 }
 
 
+
+// ========================================================================
+// Phase IL3 - active learning suggestion prioritization
+// ========================================================================
+
+function phaseIL3Clamp01(value) {
+  const number =
+    Number(value);
+
+  if (!Number.isFinite(number)) {
+    return null;
+  }
+
+  return Math.max(
+    0,
+    Math.min(
+      1,
+      number
+    )
+  );
+}
+
+
+function phaseIL3SuggestionPriority(
+  suggestion,
+  maxArea
+) {
+  const confidence =
+    phaseIL3Clamp01(
+      suggestion?.confidence
+    );
+
+  const uncertainty =
+    confidence === null
+      ? 0.35
+      : (
+          1
+          - Math.min(
+              1,
+              Math.abs(
+                confidence - 0.5
+              ) * 2
+            )
+        );
+
+  const area =
+    Math.max(
+      0,
+      Number(
+        suggestion?.areaPx2
+        || 0
+      )
+    );
+
+  const safeMaxArea =
+    Math.max(
+      1,
+      Number(maxArea || 1)
+    );
+
+  const areaScore =
+    Math.log1p(area)
+    / Math.log1p(
+        safeMaxArea
+      );
+
+  const priority =
+    (
+      0.80 * uncertainty
+      + 0.20 * areaScore
+    );
+
+  return {
+    priority,
+    uncertainty,
+    areaScore,
+  };
+}
+
+
+function phaseIL3PrioritizeSuggestions() {
+  const suggestions =
+    phaseIL1State.suggestions;
+
+  if (
+    !Array.isArray(suggestions)
+    || suggestions.length < 2
+  ) {
+    return;
+  }
+
+  const maxArea =
+    Math.max(
+      1,
+      ...suggestions.map(
+        (item) =>
+          Math.max(
+            0,
+            Number(
+              item?.areaPx2
+              || 0
+            )
+          )
+      )
+    );
+
+  const ranked =
+    suggestions.map(
+      (suggestion, originalIndex) => {
+        const score =
+          phaseIL3SuggestionPriority(
+            suggestion,
+            maxArea
+          );
+
+        return {
+          suggestion,
+          originalIndex,
+          ...score,
+        };
+      }
+    );
+
+  ranked.sort(
+    (a, b) => {
+      const priorityDelta =
+        b.priority
+        - a.priority;
+
+      if (
+        Math.abs(priorityDelta)
+        > 1e-9
+      ) {
+        return priorityDelta;
+      }
+
+      return (
+        a.originalIndex
+        - b.originalIndex
+      );
+    }
+  );
+
+  phaseIL1State.suggestions =
+    ranked.map(
+      (item, rank) => ({
+        ...item.suggestion,
+        _activeLearning: {
+          rank:
+            rank + 1,
+          priority:
+            item.priority,
+          uncertainty:
+            item.uncertainty,
+          areaScore:
+            item.areaScore,
+        },
+      })
+    );
+}
+
 async function phaseIL1Run() {
   if (
     phaseIL1State.busy
@@ -17198,6 +17359,8 @@ async function phaseIL1Run() {
               })
             )
         : [];
+
+    phaseIL3PrioritizeSuggestions();
 
     phaseIL1State.index =
       0;
