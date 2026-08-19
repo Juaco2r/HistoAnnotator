@@ -2437,3 +2437,148 @@ body.phase-b-focus-mode
   ) !important;
 }
 
+/* ==========================================================================
+   Phase IL2 - feedback learning and suggestion decisions
+   ========================================================================== */
+
+.phase-il1-actions {
+  flex-wrap: wrap;
+}
+
+.phase-il2-assign-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.phase-il2-assign-row[hidden] {
+  display: none;
+}
+
+.phase-il2-assign-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.phase-il2-assign-row button {
+  flex: 0 0 auto;
+}
+
+#phaseIL2LaterButton {
+  border-color: rgba(160, 174, 192, .55);
+}
+
+#phaseIL2ClassButton {
+  border-color: rgba(116, 192, 252, .60);
+}
+
+@media (max-width: 700px) {
+  .phase-il1-actions {
+    justify-content: flex-end;
+    gap: 5px;
+  }
+
+  .phase-il1-actions button {
+    min-height: 32px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+/* ==========================================================================
+   Phase IL2.1 - class dropdown, inline edit, finer suggestions
+   ========================================================================== */
+
+.phase-il21-class-select {
+  flex: 1 1 118px;
+  min-width: 92px;
+  max-width: 145px;
+  height: 34px;
+  box-sizing: border-box;
+}
+
+.phase-il1-actions {
+  align-items: center;
+}
+
+@media (max-width: 700px) {
+  .phase-il21-class-select {
+    flex-basis: 105px;
+    max-width: 128px;
+  }
+}
+
+/* ==========================================================================
+   Phase IL2.2 - highlighted review overlay and Freehand edit
+   ========================================================================== */
+
+.phase-il22-overlay-button {
+  margin-right: auto;
+  min-width: 52px;
+}
+
+.phase-il22-overlay-button[aria-pressed="true"] {
+  font-weight: 600;
+}
+
+.phase-il22-overlay-button:disabled {
+  opacity: .45;
+}
+
+#phaseIL1SuggestionPanel .phase-il1-actions {
+  width: 100%;
+}
+
+/* ==========================================================================
+   Phase IL2.3 - two-row suggestion review layout
+   ========================================================================== */
+
+#phaseIL1SuggestionPanel .phase-il1-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+}
+
+.phase-il23-upper-actions,
+.phase-il23-lower-actions {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 7px;
+}
+
+.phase-il23-upper-actions {
+  justify-content: flex-start;
+}
+
+.phase-il23-lower-actions {
+  justify-content: space-between;
+}
+
+.phase-il23-upper-actions .phase-il21-class-select {
+  margin-left: auto;
+}
+
+.phase-il23-lower-actions .phase-il22-overlay-button {
+  margin-right: 0;
+}
+
+.phase-il23-lower-actions #phaseIL1AcceptButton {
+  margin-left: auto;
+}
+
+@media (max-width: 700px) {
+  .phase-il23-upper-actions {
+    flex-wrap: wrap;
+  }
+
+  .phase-il23-upper-actions .phase-il21-class-select {
+    flex: 1 1 105px;
+    margin-left: 0;
+  }
+
+  .phase-il23-lower-actions {
+    flex-wrap: nowrap;
+  }
+}

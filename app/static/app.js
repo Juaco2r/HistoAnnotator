@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL1.3";
+  const VERSION = "1.4.0-dev-IL2.4";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -16877,6 +16877,10 @@ function phaseIL1RenderSuggestionState() {
     return;
   }
 
+  phaseIL21ResetClassForSuggestion();
+  phaseIL22ResetOverlayForSuggestion();
+  phaseIL21SetEditingUi(false);
+
   if (refs.counter) {
     refs.counter.textContent =
       `Suggestion ${phaseIL1State.index + 1} / ${total}`;
@@ -16891,7 +16895,12 @@ function phaseIL1RenderSuggestionState() {
     refs.info.textContent =
       `${phaseIL1State.targetClass}`
       + ` · ${phaseIL1FormatArea(suggestion.areaPx2)}`
-      + ` · confidence ${confidence.toFixed(0)}%`;
+      + ` · confidence ${confidence.toFixed(0)}%`
+      + (
+          suggestion.reviewLater
+            ? " · Review later"
+            : ""
+        );
   }
 
   if (refs.previous) {
@@ -17136,6 +17145,10 @@ async function phaseIL1Run() {
           },
           body: JSON.stringify({
             targetClass,
+            feedback:
+              phaseIL2FeedbackPayload(
+                targetClass
+              ),
             featureCollection: await phaseIL11FeatureCollectionForLearning(),
             sensitivity:
               Number(
@@ -17157,7 +17170,7 @@ async function phaseIL1Run() {
             maxSuggestions:
               40,
             maxSide:
-              768,
+              1280,
           }),
           timeoutMs:
             60000,
@@ -17202,6 +17215,11 @@ async function phaseIL1Run() {
       phaseIL1State
         .suggestions.length;
 
+    const feedbackSummary =
+      phaseIL2FeedbackSummary(
+        targetClass
+      );
+
     phaseIL1UpdateTrainingHint(
       (
         `${model?.type || "IL1"}`
@@ -17210,9 +17228,14 @@ async function phaseIL1Run() {
         + ` · negatives: ${model?.negativeSource || "context"}`
         + ` · ${suggestionCount} suggestion`
         + `${suggestionCount === 1 ? "" : "s"}.`
-      )
+      + ` · feedback A:${feedbackSummary.accepted}`
+      + ` R:${feedbackSummary.rejected}`
+      + ` E:${feedbackSummary.edited}`
+      + ` C:${feedbackSummary.reclassified}`)
     );
 
+    // Phase IL2.4 - clean suggestion review status
+    phaseIL1UpdateTrainingHint("");
     phaseIL1RenderSuggestionState();
 
     setStatus(
@@ -17349,12 +17372,10 @@ function phaseIL1DrawGeometry(
 
 
 function phaseIL1DrawSuggestions() {
-  
-  // IL1.1: current suggestion magenta; others yellow.
-if (
+  // IL2.2: current suggestion bright yellow + translucent fill.
+  if (
     !phaseIL1State.open
-    || !phaseIL1State
-      .suggestions.length
+    || !phaseIL1State.suggestions.length
     || phaseIL1State.documentKey
       !== phaseIL1DocumentKey()
   ) {
@@ -17363,29 +17384,41 @@ if (
 
   for (
     let index = 0;
-    index < phaseIL1State
-      .suggestions.length;
+    index < phaseIL1State.suggestions.length;
     index += 1
   ) {
     const suggestion =
-      phaseIL1State
-        .suggestions[index];
+      phaseIL1State.suggestions[index];
 
     const current =
-      index
-      === phaseIL1State.index;
+      index === phaseIL1State.index;
+
+    if (
+      current
+      && !phaseIL22SuggestionOverlayVisible
+    ) {
+      continue;
+    }
+
+    if (current) {
+      phaseIL22FillGeometry(
+        suggestion.geometry,
+        "#fff200"
+      );
+    }
 
     phaseIL1DrawGeometry(
       suggestion.geometry,
       current
-        ? "#ff4fd8"
-        : "#ffd43b",
+        ? "#fff200"
+        : "#ffb000",
       current
-        ? 3.2
-        : 1.8
+        ? 3.6
+        : 1.4
     );
   }
 }
+
 
 
 function phaseIL1RemoveCurrentSuggestion() {
@@ -17469,6 +17502,10 @@ function phaseIL1StoreRejection(
         suggestion.areaPx2
         || 0
       ),
+    geometry:
+      deepClone(
+        suggestion.geometry
+      ),
   });
 
   try {
@@ -17525,7 +17562,11 @@ function phaseIL1AcceptedFeature(
 
   metadata.interactiveLearning = {
     source:
-      "IL1",
+      "IL2",
+    decision:
+      "accepted",
+    originalTargetClass:
+      targetClass,
     model:
       phaseIL1State.model?.type
       || "appearance-centroid-v1",
@@ -17570,24 +17611,56 @@ function phaseIL1AcceptedFeature(
 function phaseIL1AcceptCurrent(
   editAfter = false
 ) {
+  if (
+    phaseIL21EditSession
+    && !editAfter
+  ) {
+    phaseIL21FinishEdit();
+    return;
+  }
+
   const suggestion =
     phaseIL1CurrentSuggestion();
 
   if (!suggestion) return;
 
-  const feature =
-    phaseIL1AcceptedFeature(
-      suggestion,
-      phaseIL1State.targetClass
+  if (editAfter) {
+    phaseIL21StartEdit(
+      suggestion
     );
+    return;
+  }
 
-  if (!feature) {
+  const finalClass =
+    phaseIL21SelectedClass();
+
+  if (!finalClass) {
     setStatus(
-      "Target class no longer exists",
+      "Choose a class before accepting",
       "error"
     );
     return;
   }
+
+  const feature =
+    phaseIL1AcceptedFeature(
+      suggestion,
+      finalClass
+    );
+
+  if (!feature) {
+    setStatus(
+      "Selected class no longer exists",
+      "error"
+    );
+    return;
+  }
+
+  phaseIL21MarkDecision(
+    feature,
+    finalClass,
+    false
+  );
 
   pushUndo();
 
@@ -17595,55 +17668,36 @@ function phaseIL1AcceptCurrent(
     feature
   );
 
-  phaseIL1State.applyingSuggestion =
-    true;
+  phaseIL1State.applyingSuggestion = true;
 
   setSingleSelection(
     String(feature.id),
-    !editAfter
+    true
   );
 
   markChanged();
 
-  phaseIL1State.applyingSuggestion =
-    false;
+  phaseIL1State.applyingSuggestion = false;
 
-  if (editAfter) {
-    phaseIL1ClearSuggestions(
-      (
-        "Suggestion converted to a Draft annotation. "
-        + "Edit it normally, then run Learn & suggest again."
-      ),
-      false
-    );
-
-    setMode("select");
-    drawAnnotations();
-
-    setStatus(
-      "Suggestion converted to Draft and selected for editing",
-      "saved"
-    );
-    return;
-  }
+  phaseIL21PopulateSuggestionClasses(
+    true
+  );
 
   phaseIL1RemoveCurrentSuggestion();
 
   setStatus(
-    (
-      `${phaseIL1State.targetClass} `
-      + "suggestion accepted as Draft"
-    ),
+    `${finalClass} suggestion accepted as Draft`,
     "saved"
   );
 }
 
 
+
 function phaseIL1AnnotationsChanged() {
   if (
     phaseIL1State.applyingSuggestion
-    || !phaseIL1State
-      .suggestions.length
+    || phaseIL21EditSession
+    || !phaseIL1State.suggestions.length
   ) {
     return;
   }
@@ -17656,6 +17710,7 @@ function phaseIL1AnnotationsChanged() {
     false
   );
 }
+
 
 
 
@@ -18254,6 +18309,1281 @@ function phaseIL11Initialize() {
   phaseIL11UpdateFocusModeControl();
 }
 
+
+// ========================================================================
+// Phase IL2 - feedback learning and suggestion decisions
+// ========================================================================
+
+const PHASE_IL2_EDIT_KEY =
+  "histoannotator.il2.edits.v1";
+
+
+function phaseIL2ReadArray(key) {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(key)
+      || "[]"
+    );
+
+    return Array.isArray(parsed)
+      ? parsed
+      : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+
+function phaseIL2WriteArray(
+  key,
+  items,
+  maximum = 300
+) {
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify(
+        (items || []).slice(
+          0,
+          maximum
+        )
+      )
+    );
+  } catch (_) {}
+}
+
+
+function phaseIL2ContextMatch(
+  item,
+  targetClass
+) {
+  if (!item || !currentImage) {
+    return false;
+  }
+
+  return (
+    String(item.imageId || "")
+      === String(currentImage.id || "")
+    && String(item.annotationFile || "")
+      === String(currentAnnotationFile || "")
+    && String(item.targetClass || "")
+      .toLowerCase()
+      === String(targetClass || "")
+        .toLowerCase()
+  );
+}
+
+
+function phaseIL2RejectedFeedback(
+  targetClass
+) {
+  return phaseIL2ReadArray(
+    PHASE_IL1_REJECTION_KEY
+  ).filter(
+    (item) =>
+      phaseIL2ContextMatch(
+        item,
+        targetClass
+      )
+      && item?.geometry
+  );
+}
+
+
+function phaseIL2EditedFeedback(
+  targetClass
+) {
+  const items =
+    phaseIL2ReadArray(
+      PHASE_IL2_EDIT_KEY
+    );
+
+  const output = [];
+
+  for (const item of items) {
+    if (
+      !phaseIL2ContextMatch(
+        item,
+        targetClass
+      )
+      || !item?.featureId
+      || !item?.originalGeometry
+    ) {
+      continue;
+    }
+
+    const feature =
+      (featureCollection.features || [])
+        .find(
+          (candidate) =>
+            String(candidate?.id || "")
+            === String(item.featureId)
+        );
+
+    if (
+      !feature?.geometry
+      || !phaseDIsAnnotationFeature(
+        feature
+      )
+    ) {
+      continue;
+    }
+
+    const className =
+      String(
+        feature?.properties
+          ?.classification
+          ?.name
+        || ""
+      ).toLowerCase();
+
+    if (
+      className
+      !== String(targetClass || "")
+        .toLowerCase()
+    ) {
+      continue;
+    }
+
+    output.push({
+      featureId:
+        item.featureId,
+      originalGeometry:
+        deepClone(
+          item.originalGeometry
+        ),
+      correctedGeometry:
+        deepClone(
+          feature.geometry
+        ),
+      createdAt:
+        item.createdAt || null,
+    });
+  }
+
+  return output;
+}
+
+
+function phaseIL2FeedbackPayload(
+  targetClass
+) {
+  return {
+    rejected:
+      phaseIL2RejectedFeedback(
+        targetClass
+      ).map(
+        (item) => ({
+          geometry:
+            deepClone(
+              item.geometry
+            ),
+          confidence:
+            Number(
+              item.confidence || 0
+            ),
+          rejectedAt:
+            item.rejectedAt || null,
+        })
+      ),
+
+    edited:
+      phaseIL2EditedFeedback(
+        targetClass
+      ),
+  };
+}
+
+
+function phaseIL2FeedbackSummary(
+  targetClass
+) {
+  const target =
+    String(targetClass || "")
+      .toLowerCase();
+
+  let accepted = 0;
+  let reclassified = 0;
+
+  for (
+    const feature
+    of featureCollection.features || []
+  ) {
+    if (
+      !phaseDIsAnnotationFeature(
+        feature
+      )
+    ) {
+      continue;
+    }
+
+    const il =
+      feature?.properties
+        ?.histoannotator
+        ?.interactiveLearning;
+
+    if (!il) continue;
+
+    const source =
+      String(il.source || "")
+        .toUpperCase();
+
+    if (!source.startsWith("IL")) {
+      continue;
+    }
+
+    const className =
+      String(
+        feature?.properties
+          ?.classification
+          ?.name
+        || ""
+      ).toLowerCase();
+
+    const originalTarget =
+      String(
+        il.originalTargetClass || ""
+      ).toLowerCase();
+
+    if (className === target) {
+      accepted += 1;
+    }
+
+    if (
+      il.decision === "reclassified"
+      && originalTarget === target
+    ) {
+      reclassified += 1;
+    }
+  }
+
+  return {
+    accepted,
+    rejected:
+      phaseIL2RejectedFeedback(
+        targetClass
+      ).length,
+    edited:
+      phaseIL2EditedFeedback(
+        targetClass
+      ).length,
+    reclassified,
+  };
+}
+
+
+function phaseIL2StoreEditOrigin(
+  feature,
+  suggestion
+) {
+  if (
+    !feature?.id
+    || !suggestion?.geometry
+    || !currentImage
+  ) {
+    return;
+  }
+
+  const items =
+    phaseIL2ReadArray(
+      PHASE_IL2_EDIT_KEY
+    );
+
+  const featureId =
+    String(feature.id);
+
+  const filtered =
+    items.filter(
+      (item) =>
+        !(
+          String(item?.imageId || "")
+            === String(currentImage.id || "")
+          && String(
+            item?.annotationFile || ""
+          ) === String(
+            currentAnnotationFile || ""
+          )
+          && String(
+            item?.featureId || ""
+          ) === featureId
+        )
+    );
+
+  filtered.unshift({
+    imageId:
+      currentImage.id,
+    annotationFile:
+      currentAnnotationFile,
+    targetClass:
+      phaseIL1State.targetClass,
+    featureId,
+    originalGeometry:
+      deepClone(
+        suggestion.geometry
+      ),
+    createdAt:
+      new Date().toISOString(),
+  });
+
+  phaseIL2WriteArray(
+    PHASE_IL2_EDIT_KEY,
+    filtered
+  );
+}
+
+
+function phaseIL2PopulateAssignClasses() {
+  const select =
+    document.getElementById(
+      "phaseIL2AssignClassSelect"
+    );
+
+  if (!select) return;
+
+  const target =
+    String(
+      phaseIL1State.targetClass
+      || document.getElementById(
+        "phaseIL1ClassSelect"
+      )?.value
+      || ""
+    ).toLowerCase();
+
+  select.innerHTML = "";
+
+  for (const item of classes || []) {
+    const name =
+      String(item?.name || "")
+        .trim();
+
+    if (
+      !name
+      || name.toLowerCase() === "artifact"
+      || name.toLowerCase() === target
+    ) {
+      continue;
+    }
+
+    const option =
+      document.createElement(
+        "option"
+      );
+
+    option.value =
+      name;
+    option.textContent =
+      name;
+
+    select.append(option);
+  }
+}
+
+
+function phaseIL2SetAssignOpen(open) {
+  const row =
+    document.getElementById(
+      "phaseIL2AssignRow"
+    );
+
+  const button =
+    document.getElementById(
+      "phaseIL2ClassButton"
+    );
+
+  if (!row || !button) return;
+
+  row.hidden =
+    !Boolean(open);
+
+  button.setAttribute(
+    "aria-expanded",
+    String(Boolean(open))
+  );
+
+  if (open) {
+    phaseIL2PopulateAssignClasses();
+  }
+}
+
+
+function phaseIL2ReviewLater() {
+  const suggestions =
+    phaseIL1State.suggestions;
+
+  if (!suggestions?.length) {
+    return;
+  }
+
+  if (suggestions.length === 1) {
+    suggestions[0].reviewLater =
+      true;
+
+    phaseIL1UpdateTrainingHint(
+      "Only one suggestion remains. It is marked Review later."
+    );
+
+    phaseIL1RenderSuggestionState();
+    return;
+  }
+
+  const current =
+    suggestions.splice(
+      phaseIL1State.index,
+      1
+    )[0];
+
+  current.reviewLater =
+    true;
+
+  suggestions.push(current);
+
+  if (
+    phaseIL1State.index
+    >= suggestions.length
+  ) {
+    phaseIL1State.index = 0;
+  }
+
+  phaseIL1RenderSuggestionState();
+
+  setStatus(
+    "Suggestion moved to Review later",
+    "local"
+  );
+}
+
+
+function phaseIL2AssignCurrent() {
+  const suggestion =
+    phaseIL1CurrentSuggestion();
+
+  const select =
+    document.getElementById(
+      "phaseIL2AssignClassSelect"
+    );
+
+  const className =
+    String(
+      select?.value || ""
+    ).trim();
+
+  if (
+    !suggestion
+    || !className
+  ) {
+    return;
+  }
+
+  const feature =
+    phaseIL1AcceptedFeature(
+      suggestion,
+      className
+    );
+
+  if (!feature) {
+    setStatus(
+      "Selected class no longer exists",
+      "error"
+    );
+    return;
+  }
+
+  const il =
+    feature.properties
+      .histoannotator
+      .interactiveLearning;
+
+  il.source =
+    "IL2";
+  il.decision =
+    "reclassified";
+  il.originalTargetClass =
+    phaseIL1State.targetClass;
+  il.assignedClass =
+    className;
+  il.reclassifiedAt =
+    new Date().toISOString();
+
+  pushUndo();
+
+  featureCollection.features.push(
+    feature
+  );
+
+  phaseIL1State.applyingSuggestion =
+    true;
+
+  setSingleSelection(
+    String(feature.id),
+    true
+  );
+
+  markChanged();
+
+  phaseIL1State.applyingSuggestion =
+    false;
+
+  phaseIL2SetAssignOpen(false);
+  phaseIL1RemoveCurrentSuggestion();
+
+  setStatus(
+    (
+      "Suggestion assigned to "
+      + className
+      + " as Draft"
+    ),
+    "saved"
+  );
+}
+
+
+
+// ========================================================================
+// Phase IL2.1 - class dropdown, inline edit, finer suggestions
+// ========================================================================
+
+let phaseIL21EditSession = null;
+
+function phaseIL21TargetClass() {
+  return String(
+    phaseIL1State.targetClass
+    || document.getElementById(
+      "phaseIL1ClassSelect"
+    )?.value
+    || ""
+  ).trim();
+}
+
+function phaseIL21SuggestionClassSelect() {
+  return document.getElementById(
+    "phaseIL21SuggestionClassSelect"
+  );
+}
+
+function phaseIL21PopulateSuggestionClasses(
+  resetToTarget = true
+) {
+  const select =
+    phaseIL21SuggestionClassSelect();
+
+  if (!select) return;
+
+  const previous =
+    String(select.value || "");
+
+  const target =
+    phaseIL21TargetClass();
+
+  select.innerHTML = "";
+
+  for (const item of classes || []) {
+    const name =
+      String(item?.name || "").trim();
+
+    if (!name) continue;
+
+    const option =
+      document.createElement("option");
+
+    option.value = name;
+    option.textContent = name;
+    select.append(option);
+  }
+
+  const desired =
+    resetToTarget
+      ? target
+      : previous;
+
+  const match =
+    Array.from(select.options)
+      .find(
+        (option) =>
+          option.value.toLowerCase()
+          === desired.toLowerCase()
+      );
+
+  if (match) {
+    select.value = match.value;
+  } else if (select.options.length) {
+    select.selectedIndex = 0;
+  }
+}
+
+function phaseIL21SelectedClass() {
+  const select =
+    phaseIL21SuggestionClassSelect();
+
+  return String(
+    select?.value
+    || phaseIL21TargetClass()
+  ).trim();
+}
+
+function phaseIL21ResetClassForSuggestion() {
+  if (phaseIL21EditSession) return;
+  phaseIL21PopulateSuggestionClasses(true);
+}
+
+function phaseIL21SetEditingUi(editing) {
+  const reject =
+    document.getElementById("phaseIL1RejectButton");
+  const later =
+    document.getElementById("phaseIL2LaterButton");
+  const edit =
+    document.getElementById("phaseIL1EditButton");
+  const accept =
+    document.getElementById("phaseIL1AcceptButton");
+  const overlay =
+    phaseIL22OverlayButton();
+  const counter =
+    document.getElementById("phaseIL1SuggestionCounter");
+  const info =
+    document.getElementById("phaseIL1SuggestionInfo");
+
+  if (reject) reject.disabled = Boolean(editing);
+  if (later) later.disabled = Boolean(editing);
+  if (edit) edit.disabled = Boolean(editing);
+  if (overlay) overlay.disabled = Boolean(editing);
+
+  if (accept) {
+    accept.textContent =
+      editing
+        ? "Accept edit"
+        : "Accept";
+  }
+
+  if (editing && counter) {
+    counter.textContent =
+      "Editing suggestion";
+  }
+
+  if (editing && info) {
+    info.textContent =
+      "Edit the selected geometry, choose its class, then Accept edit.";
+  }
+}
+
+function phaseIL21ApplyClassToFeature(
+  feature,
+  className
+) {
+  const classInfo =
+    (classes || []).find(
+      (item) =>
+        String(item?.name || "").toLowerCase()
+        === String(className || "").toLowerCase()
+    );
+
+  if (!feature || !classInfo) {
+    return false;
+  }
+
+  feature.properties =
+    feature.properties || {};
+
+  feature.properties.classification = {
+    name: classInfo.name,
+    color: hexToRgbArray(classInfo.color),
+  };
+
+  return true;
+}
+
+function phaseIL21MarkDecision(
+  feature,
+  finalClass,
+  edited = false
+) {
+  const il =
+    feature?.properties
+      ?.histoannotator
+      ?.interactiveLearning;
+
+  if (!il) return;
+
+  const target =
+    phaseIL21TargetClass();
+
+  const changedClass =
+    String(finalClass || "").toLowerCase()
+    !== String(target || "").toLowerCase();
+
+  il.source = "IL2";
+  il.originalTargetClass = target;
+
+  if (changedClass) {
+    il.decision = "reclassified";
+    il.assignedClass = finalClass;
+    il.reclassifiedAt =
+      new Date().toISOString();
+
+    if (edited) {
+      il.editedBeforeReclassification = true;
+    }
+  } else {
+    il.decision =
+      edited ? "edited" : "accepted";
+
+    delete il.assignedClass;
+    delete il.reclassifiedAt;
+  }
+
+  if (edited) {
+    il.editAcceptedAt =
+      new Date().toISOString();
+  }
+}
+
+function phaseIL21RemoveSuggestionWithoutAdvance(
+  suggestion
+) {
+  const index =
+    phaseIL1State.suggestions
+      .indexOf(suggestion);
+
+  if (index >= 0) {
+    phaseIL1State.suggestions.splice(
+      index,
+      1
+    );
+  }
+
+  if (
+    phaseIL1State.index
+    >= phaseIL1State.suggestions.length
+  ) {
+    phaseIL1State.index =
+      Math.max(
+        0,
+        phaseIL1State.suggestions.length - 1
+      );
+  }
+}
+
+function phaseIL21StartEdit(suggestion) {
+  if (!suggestion || phaseIL21EditSession) {
+    return;
+  }
+
+  const target =
+    phaseIL21TargetClass();
+
+  const feature =
+    phaseIL1AcceptedFeature(
+      suggestion,
+      target
+    );
+
+  if (!feature) {
+    setStatus(
+      "Target class no longer exists",
+      "error"
+    );
+    return;
+  }
+
+  phaseIL21MarkDecision(
+    feature,
+    target,
+    true
+  );
+
+  pushUndo();
+
+  featureCollection.features.push(
+    feature
+  );
+
+  phaseIL2StoreEditOrigin(
+    feature,
+    suggestion
+  );
+
+  phaseIL21EditSession = {
+    featureId: String(feature.id),
+    suggestionId: String(suggestion.id || ""),
+    targetClass: target,
+  };
+
+  phaseIL21RemoveSuggestionWithoutAdvance(
+    suggestion
+  );
+
+  phaseIL1State.applyingSuggestion = true;
+
+  setSingleSelection(
+    String(feature.id),
+    false
+  );
+
+  markChanged();
+
+  phaseIL1State.applyingSuggestion = false;
+
+  phaseIL21PopulateSuggestionClasses(
+    true
+  );
+
+  phaseIL21SetEditingUi(true);
+
+  setMode("freehand");
+
+  setSingleSelection(
+    String(feature.id),
+    false
+  );
+
+  drawAnnotations();
+
+  setStatus(
+    "Edit suggestion, choose class if needed, then Accept edit",
+    "local"
+  );
+}
+
+function phaseIL21FinishEdit() {
+  if (!phaseIL21EditSession) {
+    return false;
+  }
+
+  const feature =
+    (featureCollection.features || [])
+      .find(
+        (item) =>
+          String(item?.id || "")
+          === phaseIL21EditSession.featureId
+      );
+
+  if (!feature) {
+    phaseIL21EditSession = null;
+    phaseIL21SetEditingUi(false);
+
+    setStatus(
+      "Edited suggestion could not be found",
+      "error"
+    );
+    return true;
+  }
+
+  const finalClass =
+    phaseIL21SelectedClass();
+
+  if (!finalClass) {
+    setStatus(
+      "Choose a class before accepting the edit",
+      "error"
+    );
+    return true;
+  }
+
+  phaseIL1State.applyingSuggestion = true;
+
+  phaseIL21ApplyClassToFeature(
+    feature,
+    finalClass
+  );
+
+  phaseIL21MarkDecision(
+    feature,
+    finalClass,
+    true
+  );
+
+  markChanged();
+
+  phaseIL1State.applyingSuggestion = false;
+  phaseIL21EditSession = null;
+
+  phaseIL21SetEditingUi(false);
+  clearSelectedFeatures(false);
+
+  phaseIL21PopulateSuggestionClasses(
+    true
+  );
+
+  phaseIL1RenderSuggestionState();
+
+  setStatus(
+    `${finalClass} edit accepted as Draft`,
+    "saved"
+  );
+
+  return true;
+}
+
+
+// ========================================================================
+// Phase IL2.2 - highlighted review overlay and Freehand edit
+// ========================================================================
+
+let phaseIL22SuggestionOverlayVisible = true;
+
+function phaseIL22OverlayButton() {
+  return document.getElementById(
+    "phaseIL22OverlayButton"
+  );
+}
+
+function phaseIL22UpdateOverlayButton() {
+  const button = phaseIL22OverlayButton();
+  if (!button) return;
+
+  button.textContent =
+    phaseIL22SuggestionOverlayVisible
+      ? "Hide"
+      : "Show";
+
+  button.title =
+    phaseIL22SuggestionOverlayVisible
+      ? "Hide current suggestion"
+      : "Show current suggestion";
+
+  button.setAttribute(
+    "aria-pressed",
+    String(phaseIL22SuggestionOverlayVisible)
+  );
+}
+
+function phaseIL22ResetOverlayForSuggestion() {
+  if (phaseIL21EditSession) return;
+
+  phaseIL22SuggestionOverlayVisible = true;
+  phaseIL22UpdateOverlayButton();
+}
+
+function phaseIL22ToggleSuggestionOverlay() {
+  if (phaseIL21EditSession) return;
+
+  phaseIL22SuggestionOverlayVisible =
+    !phaseIL22SuggestionOverlayVisible;
+
+  phaseIL22UpdateOverlayButton();
+  drawAnnotations();
+}
+
+function phaseIL22AddRingToPath(ring) {
+  if (
+    !Array.isArray(ring)
+    || ring.length < 3
+  ) {
+    return false;
+  }
+
+  let started = false;
+
+  for (const point of ring) {
+    const screen =
+      screenPointFromImage(point);
+
+    if (!screen) continue;
+
+    if (!started) {
+      ctx.moveTo(
+        screen.x,
+        screen.y
+      );
+      started = true;
+    } else {
+      ctx.lineTo(
+        screen.x,
+        screen.y
+      );
+    }
+  }
+
+  if (started) {
+    ctx.closePath();
+  }
+
+  return started;
+}
+
+function phaseIL22FillPolygon(
+  polygon,
+  color
+) {
+  if (!Array.isArray(polygon)) return;
+
+  ctx.save();
+  ctx.beginPath();
+
+  let hasPath = false;
+
+  for (const ring of polygon) {
+    hasPath =
+      phaseIL22AddRingToPath(ring)
+      || hasPath;
+  }
+
+  if (hasPath) {
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.28;
+    ctx.fill("evenodd");
+  }
+
+  ctx.restore();
+}
+
+function phaseIL22FillGeometry(
+  geometry,
+  color = "#fff200"
+) {
+  if (!geometry) return;
+
+  if (geometry.type === "Polygon") {
+    phaseIL22FillPolygon(
+      geometry.coordinates || [],
+      color
+    );
+    return;
+  }
+
+  if (geometry.type === "MultiPolygon") {
+    for (
+      const polygon
+      of geometry.coordinates || []
+    ) {
+      phaseIL22FillPolygon(
+        polygon,
+        color
+      );
+    }
+  }
+}
+
+
+// ========================================================================
+// Phase IL2.3 - two-row suggestion review layout
+// ========================================================================
+
+function phaseIL23ArrangeSuggestionActions() {
+  const actionRow =
+    document.querySelector(
+      "#phaseIL1SuggestionPanel .phase-il1-actions"
+    );
+
+  if (!actionRow) return;
+
+  let upper =
+    document.getElementById(
+      "phaseIL23UpperActions"
+    );
+
+  let lower =
+    document.getElementById(
+      "phaseIL23LowerActions"
+    );
+
+  if (!upper) {
+    upper =
+      document.createElement("div");
+
+    upper.id =
+      "phaseIL23UpperActions";
+
+    upper.className =
+      "phase-il23-upper-actions";
+  }
+
+  if (!lower) {
+    lower =
+      document.createElement("div");
+
+    lower.id =
+      "phaseIL23LowerActions";
+
+    lower.className =
+      "phase-il23-lower-actions";
+  }
+
+  if (upper.parentElement !== actionRow) {
+    actionRow.append(upper);
+  }
+
+  if (lower.parentElement !== actionRow) {
+    actionRow.append(lower);
+  }
+
+  const reject =
+    document.getElementById(
+      "phaseIL1RejectButton"
+    );
+
+  const later =
+    document.getElementById(
+      "phaseIL2LaterButton"
+    );
+
+  const edit =
+    document.getElementById(
+      "phaseIL1EditButton"
+    );
+
+  const classSelect =
+    phaseIL21SuggestionClassSelect();
+
+  const overlay =
+    phaseIL22OverlayButton();
+
+  const accept =
+    document.getElementById(
+      "phaseIL1AcceptButton"
+    );
+
+  for (
+    const control
+    of [
+      reject,
+      later,
+      edit,
+      classSelect,
+    ]
+  ) {
+    if (control) {
+      upper.append(control);
+    }
+  }
+
+  if (overlay) {
+    lower.append(overlay);
+  }
+
+  if (accept) {
+    lower.append(accept);
+  }
+}
+
+function phaseIL2EnsureUi() {
+  const actionRow =
+    document.querySelector(
+      "#phaseIL1SuggestionPanel .phase-il1-actions"
+    );
+
+  if (!actionRow) return;
+
+  let overlayButton =
+    phaseIL22OverlayButton();
+
+  if (!overlayButton) {
+    overlayButton =
+      document.createElement("button");
+
+    overlayButton.id =
+      "phaseIL22OverlayButton";
+    overlayButton.type =
+      "button";
+    overlayButton.className =
+      "phase-il22-overlay-button";
+
+    actionRow.insertBefore(
+      overlayButton,
+      actionRow.firstChild
+    );
+
+    overlayButton.addEventListener(
+      "click",
+      phaseIL22ToggleSuggestionOverlay
+    );
+  }
+
+  phaseIL22UpdateOverlayButton();
+
+
+  document.getElementById(
+    "phaseIL2ClassButton"
+  )?.remove();
+
+  document.getElementById(
+    "phaseIL2AssignRow"
+  )?.remove();
+
+  let later =
+    document.getElementById(
+      "phaseIL2LaterButton"
+    );
+
+  if (!later) {
+    later =
+      document.createElement("button");
+
+    later.id = "phaseIL2LaterButton";
+    later.type = "button";
+    later.textContent = "Later";
+    later.title = "Review later";
+
+    const edit =
+      document.getElementById(
+        "phaseIL1EditButton"
+      );
+
+    if (edit) {
+      actionRow.insertBefore(
+        later,
+        edit
+      );
+    } else {
+      actionRow.append(later);
+    }
+
+    later.addEventListener(
+      "click",
+      phaseIL2ReviewLater
+    );
+  }
+
+  let select =
+    phaseIL21SuggestionClassSelect();
+
+  if (!select) {
+    select =
+      document.createElement("select");
+
+    select.id =
+      "phaseIL21SuggestionClassSelect";
+
+    select.className =
+      "phase-il21-class-select";
+
+    select.title =
+      "Class assigned when Accept is pressed";
+
+    select.setAttribute(
+      "aria-label",
+      "Suggestion class"
+    );
+
+    const accept =
+      document.getElementById(
+        "phaseIL1AcceptButton"
+      );
+
+    if (accept) {
+      actionRow.insertBefore(
+        select,
+        accept
+      );
+    } else {
+      actionRow.append(select);
+    }
+  }
+
+  phaseIL21PopulateSuggestionClasses(
+    true
+  );
+
+  phaseIL21SetEditingUi(false);
+
+  phaseIL23ArrangeSuggestionActions();
+}
+
+
+
+function phaseIL2Initialize() {
+  phaseIL2EnsureUi();
+}
+
+
 function phaseIL1Initialize() {
   phaseIL1EnsureUi();
 
@@ -18613,6 +19943,7 @@ function phaseIL1Initialize() {
     phaseGInitialize();
     phaseG2Initialize();
     phaseIL1Initialize();
+    phaseIL2Initialize();
     phaseIL11Initialize();
     phaseIL12Initialize();
     setClassManagerOpen(false);

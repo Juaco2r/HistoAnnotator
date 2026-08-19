@@ -1089,7 +1089,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL1.3"}
+    return {"status": "ok", "version": "1.4.0-dev-IL2.4"}
 
 
 @app.get("/health")
@@ -4735,7 +4735,7 @@ def _il1_mask_to_geometry(
                 )
             )
 
-        if len(rectangles) > 30000:
+        if len(rectangles) > 60000:
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -4781,6 +4781,63 @@ def _il1_polygon_parts(geometry: Any) -> list[Polygon]:
     return []
 
 
+
+# ============================================================================
+# Phase IL2 - feedback learning and suggestion decisions
+# ============================================================================
+
+
+def _il2_feedback_items(
+    payload: dict[str, Any],
+    key: str,
+) -> list[dict[str, Any]]:
+    feedback = payload.get("feedback")
+    if not isinstance(feedback, dict):
+        return []
+
+    items = feedback.get(key, [])
+    if not isinstance(items, list):
+        return []
+
+    return [
+        item
+        for item in items
+        if isinstance(item, dict)
+    ]
+
+
+def _il2_feedback_mask(
+    items: list[dict[str, Any]],
+    geometry_key: str,
+    width: int,
+    height: int,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    result = np.zeros(
+        (height, width),
+        dtype=bool,
+    )
+
+    for item in items:
+        geometry_payload = item.get(
+            geometry_key
+        )
+        if not geometry_payload:
+            continue
+
+        result |= _il1_geometry_mask(
+            geometry_payload,
+            width,
+            height,
+            scale_x,
+            scale_y,
+        )
+
+    return result
+
+
+# Phase IL2.1 - class dropdown, inline edit, finer suggestions
 @app.post("/api/interactive-learning/{image_id}/suggest")
 def interactive_learning_suggest(
     image_id: str,
@@ -4820,10 +4877,10 @@ def interactive_learning_suggest(
     features = collection.get("features", [])
 
     max_side = min(
-        1024,
+        1600,
         max(
-            384,
-            int(payload.get("maxSide", 768) or 768),
+            512,
+            int(payload.get("maxSide", 1280) or 1280),
         ),
     )
     sensitivity = min(
@@ -4923,10 +4980,15 @@ def interactive_learning_suggest(
 
     artifact_mask = np.zeros_like(roi_mask)
     positive_mask = np.zeros_like(roi_mask)
+    hard_positive_mask = np.zeros_like(roi_mask)
+    reclassified_negative_mask = np.zeros_like(roi_mask)
     explicit_negative_mask = np.zeros_like(roi_mask)
     all_annotation_mask = np.zeros_like(roi_mask)
 
     positive_annotation_count = 0
+    accepted_feedback_count = 0
+    edited_feedback_count = 0
+    reclassified_feedback_count = 0
     negative_annotation_count = 0
     artifact_count = 0
 
@@ -4973,12 +5035,56 @@ def interactive_learning_suggest(
 
         all_annotation_mask |= feature_mask
 
+        il_metadata = (
+            feature.get("properties", {})
+            .get("histoannotator", {})
+            .get("interactiveLearning", {})
+        )
+
+        if not isinstance(il_metadata, dict):
+            il_metadata = {}
+
+        il_source = str(
+            il_metadata.get("source", "")
+            or ""
+        ).strip().upper()
+
+        il_decision = str(
+            il_metadata.get("decision", "")
+            or ""
+        ).strip().lower()
+
+        original_target = str(
+            il_metadata.get(
+                "originalTargetClass",
+                "",
+            )
+            or ""
+        ).strip().casefold()
+
         if class_cf == target_cf:
             positive_annotation_count += 1
             positive_mask |= feature_mask
+
+            if il_source.startswith("IL"):
+                hard_positive_mask |= feature_mask
+
+                if il_decision == "edited":
+                    edited_feedback_count += 1
+                elif il_decision == "reclassified":
+                    reclassified_feedback_count += 1
+                else:
+                    accepted_feedback_count += 1
         else:
             negative_annotation_count += 1
             explicit_negative_mask |= feature_mask
+
+            if (
+                il_source.startswith("IL")
+                and il_decision == "reclassified"
+                and original_target == target_cf
+            ):
+                reclassified_negative_mask |= feature_mask
 
     valid_mask = (
         roi_mask.copy()
@@ -4988,9 +5094,69 @@ def interactive_learning_suggest(
     valid_mask &= ~artifact_mask
 
     positive_mask &= valid_mask
+    hard_positive_mask &= valid_mask
+    reclassified_negative_mask &= valid_mask
     explicit_negative_mask &= valid_mask
     explicit_negative_mask &= ~positive_mask
     all_annotation_mask &= valid_mask
+
+    rejected_feedback = _il2_feedback_items(
+        payload,
+        "rejected",
+    )
+    edited_feedback = _il2_feedback_items(
+        payload,
+        "edited",
+    )
+
+    rejected_feedback_mask = (
+        _il2_feedback_mask(
+            rejected_feedback,
+            "geometry",
+            thumb_width,
+            thumb_height,
+            scale_x,
+            scale_y,
+        )
+        & valid_mask
+    )
+
+    edited_original_mask = (
+        _il2_feedback_mask(
+            edited_feedback,
+            "originalGeometry",
+            thumb_width,
+            thumb_height,
+            scale_x,
+            scale_y,
+        )
+        & valid_mask
+    )
+
+    edited_corrected_mask = (
+        _il2_feedback_mask(
+            edited_feedback,
+            "correctedGeometry",
+            thumb_width,
+            thumb_height,
+            scale_x,
+            scale_y,
+        )
+        & valid_mask
+    )
+
+    edited_removed_mask = (
+        edited_original_mask
+        & ~edited_corrected_mask
+    )
+
+    hard_negative_mask = (
+        rejected_feedback_mask
+        | edited_removed_mask
+        | reclassified_negative_mask
+    )
+
+    hard_negative_mask &= ~positive_mask
 
     positive_pixels = int(
         np.count_nonzero(positive_mask)
@@ -5075,6 +5241,36 @@ def interactive_learning_suggest(
         40000,
         rng,
     )
+
+    positive_feedback_samples = (
+        _il1_sample_features(
+            feature_cube,
+            hard_positive_mask,
+            12000,
+            rng,
+        )
+    )
+
+    negative_feedback_samples = (
+        _il1_sample_features(
+            feature_cube,
+            hard_negative_mask,
+            12000,
+            rng,
+        )
+    )
+
+    if positive_feedback_samples.shape[0]:
+        positive_samples = np.vstack([
+            positive_samples,
+            positive_feedback_samples,
+        ])
+
+    if negative_feedback_samples.shape[0]:
+        negative_samples = np.vstack([
+            negative_samples,
+            negative_feedback_samples,
+        ])
 
     combined = np.vstack([
         positive_samples,
@@ -5216,6 +5412,25 @@ def interactive_learning_suggest(
             int(positive_samples.shape[0]),
         "negativeTrainingPixels":
             int(negative_samples.shape[0]),
+        "positiveFeedbackPixels":
+            int(positive_feedback_samples.shape[0]),
+        "negativeFeedbackPixels":
+            int(negative_feedback_samples.shape[0]),
+        "acceptedFeedbackAnnotations":
+            accepted_feedback_count,
+        "editedFeedbackAnnotations":
+            edited_feedback_count,
+        "reclassifiedFeedbackAnnotations":
+            reclassified_feedback_count,
+        "rejectedFeedbackRegions":
+            len(rejected_feedback),
+        "editedFeedbackRegions":
+            len(edited_feedback),
+        "feedbackUsed":
+            bool(
+                positive_feedback_samples.shape[0]
+                or negative_feedback_samples.shape[0]
+            ),
         "negativeSource": negative_source,
         "thumbnailWidth": thumb_width,
         "thumbnailHeight": thumb_height,
@@ -5278,7 +5493,7 @@ def interactive_learning_suggest(
     simplify_tolerance = max(
         scale_x,
         scale_y,
-    ) * 0.75
+    ) * 0.40
 
     candidates: list[dict[str, Any]] = []
 
