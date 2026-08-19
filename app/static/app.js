@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL4";
+  const VERSION = "1.4.0-dev-IL5.1";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -17330,8 +17330,9 @@ async function phaseIL1Run() {
               ),
             maxSuggestions:
               40,
+            // IL5.1: higher-resolution inference for finer borders.
             maxSide:
-              1280,
+              1600,
           }),
           timeoutMs:
             60000,

@@ -21,6 +21,7 @@ from typing import Any, Iterator
 import qrcode
 import openslide
 import numpy as np
+import cv2
 from sklearn.ensemble import ExtraTreesClassifier
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1090,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL4"}
+    return {"status": "ok", "version": "1.4.0-dev-IL5.1"}
 
 
 @app.get("/health")
@@ -4710,46 +4711,140 @@ def _il1_mask_to_geometry(
     scale_x: float,
     scale_y: float,
 ) -> Any:
-    rectangles: list[Any] = []
-    height, _width = mask.shape
+    """
+    IL5.1: convert the thumbnail mask directly to vector contours instead
+    of rebuilding it from rectangular row-runs.
+    """
+    binary = (
+        np.asarray(mask, dtype=np.uint8) > 0
+    ).astype(np.uint8) * 255
 
-    for y in range(height):
-        row = mask[y]
-        padded = np.pad(
-            row.astype(np.int8),
-            (1, 1),
-        )
-        changes = np.diff(padded)
-        starts = np.flatnonzero(changes == 1)
-        ends = np.flatnonzero(changes == -1)
-
-        for start, end in zip(starts, ends):
-            if end <= start:
-                continue
-
-            rectangles.append(
-                box(
-                    float(start) * scale_x,
-                    float(y) * scale_y,
-                    float(end) * scale_x,
-                    float(y + 1) * scale_y,
-                )
-            )
-
-        if len(rectangles) > 60000:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Suggestions are too fragmented at this "
-                    "sensitivity. Increase smoothing or lower "
-                    "sensitivity."
-                ),
-            )
-
-    if not rectangles:
+    if not np.any(binary):
         return GeometryCollection()
 
-    geometry = unary_union(rectangles)
+    contours, hierarchy = cv2.findContours(
+        binary,
+        cv2.RETR_CCOMP,
+        cv2.CHAIN_APPROX_NONE,
+    )
+
+    if hierarchy is None or not contours:
+        return GeometryCollection()
+
+    if len(contours) > 20000:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Suggestions are too fragmented at this sensitivity. "
+                "Increase smoothing or lower sensitivity."
+            ),
+        )
+
+    hierarchy = hierarchy[0]
+
+    def refined_ring(
+        contour: np.ndarray,
+    ) -> list[tuple[float, float]]:
+        if contour is None or len(contour) < 3:
+            return []
+
+        perimeter = float(
+            cv2.arcLength(contour, True)
+        )
+
+        # Remove thumbnail-pixel stair steps without morphologically
+        # expanding or eroding the predicted mask.
+        epsilon = float(
+            np.clip(
+                perimeter * 0.0010,
+                0.35,
+                0.85,
+            )
+        )
+
+        approximated = cv2.approxPolyDP(
+            contour,
+            epsilon,
+            True,
+        )
+
+        points = (
+            approximated.reshape(-1, 2)
+            .astype(np.float64, copy=False)
+        )
+
+        if points.shape[0] < 3:
+            points = (
+                contour.reshape(-1, 2)
+                .astype(np.float64, copy=False)
+            )
+
+        if points.shape[0] < 3:
+            return []
+
+        # Conservative coordinate-domain refinement only.
+        if points.shape[0] >= 10:
+            smoothed = (
+                np.roll(points, 2, axis=0)
+                + 2.0 * np.roll(points, 1, axis=0)
+                + 3.0 * points
+                + 2.0 * np.roll(points, -1, axis=0)
+                + np.roll(points, -2, axis=0)
+            ) / 9.0
+
+            points = (
+                0.70 * points
+                + 0.30 * smoothed
+            )
+
+        return [
+            (
+                float(x) * scale_x,
+                float(y) * scale_y,
+            )
+            for x, y in points
+        ]
+
+    polygons: list[Any] = []
+
+    for index, contour in enumerate(contours):
+        if int(hierarchy[index][3]) != -1:
+            continue
+
+        exterior = refined_ring(contour)
+        if len(exterior) < 3:
+            continue
+
+        holes: list[list[tuple[float, float]]] = []
+        child = int(hierarchy[index][2])
+
+        while child != -1:
+            hole = refined_ring(contours[child])
+            if len(hole) >= 3:
+                holes.append(hole)
+            child = int(hierarchy[child][0])
+
+        try:
+            polygon = Polygon(exterior, holes)
+        except Exception:
+            continue
+
+        if polygon.is_empty:
+            continue
+
+        try:
+            polygon = make_valid(polygon)
+        except Exception:
+            pass
+
+        for part in _il1_polygon_parts(polygon):
+            if not part.is_empty and part.area > 0:
+                polygons.append(part)
+
+    if not polygons:
+        return GeometryCollection()
+
+    geometry = unary_union(polygons)
 
     try:
         geometry = make_valid(geometry)
@@ -5518,10 +5613,11 @@ def interactive_learning_suggest(
         * (min_area_percent / 100.0),
     )
 
+    # IL5.1: preserve more of the higher-resolution refined contour.
     simplify_tolerance = max(
         scale_x,
         scale_y,
-    ) * 0.40
+    ) * 0.25
 
     candidates: list[dict[str, Any]] = []
 
@@ -5596,13 +5692,31 @@ def interactive_learning_suggest(
                 )
             )
 
+            local_features = np.mean(
+                feature_cube[
+                    y0:y1,
+                    x0:x1,
+                ],
+                axis=(0, 1),
+            ).astype(
+                np.float32,
+                copy=False,
+            )
+
             candidates.append({
                 "geometry": mapping(part),
                 "areaPx2": float(part.area),
                 "confidence":
                     float(confidence),
+
+                # Phase IL5 transient sampling metadata.
+                "_thumbX": float(tx),
+                "_thumbY": float(ty),
+                "_appearance": local_features,
+                "_order": len(candidates),
             })
 
+    # Phase IL5 - spatial and visual diversity sampling
     max_candidate_area = max(
         1.0,
         max(
@@ -5621,7 +5735,7 @@ def interactive_learning_suggest(
 
     def candidate_priority(
         item: dict[str, Any],
-    ) -> tuple[float, float]:
+    ) -> float:
         confidence_value = float(
             np.clip(
                 float(
@@ -5664,31 +5778,212 @@ def interactive_learning_suggest(
             )
         )
 
-        priority = (
+        return float(
             0.80 * uncertainty
             + 0.20 * area_score
         )
 
-        return (
-            float(priority),
-            area_value,
+    if candidates:
+        appearance_matrix = np.vstack([
+            np.asarray(
+                item["_appearance"],
+                dtype=np.float32,
+            )
+            for item in candidates
+        ])
+
+        appearance_center = np.mean(
+            appearance_matrix,
+            axis=0,
         )
 
-    candidates.sort(
-        key=candidate_priority,
-        reverse=True,
+        appearance_spread = np.std(
+            appearance_matrix,
+            axis=0,
+        )
+
+        appearance_spread = np.where(
+            appearance_spread < 1e-4,
+            1.0,
+            appearance_spread,
+        )
+
+        appearance_z = (
+            appearance_matrix
+            - appearance_center
+        ) / appearance_spread
+
+        for item, vector in zip(
+            candidates,
+            appearance_z,
+        ):
+            item["_appearanceZ"] = vector
+
+    thumb_diagonal = max(
+        1.0,
+        float(
+            np.hypot(
+                thumb_width,
+                thumb_height,
+            )
+        ),
     )
+
+    spatial_scale = max(
+        1.0,
+        thumb_diagonal * 0.25,
+    )
+
+    visual_dimension = max(
+        1.0,
+        float(
+            feature_cube.shape[2]
+        ),
+    )
+
+    def candidate_diversity(
+        candidate: dict[str, Any],
+        selected: list[dict[str, Any]],
+    ) -> float:
+        if not selected:
+            return 1.0
+
+        candidate_x = float(candidate.get("_thumbX", 0.0))
+        candidate_y = float(candidate.get("_thumbY", 0.0))
+
+        spatial_distances = []
+        for other in selected:
+            distance = float(
+                np.hypot(
+                    candidate_x - float(other.get("_thumbX", 0.0)),
+                    candidate_y - float(other.get("_thumbY", 0.0)),
+                )
+            )
+            spatial_distances.append(
+                min(
+                    1.0,
+                    distance / spatial_scale,
+                )
+            )
+
+        spatial_diversity = min(spatial_distances)
+
+        candidate_vector = np.asarray(
+            candidate.get(
+                "_appearanceZ",
+                np.zeros(
+                    feature_cube.shape[2],
+                    dtype=np.float32,
+                ),
+            ),
+            dtype=np.float32,
+        )
+
+        visual_distances = []
+        for other in selected:
+            other_vector = np.asarray(
+                other.get(
+                    "_appearanceZ",
+                    np.zeros_like(candidate_vector),
+                ),
+                dtype=np.float32,
+            )
+
+            distance = float(
+                np.linalg.norm(
+                    candidate_vector - other_vector
+                )
+                / np.sqrt(visual_dimension)
+            )
+
+            visual_distances.append(
+                float(
+                    1.0
+                    - np.exp(
+                        -max(
+                            0.0,
+                            distance,
+                        )
+                    )
+                )
+            )
+
+        visual_diversity = min(visual_distances)
+
+        return float(
+            0.55 * spatial_diversity
+            + 0.45 * visual_diversity
+        )
+
+    selected_candidates: list[dict[str, Any]] = []
+    remaining_candidates = list(candidates)
+
+    while (
+        remaining_candidates
+        and len(selected_candidates) < max_suggestions
+    ):
+        best_index = 0
+        best_key = None
+
+        for index, item in enumerate(remaining_candidates):
+            base_priority = candidate_priority(item)
+            diversity = candidate_diversity(
+                item,
+                selected_candidates,
+            )
+
+            selection_score = float(
+                0.70 * base_priority
+                + 0.30 * diversity
+            )
+
+            key = (
+                selection_score,
+                base_priority,
+                float(item.get("areaPx2", 0.0)),
+                -int(item.get("_order", 0)),
+            )
+
+            if best_key is None or key > best_key:
+                best_key = key
+                best_index = index
+
+        selected_candidates.append(
+            remaining_candidates.pop(best_index)
+        )
 
     suggestions = []
 
     for index, item in enumerate(
-        candidates[:max_suggestions],
+        selected_candidates,
         start=1,
     ):
         suggestions.append({
             "id": f"il1-{index}",
-            **item,
+            "geometry": item["geometry"],
+            "areaPx2": float(item["areaPx2"]),
+            "confidence": float(item["confidence"]),
         })
+
+    model_payload[
+        "selectionStrategy"
+    ] = "active-diversity-v1"
+
+    model_payload[
+        "selectionBaseWeight"
+    ] = 0.70
+
+    model_payload[
+        "selectionDiversityWeight"
+    ] = 0.30
+
+    model_payload[
+        "spatialDiversityWeight"
+    ] = 0.55
+
+    model_payload[
+        "visualDiversityWeight"
+    ] = 0.45
 
     model_payload["threshold"] = float(
         probability_threshold
