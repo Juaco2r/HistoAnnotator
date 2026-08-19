@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.3.0-alpha.3";
+  const VERSION = "1.4.0-dev-E1";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -13526,6 +13526,413 @@
     );
   }
 
+  let phaseELastStatistics = null;
+
+  function phaseEPhysicalPixelAreaMm2() {
+    const manual =
+      readManualCalibration();
+
+    const manualMpp =
+      Number(manual?.mpp);
+
+    if (
+      Number.isFinite(manualMpp)
+      && manualMpp > 0
+    ) {
+      return {
+        mm2PerPx2:
+          (
+            manualMpp
+            * manualMpp
+          )
+          / 1_000_000,
+        label:
+          `${manualMpp.toFixed(4)} µm/px · Manual override`,
+      };
+    }
+
+    const x =
+      Number(currentInfo?.mppX);
+
+    const y =
+      Number(currentInfo?.mppY);
+
+    const validX =
+      Number.isFinite(x)
+      && x > 0;
+
+    const validY =
+      Number.isFinite(y)
+      && y > 0;
+
+    if (validX && validY) {
+      return {
+        mm2PerPx2:
+          (x * y)
+          / 1_000_000,
+        label:
+          (
+            Math.abs(x - y) < 1e-9
+              ? `${x.toFixed(4)} µm/px`
+              : `${x.toFixed(4)} × ${y.toFixed(4)} µm/px`
+          )
+          + (
+            currentInfo?.calibrationSource
+              ? ` · ${currentInfo.calibrationSource}`
+              : ""
+          ),
+      };
+    }
+
+    const fallback =
+      Number(
+        effectiveCalibration()?.mpp
+      );
+
+    if (
+      Number.isFinite(fallback)
+      && fallback > 0
+    ) {
+      return {
+        mm2PerPx2:
+          (
+            fallback
+            * fallback
+          )
+          / 1_000_000,
+        label:
+          `${fallback.toFixed(4)} µm/px`,
+      };
+    }
+
+    return {
+      mm2PerPx2: null,
+      label: null,
+    };
+  }
+
+  function phaseEAreaMm2(
+    areaPx2,
+    calibration =
+      phaseEPhysicalPixelAreaMm2()
+  ) {
+    const factor =
+      Number(
+        calibration?.mm2PerPx2
+      );
+
+    if (
+      !Number.isFinite(factor)
+      || factor <= 0
+    ) {
+      return null;
+    }
+
+    return (
+      Number(areaPx2 || 0)
+      * factor
+    );
+  }
+
+  function phaseEFormatMm2(value) {
+    if (
+      value === null
+      || value === undefined
+      || !Number.isFinite(
+        Number(value)
+      )
+    ) {
+      return "—";
+    }
+
+    const number =
+      Number(value);
+
+    const digits =
+      number >= 100
+        ? 2
+        : (
+          number >= 1
+            ? 3
+            : 4
+        );
+
+    return (
+      formatStatNumber(
+        number,
+        digits
+      )
+      + " mm²"
+    );
+  }
+
+  function phaseECsvCell(value) {
+    const text =
+      String(
+        value ?? ""
+      );
+
+    if (
+      /[",\r\n]/.test(text)
+    ) {
+      return (
+        '"'
+        + text.replaceAll(
+          '"',
+          '""'
+        )
+        + '"'
+      );
+    }
+
+    return text;
+  }
+
+  function phaseEDownloadText(
+    filename,
+    text,
+    mimeType =
+      "text/csv;charset=utf-8"
+  ) {
+    const blob =
+      new Blob(
+        [text],
+        {
+          type: mimeType,
+        }
+      );
+
+    const url =
+      URL.createObjectURL(
+        blob
+      );
+
+    const link =
+      document.createElement("a");
+
+    link.href = url;
+    link.download = filename;
+    link.style.display = "none";
+
+    document.body.append(
+      link
+    );
+
+    link.click();
+    link.remove();
+
+    setTimeout(
+      () => URL.revokeObjectURL(url),
+      1000
+    );
+  }
+
+  function phaseEExportStatisticsCsv() {
+    const snapshot =
+      phaseELastStatistics;
+
+    if (!snapshot) {
+      setStatus(
+        "Open Statistics before exporting CSV",
+        "error"
+      );
+      return;
+    }
+
+    const {
+      stats,
+      imageName,
+      annotationFile,
+      calibration,
+      coverageAreaPx2,
+      coveragePercent,
+      unannotatedAreaPx2,
+      unannotatedPercent,
+    } = snapshot;
+
+    const analysis =
+      stats.analysis || {};
+
+    const validArea =
+      Number(
+        analysis.validAreaPx2
+        || 0
+      );
+
+    const source =
+      analysis.source === "tissue-roi"
+        ? "Tissue ROI"
+        : "Full image";
+
+    const rows = [[
+      "Image",
+      "AnnotationFile",
+      "AnalysisRegion",
+      "Calibration",
+      "RecordType",
+      "Class",
+      "Count",
+      "Area_px2",
+      "Area_mm2",
+      "PercentValidTissue",
+    ]];
+
+    const addRow = ({
+      recordType,
+      className = "",
+      count = "",
+      areaPx2 = "",
+      percent = "",
+    }) => {
+      const numericArea =
+        areaPx2 === ""
+          ? null
+          : Number(areaPx2 || 0);
+
+      const mm2 =
+        numericArea === null
+          ? ""
+          : phaseEAreaMm2(
+              numericArea,
+              calibration
+            );
+
+      rows.push([
+        imageName,
+        annotationFile,
+        source,
+        calibration?.label || "",
+        recordType,
+        className,
+        count,
+        numericArea === null
+          ? ""
+          : numericArea,
+        mm2 === null
+          ? ""
+          : mm2,
+        percent,
+      ]);
+    };
+
+    addRow({
+      recordType:
+        "valid_tissue",
+      areaPx2:
+        validArea,
+      percent:
+        100,
+    });
+
+    addRow({
+      recordType:
+        "artifact_excluded",
+      count:
+        Number(
+          analysis.artifactCount
+          || 0
+        ),
+      areaPx2:
+        Number(
+          analysis.artifactAreaPx2
+          || 0
+        ),
+      percent:
+        Number(
+          analysis.artifactPercentPostBorder
+          || 0
+        ),
+    });
+
+    addRow({
+      recordType:
+        "annotated_coverage",
+      areaPx2:
+        coverageAreaPx2,
+      percent:
+        coveragePercent,
+    });
+
+    addRow({
+      recordType:
+        "unannotated_valid_tissue",
+      areaPx2:
+        unannotatedAreaPx2,
+      percent:
+        unannotatedPercent,
+    });
+
+    for (
+      const row
+      of stats.rows || []
+    ) {
+      addRow({
+        recordType:
+          "class",
+        className:
+          row.className || "",
+        count:
+          Number(
+            row.count || 0
+          ),
+        areaPx2:
+          Number(
+            row.areaPx2 || 0
+          ),
+        percent:
+          Number(
+            row.percentValid || 0
+          ),
+      });
+    }
+
+    const csv =
+      rows
+        .map(
+          (row) =>
+            row
+              .map(
+                phaseECsvCell
+              )
+              .join(",")
+        )
+        .join("\r\n")
+      + "\r\n";
+
+    const base =
+      String(
+        imageName || "image"
+      )
+        .replace(
+          /\.[^.]+$/,
+          ""
+        )
+        .replace(
+          /[^A-Za-z0-9._-]+/g,
+          "_"
+        );
+
+    const filePart =
+      String(
+        annotationFile
+        || "Default"
+      )
+        .replace(
+          /[^A-Za-z0-9._-]+/g,
+          "_"
+        );
+
+    phaseEDownloadText(
+      `${base}_${filePart}_statistics.csv`,
+      csv
+    );
+
+    setStatus(
+      "Statistics CSV exported",
+      "saved"
+    );
+  }
+
   async function showAnnotationStatistics() {
     if (
       !currentImage
@@ -13538,7 +13945,7 @@
     toggleFileMenu(false);
 
     els.annotationStatsContent.innerHTML =
-      '<p class="modal-note">Calculating valid tissue and Artifact exclusion…</p>';
+      '<p class="modal-note">Calculating valid tissue statistics…</p>';
 
     els.annotationStatsModal.hidden =
       false;
@@ -13550,7 +13957,8 @@
           {
             method: "POST",
             headers: {
-              "Content-Type": "application/json",
+              "Content-Type":
+                "application/json",
             },
             body:
               JSON.stringify({
@@ -13566,15 +13974,23 @@
                     || 0
                   ),
               }),
-            timeoutMs: 30000,
+            timeoutMs:
+              30000,
           }
         );
 
-      const stats = await response.json();
-      const analysis = stats.analysis || {};
+      const stats =
+        await response.json();
+
+      const analysis =
+        stats.analysis || {};
+
+      const calibration =
+        phaseEPhysicalPixelAreaMm2();
 
       const sourceIsRoi =
-        analysis.source === "tissue-roi";
+        analysis.source
+        === "tissue-roi";
 
       const sourceLabel =
         sourceIsRoi
@@ -13617,6 +14033,57 @@
           || 0
         );
 
+      const coverageArea =
+        Math.min(
+          validArea,
+          Math.max(
+            0,
+            Number(
+              stats.totalUnionAreaPx2
+              || 0
+            )
+          )
+        );
+
+      const coveragePercent =
+        validArea > 0
+          ? (
+            coverageArea
+            / validArea
+          ) * 100
+          : 0;
+
+      const unannotatedArea =
+        Math.max(
+          0,
+          validArea
+          - coverageArea
+        );
+
+      const unannotatedPercent =
+        Math.max(
+          0,
+          100
+          - coveragePercent
+        );
+
+      phaseELastStatistics = {
+        stats:
+          deepClone(stats),
+        imageName:
+          currentImage.name,
+        annotationFile:
+          currentAnnotationFile,
+        calibration:
+          deepClone(calibration),
+        coverageAreaPx2:
+          coverageArea,
+        coveragePercent,
+        unannotatedAreaPx2:
+          unannotatedArea,
+        unannotatedPercent,
+      };
+
       const percentHeader =
         sourceIsRoi
           ? "% valid tissue"
@@ -13624,14 +14091,23 @@
 
       const rowsHtml =
         (stats.rows || [])
-          .map((row) => `
-            <tr>
-              <td>${escapeHtml(row.className)}</td>
-              <td>${formatStatNumber(row.count)}</td>
-              <td>${formatStatNumber(Number(row.areaPx2 || 0))}</td>
-              <td>${formatStatNumber(Number(row.percentValid || 0), 2)}%</td>
-            </tr>
-          `)
+          .map((row) => {
+            const area =
+              Number(
+                row.areaPx2
+                || 0
+              );
+
+            return `
+              <tr>
+                <td>${escapeHtml(row.className)}</td>
+                <td>${formatStatNumber(row.count)}</td>
+                <td>${formatStatNumber(area)}</td>
+                <td>${phaseEFormatMm2(phaseEAreaMm2(area, calibration))}</td>
+                <td>${formatStatNumber(Number(row.percentValid || 0), 2)}%</td>
+              </tr>
+            `;
+          })
           .join("");
 
       const totalArea =
@@ -13675,12 +14151,14 @@
             <span>
               Original Tissue ROI:
               ${formatStatNumber(baseArea)} px²
+              · ${phaseEFormatMm2(phaseEAreaMm2(baseArea, calibration))}
             </span>
           `
           : `
             <span>
               Full image area:
               ${formatStatNumber(baseArea)} px²
+              · ${phaseEFormatMm2(phaseEAreaMm2(baseArea, calibration))}
             </span>
           `;
 
@@ -13704,6 +14182,7 @@
             <span>
               Tissue after border:
               ${formatStatNumber(postBorderArea)} px²
+              · ${phaseEFormatMm2(phaseEAreaMm2(postBorderArea, calibration))}
             </span>
           `
           : "";
@@ -13714,6 +14193,7 @@
             <span>
               Artifact excluded:
               ${formatStatNumber(artifactArea)} px²
+              · ${phaseEFormatMm2(phaseEAreaMm2(artifactArea, calibration))}
               · ${formatStatNumber(artifactPercent, 2)}%
               of ${sourceIsRoi ? "post-border tissue" : "image"}
               · ${formatStatNumber(artifactCount)}
@@ -13723,7 +14203,8 @@
           : `
             <span>
               Artifact excluded:
-              0 px² · 0.00%
+              0 px² · ${phaseEFormatMm2(0)}
+              · 0.00%
             </span>
           `;
 
@@ -13732,20 +14213,57 @@
           ? "Valid tissue"
           : "Valid analysis area";
 
+      const calibrationSummary =
+        calibration?.label
+          ? `
+            <span>
+              Physical calibration:
+              ${escapeHtml(calibration.label)}
+            </span>
+          `
+          : `
+            <span>
+              Physical calibration:
+              — set µm/px in Image info to report mm²
+            </span>
+          `;
+
       els.annotationStatsContent.innerHTML = `
         <div class="stats-summary">
           <strong>${escapeHtml(currentImage.name)}</strong>
           <span>
+            Annotation file:
+            ${escapeHtml(currentAnnotationFile)}
+          </span>
+          <span>
             Analysis region:
             ${escapeHtml(sourceLabel)}
           </span>
+
+          ${calibrationSummary}
           ${baseSummary}
           ${borderSummary}
           ${artifactSummary}
+
           <span>
             <strong>${escapeHtml(validLabel)}:</strong>
             ${formatStatNumber(validArea)} px²
+            · ${phaseEFormatMm2(phaseEAreaMm2(validArea, calibration))}
             · 100%
+          </span>
+
+          <span>
+            <strong>Annotated coverage:</strong>
+            ${formatStatNumber(coverageArea)} px²
+            · ${phaseEFormatMm2(phaseEAreaMm2(coverageArea, calibration))}
+            · ${formatStatNumber(coveragePercent, 2)}%
+          </span>
+
+          <span>
+            <strong>Unannotated valid tissue:</strong>
+            ${formatStatNumber(unannotatedArea)} px²
+            · ${phaseEFormatMm2(phaseEAreaMm2(unannotatedArea, calibration))}
+            · ${formatStatNumber(unannotatedPercent, 2)}%
           </span>
         </div>
 
@@ -13756,6 +14274,7 @@
                 <th>Class</th>
                 <th>Annotations</th>
                 <th>Area in valid region (px²)</th>
+                <th>Area (mm²)</th>
                 <th>${escapeHtml(percentHeader)}</th>
               </tr>
             </thead>
@@ -13767,22 +14286,45 @@
                 <th>Union of biological classes</th>
                 <th>${formatStatNumber(stats.totalAnnotations || 0)}</th>
                 <th>${formatStatNumber(totalArea)}</th>
+                <th>${phaseEFormatMm2(phaseEAreaMm2(totalArea, calibration))}</th>
                 <th>${formatStatNumber(totalPercent, 2)}%</th>
               </tr>
             </tfoot>
           </table>
         </div>
 
+        <div class="modal-actions">
+          <button
+            id="phaseEExportStatsCsvButton"
+            type="button"
+          >
+            Export CSV
+          </button>
+        </div>
+
         <p class="stats-note">
-          Artifact is a reviewable annotation class, but it is used as an
-          exclusion mask for these biological-area statistics and therefore
-          is not listed as a biological class row. Same-class overlaps are
-          unioned once. Different biological classes may overlap, so their
-          percentages do not need to sum to 100%.
+          Annotated coverage uses the union of all biological
+          annotations inside Valid Tissue, so overlapping classes are
+          counted once for coverage. Class percentages may still overlap
+          and therefore do not need to sum to 100%.
+          Artifact is reviewable but remains an exclusion mask for these
+          biological-area statistics.
         </p>
       `;
 
+      document
+        .getElementById(
+          "phaseEExportStatsCsvButton"
+        )
+        ?.addEventListener(
+          "click",
+          phaseEExportStatisticsCsv
+        );
+
     } catch (error) {
+      phaseELastStatistics =
+        null;
+
       els.annotationStatsContent.innerHTML =
         `<p class="modal-note error-text">${escapeHtml(error.message || String(error))}</p>`;
     }
