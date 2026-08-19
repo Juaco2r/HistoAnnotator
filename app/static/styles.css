@@ -1879,3 +1879,69 @@ body.phase-d-roi-mode #phaseDRoiModeAction {
   margin: 5px 0;
 }
 
+/* Phase G2 — remembered and recent servers */
+.phase-g2-recents {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.phase-g2-recents-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.phase-g2-recents-head > span:first-child {
+  font-weight: 650;
+}
+
+.phase-g2-remember-note {
+  font-size: 0.75rem;
+  opacity: 0.62;
+  text-align: right;
+}
+
+#phaseG2RecentServerSelect {
+  width: 100%;
+  min-width: 0;
+}
+
+.phase-g2-recent-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.phase-g2-recent-actions button {
+  min-height: 31px;
+  padding: 5px 10px;
+}
+
+.phase-g2-recent-message {
+  min-height: 1.1em;
+  margin: 0;
+  font-size: 0.82rem;
+  opacity: 0.82;
+}
+
+.connection-card {
+  max-height: min(720px, calc(100vh - 28px));
+  overflow-y: auto;
+}
+
+@media (max-width: 700px) {
+  .phase-g2-recents-head {
+    align-items: flex-start;
+  }
+
+  .phase-g2-remember-note {
+    max-width: 130px;
+  }
+}
+

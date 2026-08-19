@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-G1">
+  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-G2">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-G1</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-G2</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -325,6 +325,28 @@
         <input id="connectionServerInput" type="url" inputmode="url" autocomplete="off" placeholder="https://server.example/annotator">
       </label>
       <p class="modal-note">Android only. Include /annotator when your deployment uses that path.</p>
+      <div id="phaseG2RecentServers" class="phase-g2-recents">
+        <div class="phase-g2-recents-head">
+          <span>Recent servers</span>
+          <span class="phase-g2-remember-note">remembered on this device</span>
+        </div>
+
+        <select id="phaseG2RecentServerSelect"
+                aria-label="Recent HistoAnnotator servers">
+          <option value="">No recent servers</option>
+        </select>
+
+        <div class="phase-g2-recent-actions">
+          <button id="phaseG2ConnectRecentButton" type="button">Connect</button>
+          <button id="phaseG2ForgetRecentButton" type="button">Forget</button>
+        </div>
+
+        <p id="phaseG2RecentMessage"
+           class="phase-g2-recent-message"
+           aria-live="polite"></p>
+      </div>
+
+      <!-- Phase G2 — remembered and recent servers -->
       <p id="connectionTestResult" class="connection-test-result">—</p>
       <div class="modal-actions connection-actions">
         <button id="scanConnectionQrButton" type="button">Scan QR</button>
@@ -677,6 +699,6 @@
 
 
 
-  <script src="./static/app.js?v=1.4.0-dev-G1"></script>
+  <script src="./static/app.js?v=1.4.0-dev-G2"></script>
 </body>
 </html>

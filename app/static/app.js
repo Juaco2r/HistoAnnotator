@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-G1";
+  const VERSION = "1.4.0-dev-G2";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -569,6 +569,495 @@
     return normalizeServerBase(candidate);
   }
 
+
+  // ========================================================================
+  // Phase G2 — remembered and recent servers
+  // Successful server connections are stored locally on the Android device.
+  // The current server remains controlled by NATIVE_SERVER_STORAGE_KEY.
+  // ========================================================================
+
+  const PHASE_G2_RECENT_SERVERS_KEY =
+    "histoannotator.recentServers.v1";
+
+  const PHASE_G2_MAX_RECENT_SERVERS = 6;
+
+  function phaseG2NormalizeServer(value) {
+    const candidate =
+      String(value || "")
+        .trim()
+        .replace(/\/+$/, "");
+
+    if (!candidate) return "";
+
+    try {
+      const url =
+        new URL(candidate);
+
+      if (
+        url.protocol !== "http:"
+        && url.protocol !== "https:"
+      ) {
+        return "";
+      }
+
+      return candidate;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function phaseG2RecentServers() {
+    try {
+      const parsed =
+        JSON.parse(
+          localStorage.getItem(
+            PHASE_G2_RECENT_SERVERS_KEY
+          )
+          || "[]"
+        );
+
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+
+      const seen = new Set();
+      const output = [];
+
+      for (const raw of parsed) {
+        const candidate =
+          phaseG2NormalizeServer(raw);
+
+        if (!candidate) continue;
+
+        const key =
+          candidate.toLowerCase();
+
+        if (seen.has(key)) continue;
+
+        seen.add(key);
+        output.push(candidate);
+
+        if (
+          output.length
+          >= PHASE_G2_MAX_RECENT_SERVERS
+        ) {
+          break;
+        }
+      }
+
+      return output;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function phaseG2WriteRecentServers(items) {
+    const normalized = [];
+    const seen = new Set();
+
+    for (const raw of items || []) {
+      const candidate =
+        phaseG2NormalizeServer(raw);
+
+      if (!candidate) continue;
+
+      const key =
+        candidate.toLowerCase();
+
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      normalized.push(candidate);
+
+      if (
+        normalized.length
+        >= PHASE_G2_MAX_RECENT_SERVERS
+      ) {
+        break;
+      }
+    }
+
+    try {
+      localStorage.setItem(
+        PHASE_G2_RECENT_SERVERS_KEY,
+        JSON.stringify(normalized)
+      );
+    } catch (_) {}
+
+    return normalized;
+  }
+
+  function phaseG2RememberServer(value) {
+    const candidate =
+      phaseG2NormalizeServer(value);
+
+    if (!candidate) return;
+
+    phaseG2WriteRecentServers([
+      candidate,
+      ...phaseG2RecentServers(),
+    ]);
+
+    phaseG2RenderRecentServers(
+      candidate
+    );
+  }
+
+  function phaseG2Refs() {
+    return {
+      container:
+        document.getElementById(
+          "phaseG2RecentServers"
+        ),
+      select:
+        document.getElementById(
+          "phaseG2RecentServerSelect"
+        ),
+      connect:
+        document.getElementById(
+          "phaseG2ConnectRecentButton"
+        ),
+      forget:
+        document.getElementById(
+          "phaseG2ForgetRecentButton"
+        ),
+      message:
+        document.getElementById(
+          "phaseG2RecentMessage"
+        ),
+    };
+  }
+
+  function phaseG2CurrentStoredServer() {
+    return phaseG2NormalizeServer(
+      localStorage.getItem(
+        NATIVE_SERVER_STORAGE_KEY
+      )
+      || ""
+    );
+  }
+
+  function phaseG2RenderRecentServers(
+    preferred = ""
+  ) {
+    const refs =
+      phaseG2Refs();
+
+    if (!refs.select) return;
+
+    const recent =
+      phaseG2RecentServers();
+
+    const current =
+      phaseG2CurrentStoredServer();
+
+    const wanted =
+      phaseG2NormalizeServer(
+        preferred
+        || refs.select.value
+        || current
+        || recent[0]
+        || ""
+      );
+
+    refs.select.innerHTML = "";
+
+    if (!recent.length) {
+      const option =
+        document.createElement(
+          "option"
+        );
+
+      option.value = "";
+      option.textContent =
+        "No recent servers";
+
+      refs.select.append(option);
+      refs.select.disabled = true;
+    } else {
+      refs.select.disabled = false;
+
+      for (const server of recent) {
+        const option =
+          document.createElement(
+            "option"
+          );
+
+        option.value = server;
+        option.textContent =
+          server === current
+            ? `${server} · current`
+            : server;
+
+        refs.select.append(option);
+      }
+
+      const matched =
+        recent.find(
+          (server) =>
+            server.toLowerCase()
+            === wanted.toLowerCase()
+        );
+
+      if (matched) {
+        refs.select.value =
+          matched;
+      }
+    }
+
+    const hasSelection =
+      Boolean(
+        refs.select.value
+      );
+
+    if (refs.connect) {
+      refs.connect.disabled =
+        !hasSelection;
+    }
+
+    if (refs.forget) {
+      refs.forget.disabled =
+        !hasSelection;
+    }
+
+    if (refs.message) {
+      refs.message.textContent =
+        recent.length
+          ? `${recent.length} remembered server${recent.length === 1 ? "" : "s"}`
+          : "Successful QR/manual connections will appear here.";
+    }
+  }
+
+  async function phaseG2ProbeServer(value) {
+    const candidate =
+      phaseG2NormalizeServer(value);
+
+    if (!candidate) {
+      throw new Error(
+        "Choose a valid http:// or https:// server"
+      );
+    }
+
+    const response =
+      await apiFetch(
+        `${candidate}/api/images`,
+        {
+          timeoutMs:
+            10000,
+        }
+      );
+
+    const payload =
+      await response.json();
+
+    if (
+      !payload
+      || !Array.isArray(
+        payload.images
+      )
+    ) {
+      throw new Error(
+        "The server did not return a valid HistoAnnotator image catalog"
+      );
+    }
+
+    return {
+      candidate,
+      imageCount:
+        payload.images.length,
+    };
+  }
+
+  async function phaseG2ConnectRecentServer() {
+    if (!IS_NATIVE) return;
+
+    const refs =
+      phaseG2Refs();
+
+    const candidate =
+      phaseG2NormalizeServer(
+        refs.select?.value
+      );
+
+    if (!candidate) return;
+
+    if (els.connectionServerInput) {
+      els.connectionServerInput.value =
+        candidate;
+    }
+
+    if (refs.message) {
+      refs.message.textContent =
+        `Testing ${candidate}…`;
+    }
+
+    if (refs.connect) {
+      refs.connect.disabled =
+        true;
+    }
+
+    try {
+      const result =
+        await phaseG2ProbeServer(
+          candidate
+        );
+
+      setNativeServerBase(
+        result.candidate
+      );
+
+      phaseG2RememberServer(
+        result.candidate
+      );
+
+      renderConnectionSettings();
+
+      if (
+        els.connectionTestResult
+      ) {
+        els.connectionTestResult.textContent =
+          `Connected · ${result.imageCount} image${result.imageCount === 1 ? "" : "s"} available`;
+      }
+
+      await Promise.all([
+        loadClasses(),
+        loadImages(false),
+      ]);
+
+      if (refs.message) {
+        refs.message.textContent =
+          "Connected successfully.";
+      }
+
+      setStatus(
+        `Connected · ${result.candidate}`,
+        "saved"
+      );
+
+    } catch (error) {
+      const message =
+        error?.message
+        || String(error)
+        || "Connection failed";
+
+      if (refs.message) {
+        refs.message.textContent =
+          `Connection failed: ${message}`;
+      }
+
+      if (
+        els.connectionTestResult
+      ) {
+        els.connectionTestResult.textContent =
+          `Connection failed: ${message}`;
+      }
+
+    } finally {
+      phaseG2RenderRecentServers(
+        candidate
+      );
+    }
+  }
+
+  function phaseG2ForgetRecentServer() {
+    const refs =
+      phaseG2Refs();
+
+    const candidate =
+      phaseG2NormalizeServer(
+        refs.select?.value
+      );
+
+    if (!candidate) return;
+
+    const current =
+      phaseG2CurrentStoredServer();
+
+    const next =
+      phaseG2RecentServers()
+        .filter(
+          (server) =>
+            server.toLowerCase()
+            !== candidate.toLowerCase()
+        );
+
+    phaseG2WriteRecentServers(
+      next
+    );
+
+    phaseG2RenderRecentServers();
+
+    if (refs.message) {
+      refs.message.textContent =
+        candidate.toLowerCase()
+        === current.toLowerCase()
+          ? "Removed from recents. Current connection remains active; use Local only to disconnect."
+          : "Server forgotten.";
+    }
+  }
+
+  function phaseG2Initialize() {
+    const refs =
+      phaseG2Refs();
+
+    if (!IS_NATIVE) {
+      if (refs.container) {
+        refs.container.hidden =
+          true;
+      }
+      return;
+    }
+
+    const current =
+      phaseG2CurrentStoredServer();
+
+    if (current) {
+      phaseG2RememberServer(
+        current
+      );
+    } else {
+      phaseG2RenderRecentServers();
+    }
+
+    refs.connect?.addEventListener(
+      "click",
+      phaseG2ConnectRecentServer
+    );
+
+    refs.forget?.addEventListener(
+      "click",
+      phaseG2ForgetRecentServer
+    );
+
+    refs.select?.addEventListener(
+      "change",
+      () => {
+        const candidate =
+          phaseG2NormalizeServer(
+            refs.select.value
+          );
+
+        if (
+          candidate
+          && els.connectionServerInput
+        ) {
+          els.connectionServerInput.value =
+            candidate;
+        }
+
+        phaseG2RenderRecentServers(
+          candidate
+        );
+      }
+    );
+
+    if (els.saveConnectionButton) {
+      els.saveConnectionButton.textContent =
+        "Save & connect";
+    }
+  }
+
+
   async function scanConnectionQr() {
     if (!IS_NATIVE) return;
 
@@ -618,6 +1107,8 @@
       }
 
       setNativeServerBase(candidate);
+
+      phaseG2RememberServer(candidate);
       renderConnectionSettings();
 
       els.connectionTestResult.textContent =
@@ -710,6 +1201,7 @@
 
     try {
       setNativeServerBase(els.connectionServerInput?.value || "");
+      phaseG2RememberServer(els.connectionServerInput?.value || "");
     } catch (error) {
       els.connectionTestResult.textContent = `Invalid server: ${error.message}`;
       return;
@@ -728,6 +1220,7 @@
   async function clearNativeServerCandidate() {
     if (!IS_NATIVE) return;
     setNativeServerBase("");
+    phaseG2RememberServer("");
     renderConnectionSettings();
     await loadImages(false);
     setStatus("Server cleared · local/offline mode active", "local");
@@ -15324,12 +15817,8 @@ function phaseGOpenPairing() {
   phaseBToggleSettings(false);
 
   if (IS_NATIVE) {
-    scanConnectionQr().catch((error) => {
-      setStatus(
-        `QR scanner error: ${error?.message || error}`,
-        "error"
-      );
-    });
+    openConnectionSettings();
+    phaseG2RenderRecentServers();
     return;
   }
 
@@ -15736,7 +16225,7 @@ function phaseGInitialize() {
   if (refs.pairMenuButton) {
     refs.pairMenuButton.textContent =
       IS_NATIVE
-        ? "Connect by QR…"
+        ? "Connection…"
         : "Pair Android…";
 
     refs.pairMenuButton.addEventListener(
@@ -16038,6 +16527,7 @@ function phaseGInitialize() {
     initViewer();
     bindEvents();
     phaseGInitialize();
+    phaseG2Initialize();
     setClassManagerOpen(false);
     els.inputGuide.hidden = false;
     setDrawingProfile("default");
