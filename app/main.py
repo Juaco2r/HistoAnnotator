@@ -21,6 +21,7 @@ from typing import Any, Iterator
 import qrcode
 import openslide
 import numpy as np
+from sklearn.ensemble import ExtraTreesClassifier
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -1089,7 +1090,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL3"}
+    return {"status": "ok", "version": "1.4.0-dev-IL4"}
 
 
 @app.get("/health")
@@ -5272,106 +5273,126 @@ def interactive_learning_suggest(
             negative_feedback_samples,
         ])
 
-    combined = np.vstack([
+    # Phase IL4 - nonlinear Extra Trees appearance model
+    training_x = np.vstack([
         positive_samples,
         negative_samples,
-    ])
-    center = np.mean(combined, axis=0)
-    spread = np.std(combined, axis=0)
-    spread = np.where(
-        spread < 1e-4,
-        1.0,
-        spread,
+    ]).astype(
+        np.float32,
+        copy=False,
     )
 
-    pos_z = (
-        positive_samples - center
-    ) / spread
-    neg_z = (
-        negative_samples - center
-    ) / spread
+    training_y = np.concatenate([
+        np.ones(
+            positive_samples.shape[0],
+            dtype=np.uint8,
+        ),
+        np.zeros(
+            negative_samples.shape[0],
+            dtype=np.uint8,
+        ),
+    ])
 
-    pos_center = np.mean(pos_z, axis=0)
-    neg_center = np.mean(neg_z, axis=0)
-
-    pos_var = np.var(pos_z, axis=0) + 0.25
-    neg_var = np.var(neg_z, axis=0) + 0.25
-
-    def sample_scores(
-        samples_z: np.ndarray,
-    ) -> np.ndarray:
-        d_pos = np.mean(
-            (
-                (samples_z - pos_center) ** 2
-            ) / pos_var,
-            axis=1,
-        )
-        d_neg = np.mean(
-            (
-                (samples_z - neg_center) ** 2
-            ) / neg_var,
-            axis=1,
-        )
-        return d_neg - d_pos
-
-    pos_scores = sample_scores(pos_z)
-    neg_scores = sample_scores(neg_z)
-
-    model_center = (
-        float(np.median(pos_scores))
-        + float(np.median(neg_scores))
-    ) / 2.0
-
-    score_spread = max(
-        0.25,
-        float(
-            np.std(
-                np.concatenate([
-                    pos_scores,
-                    neg_scores,
-                ])
-            )
+    tree_workers = min(
+        4,
+        max(
+            1,
+            int(os.cpu_count() or 1),
         ),
     )
 
-    threshold = (
-        model_center
-        + (
-            (50.0 - sensitivity)
-            / 50.0
-        )
-        * score_spread
-        * 0.75
+    classifier = ExtraTreesClassifier(
+        n_estimators=48,
+        max_depth=18,
+        min_samples_leaf=8,
+        max_features="sqrt",
+        class_weight="balanced",
+        random_state=1729,
+        n_jobs=tree_workers,
     )
 
-    full_z = (
-        feature_cube
-        - center.reshape(1, 1, -1)
-    ) / spread.reshape(1, 1, -1)
+    classifier.fit(
+        training_x,
+        training_y,
+    )
 
-    d_pos = np.mean(
-        (
+    classes = [
+        int(value)
+        for value
+        in classifier.classes_.tolist()
+    ]
+
+    if 1 not in classes:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Interactive Learning could not "
+                "train a positive class."
+            ),
+        )
+
+    positive_column = classes.index(1)
+
+    probability_threshold = float(
+        np.clip(
             (
-                full_z
-                - pos_center.reshape(1, 1, -1)
-            ) ** 2
+                0.50
+                + (
+                    (50.0 - sensitivity)
+                    / 50.0
+                )
+                * 0.20
+            ),
+            0.30,
+            0.70,
         )
-        / pos_var.reshape(1, 1, -1),
-        axis=2,
     )
 
-    d_neg = np.mean(
-        (
-            (
-                full_z
-                - neg_center.reshape(1, 1, -1)
-            ) ** 2
-        )
-        / neg_var.reshape(1, 1, -1),
-        axis=2,
+    flat_features = feature_cube.reshape(
+        -1,
+        feature_cube.shape[2],
     )
 
-    score_map = d_neg - d_pos
+    probability_flat = np.empty(
+        flat_features.shape[0],
+        dtype=np.float32,
+    )
+
+    inference_chunk = 200000
+
+    for chunk_start in range(
+        0,
+        flat_features.shape[0],
+        inference_chunk,
+    ):
+        chunk_end = min(
+            flat_features.shape[0],
+            chunk_start + inference_chunk,
+        )
+
+        chunk_probability = (
+            classifier.predict_proba(
+                flat_features[
+                    chunk_start:
+                    chunk_end
+                ]
+            )[:, positive_column]
+        )
+
+        probability_flat[
+            chunk_start:
+            chunk_end
+        ] = chunk_probability.astype(
+            np.float32,
+            copy=False,
+        )
+
+    probability_map = (
+        probability_flat.reshape(
+            thumb_height,
+            thumb_width,
+        )
+    )
 
     candidate_mask = valid_mask.copy()
 
@@ -5381,7 +5402,10 @@ def interactive_learning_suggest(
         candidate_mask &= ~positive_mask
 
     prediction = (
-        (score_map >= threshold)
+        (
+            probability_map
+            >= probability_threshold
+        )
         & candidate_mask
     )
 
@@ -5402,7 +5426,11 @@ def interactive_learning_suggest(
     )
 
     model_payload = {
-        "type": "appearance-centroid-v1",
+        "type": "extra-trees-v1",
+        "estimators": 48,
+        "maxDepth": 18,
+        "minSamplesLeaf": 8,
+        "workers": tree_workers,
         "targetClass": target_class,
         "positiveAnnotations":
             positive_annotation_count,
@@ -5534,24 +5562,37 @@ def interactive_learning_suggest(
                 ),
             )
 
-            margin = (
-                float(score_map[ty, tx])
-                - threshold
-            ) / score_spread
+            x0 = max(
+                0,
+                tx - 2,
+            )
+            x1 = min(
+                thumb_width,
+                tx + 3,
+            )
+            y0 = max(
+                0,
+                ty - 2,
+            )
+            y1 = min(
+                thumb_height,
+                ty + 3,
+            )
 
-            margin = float(
-                np.clip(
-                    margin,
-                    -8.0,
-                    8.0,
+            confidence = float(
+                np.mean(
+                    probability_map[
+                        y0:y1,
+                        x0:x1,
+                    ]
                 )
             )
 
-            confidence = (
-                1.0
-                / (
-                    1.0
-                    + np.exp(-margin)
+            confidence = float(
+                np.clip(
+                    confidence,
+                    0.0,
+                    1.0,
                 )
             )
 
@@ -5562,21 +5603,79 @@ def interactive_learning_suggest(
                     float(confidence),
             })
 
-    candidates.sort(
-        key=lambda item: (
-            float(
-                item.get(
-                    "confidence",
-                    0.0,
+    max_candidate_area = max(
+        1.0,
+        max(
+            (
+                float(
+                    item.get(
+                        "areaPx2",
+                        0.0,
+                    )
                 )
+                for item in candidates
             ),
+            default=1.0,
+        ),
+    )
+
+    def candidate_priority(
+        item: dict[str, Any],
+    ) -> tuple[float, float]:
+        confidence_value = float(
+            np.clip(
+                float(
+                    item.get(
+                        "confidence",
+                        0.5,
+                    )
+                ),
+                0.0,
+                1.0,
+            )
+        )
+
+        uncertainty = (
+            1.0
+            - min(
+                1.0,
+                abs(
+                    confidence_value
+                    - 0.5
+                )
+                * 2.0,
+            )
+        )
+
+        area_value = max(
+            0.0,
             float(
                 item.get(
                     "areaPx2",
                     0.0,
                 )
             ),
-        ),
+        )
+
+        area_score = (
+            np.log1p(area_value)
+            / np.log1p(
+                max_candidate_area
+            )
+        )
+
+        priority = (
+            0.80 * uncertainty
+            + 0.20 * area_score
+        )
+
+        return (
+            float(priority),
+            area_value,
+        )
+
+    candidates.sort(
+        key=candidate_priority,
         reverse=True,
     )
 
@@ -5592,7 +5691,7 @@ def interactive_learning_suggest(
         })
 
     model_payload["threshold"] = float(
-        threshold
+        probability_threshold
     )
 
     return {
