@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL5.1"}
+    return {"status": "ok", "version": "1.4.0-dev-IL6"}
 
 
 @app.get("/health")
@@ -4934,6 +4934,501 @@ def _il2_feedback_mask(
 
 
 # Phase IL2.1 - class dropdown, inline edit, finer suggestions
+
+# ========================================================================
+# Phase IL6 - multi-image training sources
+# ========================================================================
+
+def _il6_read_annotation_collection(
+    relative: str,
+    annotation_file: str,
+) -> dict[str, Any]:
+    path = annotation_path(
+        relative,
+        annotation_file,
+    )
+
+    if not path.exists():
+        return empty_feature_collection(
+            relative
+        )
+
+    try:
+        with path.open(
+            "r",
+            encoding="utf-8",
+        ) as stream:
+            payload = json.load(
+                stream
+            )
+    except (
+        OSError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not read training annotation file "
+                f'"{annotation_file}": {exc}'
+            ),
+        ) from exc
+
+    collection, _report = (
+        sanitize_qupath_feature_collection(
+            payload
+        )
+    )
+
+    return collection
+
+
+def _il6_cap_sample_pool(
+    batches: list[np.ndarray],
+    maximum: int,
+    rng: np.random.Generator,
+    feature_count: int,
+) -> np.ndarray:
+    usable = [
+        batch
+        for batch in batches
+        if (
+            isinstance(batch, np.ndarray)
+            and batch.ndim == 2
+            and batch.shape[0] > 0
+        )
+    ]
+
+    if not usable:
+        return np.empty(
+            (0, feature_count),
+            dtype=np.float32,
+        )
+
+    combined = np.vstack(
+        usable
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
+    if combined.shape[0] <= maximum:
+        return combined
+
+    indices = rng.choice(
+        combined.shape[0],
+        size=maximum,
+        replace=False,
+    )
+
+    return combined[indices]
+
+
+def _il6_auxiliary_training_samples(
+    image_id: str,
+    annotation_file: str,
+    target_class: str,
+    max_side: int,
+    rng: np.random.Generator,
+) -> dict[str, Any]:
+    annotation_file = normalize_annotation_file(
+        annotation_file
+    )
+
+    path, relative = safe_image_path(
+        image_id
+    )
+
+    if (
+        preparation_required(path)
+        and not read_ready_manifest(
+            path,
+            relative,
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Training source image is not ready: "
+                f"{path.name}"
+            ),
+        )
+
+    image_types = _read_image_types()
+    image_type = str(
+        image_types.get(
+            relative,
+            "he",
+        )
+        or "he"
+    ).lower()
+
+    if image_type == "fluorescence":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Fluorescence images cannot currently "
+                "be used as Interactive Learning sources"
+            ),
+        )
+
+    collection = _il6_read_annotation_collection(
+        relative,
+        annotation_file,
+    )
+
+    features = collection.get(
+        "features",
+        [],
+    )
+
+    render_path = resolve_render_path(
+        path,
+        relative,
+    )
+    handle = get_slide(render_path)
+
+    full_width, full_height = map(
+        int,
+        handle.slide.dimensions,
+    )
+
+    training_side = min(
+        1024,
+        max(
+            512,
+            int(max_side),
+        ),
+    )
+
+    thumbnail = handle.slide.get_thumbnail(
+        (
+            training_side,
+            training_side,
+        )
+    ).convert("RGB")
+
+    rgb = np.asarray(
+        thumbnail,
+        dtype=np.uint8,
+    )
+
+    thumb_height, thumb_width = rgb.shape[:2]
+
+    if thumb_width <= 1 or thumb_height <= 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not create training thumbnail "
+                f"for {path.name}"
+            ),
+        )
+
+    scale_x = full_width / float(thumb_width)
+    scale_y = full_height / float(thumb_height)
+
+    roi_geometries: list[Any] = []
+
+    artifact_mask = np.zeros(
+        (thumb_height, thumb_width),
+        dtype=bool,
+    )
+    positive_mask = np.zeros_like(
+        artifact_mask
+    )
+    explicit_negative_mask = np.zeros_like(
+        artifact_mask
+    )
+    all_annotation_mask = np.zeros_like(
+        artifact_mask
+    )
+
+    target_cf = target_class.casefold()
+    target_annotations = 0
+    negative_annotations = 0
+
+    border_enabled = False
+    border_percent = 0.0
+
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+
+        role = _il1_feature_role(feature)
+        class_name = _il1_feature_class(feature)
+        class_cf = class_name.casefold()
+
+        geometry_payload = feature.get(
+            "geometry"
+        )
+
+        if not geometry_payload:
+            continue
+
+        if role == "roi":
+            try:
+                roi_geometry = shape(
+                    geometry_payload
+                )
+            except Exception:
+                continue
+
+            if not roi_geometry.is_empty:
+                roi_geometries.append(
+                    roi_geometry
+                )
+
+            roi_meta = (
+                feature
+                .get("properties", {})
+                .get("histoannotator", {})
+                .get("roi", {})
+            )
+
+            border_meta = (
+                roi_meta.get(
+                    "externalBorderExclusion"
+                )
+                if isinstance(
+                    roi_meta,
+                    dict,
+                )
+                else None
+            )
+
+            if isinstance(border_meta, dict):
+                border_enabled = bool(
+                    border_meta.get(
+                        "enabled",
+                        False,
+                    )
+                )
+
+                try:
+                    border_percent = max(
+                        0.0,
+                        min(
+                            50.0,
+                            float(
+                                border_meta.get(
+                                    "percent",
+                                    0,
+                                )
+                                or 0
+                            ),
+                        ),
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    border_percent = 0.0
+
+            continue
+
+        feature_mask = _il1_geometry_mask(
+            geometry_payload,
+            thumb_width,
+            thumb_height,
+            scale_x,
+            scale_y,
+        )
+
+        if not np.any(feature_mask):
+            continue
+
+        if (
+            role == "artifact"
+            or class_cf == "artifact"
+        ):
+            artifact_mask |= feature_mask
+            continue
+
+        if role != "annotation":
+            continue
+
+        all_annotation_mask |= feature_mask
+
+        if class_cf == target_cf:
+            target_annotations += 1
+            positive_mask |= feature_mask
+        else:
+            negative_annotations += 1
+            explicit_negative_mask |= feature_mask
+
+    if roi_geometries:
+        roi_geometry = unary_union(
+            roi_geometries
+        )
+
+        if not roi_geometry.is_valid:
+            roi_geometry = make_valid(
+                roi_geometry
+            )
+
+        roi_geometry = (
+            _polygonal_only(
+                roi_geometry
+            )
+            or GeometryCollection()
+        )
+
+        image_bounds = box(
+            0.0,
+            0.0,
+            float(full_width),
+            float(full_height),
+        )
+
+        roi_geometry = roi_geometry.intersection(
+            image_bounds
+        )
+
+        roi_geometry = (
+            _polygonal_only(
+                roi_geometry
+            )
+            or GeometryCollection()
+        )
+
+        if (
+            border_enabled
+            and border_percent > 0
+            and not roi_geometry.is_empty
+        ):
+            (
+                roi_geometry,
+                _actual_border,
+                _border_width,
+            ) = _stats_exclude_external_border(
+                roi_geometry,
+                border_percent,
+            )
+
+        if roi_geometry.is_empty:
+            valid_mask = np.zeros(
+                (
+                    thumb_height,
+                    thumb_width,
+                ),
+                dtype=bool,
+            )
+        else:
+            valid_mask = _il1_geometry_mask(
+                mapping(
+                    roi_geometry
+                ),
+                thumb_width,
+                thumb_height,
+                scale_x,
+                scale_y,
+            )
+    else:
+        valid_mask = np.ones(
+            (
+                thumb_height,
+                thumb_width,
+            ),
+            dtype=bool,
+        )
+
+    valid_mask &= ~artifact_mask
+
+    positive_mask &= valid_mask
+    explicit_negative_mask &= valid_mask
+    explicit_negative_mask &= ~positive_mask
+    all_annotation_mask &= valid_mask
+
+    positive_pixels = int(
+        np.count_nonzero(
+            positive_mask
+        )
+    )
+
+    target_present = bool(
+        target_annotations > 0
+        and positive_pixels >= 12
+    )
+
+    if target_present:
+        explicit_pixels = int(
+            np.count_nonzero(
+                explicit_negative_mask
+            )
+        )
+
+        minimum_explicit = max(
+            32,
+            int(
+                positive_pixels * 0.15
+            ),
+        )
+
+        if explicit_pixels >= minimum_explicit:
+            negative_mask = explicit_negative_mask
+            negative_source = "other annotated classes"
+        else:
+            negative_mask = (
+                valid_mask
+                & ~positive_mask
+                & ~all_annotation_mask
+            )
+            negative_source = "unlabeled valid tissue"
+
+        positive_limit = 4000
+        negative_limit = 4000
+    else:
+        # Target-absent selected slides are weak negatives only.
+        negative_mask = (
+            valid_mask
+            & ~positive_mask
+        )
+        negative_source = (
+            "target-absent reduced negatives"
+        )
+        positive_limit = 0
+        negative_limit = 1000
+
+    feature_cube = _il1_feature_cube(
+        rgb
+    )
+
+    positive_samples = (
+        _il1_sample_features(
+            feature_cube,
+            positive_mask,
+            positive_limit,
+            rng,
+        )
+        if positive_limit > 0
+        else np.empty(
+            (
+                0,
+                feature_cube.shape[2],
+            ),
+            dtype=np.float32,
+        )
+    )
+
+    negative_samples = _il1_sample_features(
+        feature_cube,
+        negative_mask,
+        negative_limit,
+        rng,
+    )
+
+    return {
+        "imageId": image_id,
+        "imageName": path.name,
+        "annotationFile": annotation_file,
+        "targetPresent": target_present,
+        "targetAnnotations": target_annotations,
+        "negativeAnnotations": negative_annotations,
+        "positiveSamples": positive_samples,
+        "negativeSamples": negative_samples,
+        "negativeSource": negative_source,
+    }
+
+
 @app.post("/api/interactive-learning/{image_id}/suggest")
 def interactive_learning_suggest(
     image_id: str,
@@ -5022,6 +5517,47 @@ def interactive_learning_suggest(
     exclude_annotated = bool(
         payload.get("excludeAnnotated", True)
     )
+
+    training_mode = str(
+        payload.get(
+            "trainingMode",
+            "current",
+        )
+        or "current"
+    ).strip().lower()
+
+    if training_mode not in {
+        "current",
+        "set",
+    }:
+        training_mode = "current"
+
+    current_annotation_file = normalize_annotation_file(
+        str(
+            payload.get(
+                "currentAnnotationFile",
+                "Default",
+            )
+            or "Default"
+        )
+    )
+
+    raw_training_sources = (
+        payload.get(
+            "trainingSources",
+            [],
+        )
+        if training_mode == "set"
+        else []
+    )
+
+    if not isinstance(
+        raw_training_sources,
+        list,
+    ):
+        raw_training_sources = []
+
+    raw_training_sources = raw_training_sources[:12]
 
     path, relative = safe_image_path(image_id)
 
@@ -5262,8 +5798,11 @@ def interactive_learning_suggest(
     )
 
     if (
-        positive_annotation_count < 1
-        or positive_pixels < 24
+        training_mode == "current"
+        and (
+            positive_annotation_count < 1
+            or positive_pixels < 24
+        )
     ):
         raise HTTPException(
             status_code=422,
@@ -5295,6 +5834,14 @@ def interactive_learning_suggest(
     )
 
     if (
+        training_mode == "set"
+        and positive_pixels < 24
+    ):
+        # If the current document has no target example, its unlabeled
+        # tissue must not become a huge negative pool.
+        negative_mask = explicit_negative_mask
+        negative_source = "current explicit annotated classes"
+    elif (
         explicit_negative_pixels
         >= minimum_explicit_negative
     ):
@@ -5312,7 +5859,10 @@ def interactive_learning_suggest(
         np.count_nonzero(negative_mask)
     )
 
-    if negative_pixels < 24:
+    if (
+        training_mode == "current"
+        and negative_pixels < 24
+    ):
         raise HTTPException(
             status_code=422,
             detail=(
@@ -5367,6 +5917,139 @@ def interactive_learning_suggest(
             negative_samples,
             negative_feedback_samples,
         ])
+
+    # Phase IL6: selected image + annotation-file sources.
+    training_source_reports: list[dict[str, Any]] = []
+    auxiliary_positive_batches: list[np.ndarray] = []
+    auxiliary_negative_batches: list[np.ndarray] = []
+
+    if training_mode == "set":
+        seen_sources: set[tuple[str, str]] = set()
+
+        for source in raw_training_sources:
+            if not isinstance(source, dict):
+                continue
+
+            source_image_id = str(
+                source.get(
+                    "imageId",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            source_file = normalize_annotation_file(
+                str(
+                    source.get(
+                        "annotationFile",
+                        "Default",
+                    )
+                    or "Default"
+                )
+            )
+
+            if not source_image_id:
+                continue
+
+            source_key = (
+                source_image_id,
+                source_file.casefold(),
+            )
+
+            if source_key in seen_sources:
+                continue
+
+            seen_sources.add(source_key)
+
+            # Live current document already uses transient featureCollection,
+            # including local edits not yet synchronized.
+            if (
+                source_image_id == image_id
+                and source_file.casefold()
+                == current_annotation_file.casefold()
+            ):
+                continue
+
+            source_result = _il6_auxiliary_training_samples(
+                source_image_id,
+                source_file,
+                target_class,
+                max_side,
+                rng,
+            )
+
+            auxiliary_positive_batches.append(
+                source_result["positiveSamples"]
+            )
+            auxiliary_negative_batches.append(
+                source_result["negativeSamples"]
+            )
+
+            training_source_reports.append({
+                "imageId": source_result["imageId"],
+                "imageName": source_result["imageName"],
+                "annotationFile": source_result["annotationFile"],
+                "targetPresent": bool(
+                    source_result["targetPresent"]
+                ),
+                "targetAnnotations": int(
+                    source_result["targetAnnotations"]
+                ),
+                "positiveSamples": int(
+                    source_result["positiveSamples"].shape[0]
+                ),
+                "negativeSamples": int(
+                    source_result["negativeSamples"].shape[0]
+                ),
+                "negativeSource": source_result["negativeSource"],
+            })
+
+        # Auxiliary budgets remain below the current image 40k/40k budget.
+        auxiliary_positive = _il6_cap_sample_pool(
+            auxiliary_positive_batches,
+            12000,
+            rng,
+            feature_cube.shape[2],
+        )
+
+        auxiliary_negative = _il6_cap_sample_pool(
+            auxiliary_negative_batches,
+            12000,
+            rng,
+            feature_cube.shape[2],
+        )
+
+        if auxiliary_positive.shape[0]:
+            positive_samples = np.vstack([
+                positive_samples,
+                auxiliary_positive,
+            ])
+
+        if auxiliary_negative.shape[0]:
+            negative_samples = np.vstack([
+                negative_samples,
+                auxiliary_negative,
+            ])
+
+    if positive_samples.shape[0] < 24:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f'Class "{target_class}" needs positive examples '
+                "in the current image or at least one selected "
+                "training source."
+            ),
+        )
+
+    if negative_samples.shape[0] < 24:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Interactive Learning needs negative/context "
+                "examples in the current image or selected "
+                "training sources."
+            ),
+        )
 
     # Phase IL4 - nonlinear Extra Trees appearance model
     training_x = np.vstack([
@@ -5565,6 +6248,30 @@ def interactive_learning_suggest(
             else "Full image - Artifact"
         ),
     }
+
+    model_payload["trainingMode"] = training_mode
+    model_payload["currentImagePriority"] = {
+        "basePositiveMaximum": 40000,
+        "baseNegativeMaximum": 40000,
+        "feedbackMaximumPerSign": 12000,
+        "auxiliaryPositiveMaximumTotal": 12000,
+        "auxiliaryNegativeMaximumTotal": 12000,
+        "targetAbsentAuxiliaryNegativeMaximumPerSource": 1000,
+    }
+    model_payload["trainingSources"] = training_source_reports
+    model_payload["auxiliarySourcesUsed"] = len(
+        training_source_reports
+    )
+    model_payload["auxiliaryTargetPresentSources"] = sum(
+        1
+        for item in training_source_reports
+        if item.get("targetPresent")
+    )
+    model_payload["auxiliaryTargetAbsentSources"] = sum(
+        1
+        for item in training_source_reports
+        if not item.get("targetPresent")
+    )
 
     if predicted_pixels == 0:
         return {

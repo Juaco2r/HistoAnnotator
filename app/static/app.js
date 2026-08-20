@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL5.1";
+  const VERSION = "1.4.0-dev-IL6";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -16333,6 +16333,904 @@ let phaseIL1State = {
 };
 
 
+
+// ========================================================================
+// Phase IL6 - multi-image training sources
+// ========================================================================
+
+const PHASE_IL6_SOURCE_MODE_KEY =
+  "histoannotator.il6.sourceMode.v1";
+
+const PHASE_IL6_SOURCES_KEY =
+  "histoannotator.il6.trainingSources.v1";
+
+let phaseIL6TrainingSources =
+  phaseIL6LoadTrainingSources();
+
+let phaseIL6SourceStatus =
+  new Map();
+
+
+function phaseIL6LoadTrainingSources() {
+  try {
+    const parsed =
+      JSON.parse(
+        localStorage.getItem(
+          PHASE_IL6_SOURCES_KEY
+        )
+        || "[]"
+      );
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter(
+        (item) =>
+          item
+          && item.imageId
+      )
+      .map(
+        (item) => ({
+          imageId:
+            String(item.imageId),
+          annotationFile:
+            String(
+              item.annotationFile
+              || "Default"
+            ),
+        })
+      )
+      .slice(0, 12);
+  } catch (_) {
+    return [];
+  }
+}
+
+
+function phaseIL6SaveTrainingSources() {
+  localStorage.setItem(
+    PHASE_IL6_SOURCES_KEY,
+    JSON.stringify(
+      phaseIL6TrainingSources
+    )
+  );
+}
+
+
+function phaseIL6TrainingMode() {
+  const select =
+    document.getElementById(
+      "phaseIL6SourceSelect"
+    );
+
+  return (
+    select?.value === "set"
+      ? "set"
+      : "current"
+  );
+}
+
+
+function phaseIL6SourceKey(
+  imageId,
+  annotationFile
+) {
+  return (
+    `${String(imageId || "")}::`
+    + `${String(annotationFile || "Default")}`
+  );
+}
+
+
+function phaseIL6TrainingPayload() {
+  if (
+    phaseIL6TrainingMode()
+    !== "set"
+  ) {
+    return [];
+  }
+
+  const currentKey =
+    phaseIL6SourceKey(
+      currentImage?.id,
+      currentAnnotationFile
+    );
+
+  return (
+    phaseIL6TrainingSources
+      .filter(
+        (item) =>
+          phaseIL6SourceKey(
+            item.imageId,
+            item.annotationFile
+          ) !== currentKey
+      )
+      .map(
+        (item) => ({
+          imageId: item.imageId,
+          annotationFile:
+            item.annotationFile,
+        })
+      )
+      .slice(0, 12)
+  );
+}
+
+
+function phaseIL6UpdateSourceUi() {
+  const mode =
+    phaseIL6TrainingMode();
+
+  const row =
+    document.getElementById(
+      "phaseIL6TrainingSetRow"
+    );
+
+  const summary =
+    document.getElementById(
+      "phaseIL6TrainingSetSummary"
+    );
+
+  if (row) {
+    row.hidden =
+      mode !== "set";
+  }
+
+  if (summary) {
+    const count =
+      phaseIL6TrainingPayload()
+        .length;
+
+    summary.textContent =
+      count
+        ? (
+            `${count} auxiliary source`
+            + `${count === 1 ? "" : "s"}`
+            + " + current image"
+          )
+        : "Current image + no auxiliary sources";
+  }
+}
+
+
+async function phaseIL6FilesForImage(
+  imageId
+) {
+  const response =
+    await apiFetch(
+      `${API}/annotations/${imageId}/files`,
+      {
+        timeoutMs: 10000,
+      }
+    );
+
+  const payload =
+    await response.json();
+
+  return (
+    Array.isArray(payload?.files)
+    && payload.files.length
+      ? payload.files
+      : ["Default"]
+  );
+}
+
+
+async function phaseIL6PopulateFileSelect() {
+  const imageSelect =
+    document.getElementById(
+      "phaseIL6ImageSelect"
+    );
+
+  const fileSelect =
+    document.getElementById(
+      "phaseIL6FileSelect"
+    );
+
+  const message =
+    document.getElementById(
+      "phaseIL6TrainingMessage"
+    );
+
+  if (
+    !imageSelect
+    || !fileSelect
+  ) {
+    return;
+  }
+
+  const imageId =
+    String(
+      imageSelect.value
+      || ""
+    );
+
+  fileSelect.innerHTML = "";
+
+  if (!imageId) {
+    fileSelect.disabled = true;
+    return;
+  }
+
+  fileSelect.disabled = true;
+
+  try {
+    const files =
+      await phaseIL6FilesForImage(
+        imageId
+      );
+
+    for (const name of files) {
+      const option =
+        document.createElement(
+          "option"
+        );
+
+      option.value = name;
+      option.textContent = name;
+      fileSelect.append(option);
+    }
+
+    fileSelect.disabled = false;
+
+    if (message) {
+      message.textContent = "";
+    }
+  } catch (error) {
+    if (message) {
+      message.textContent =
+        `Could not load annotation files: ${error.message}`;
+    }
+  }
+}
+
+
+function phaseIL6TargetCount(
+  collection,
+  targetClass
+) {
+  const wanted =
+    String(targetClass || "")
+      .trim()
+      .toLowerCase();
+
+  if (!wanted) return 0;
+
+  return (
+    collection?.features
+    || []
+  ).filter(
+    (feature) => {
+      const role =
+        String(
+          feature?.properties
+            ?.histoannotator
+            ?.role
+          || "annotation"
+        ).toLowerCase();
+
+      const className =
+        String(
+          feature?.properties
+            ?.classification
+            ?.name
+          || ""
+        ).trim().toLowerCase();
+
+      return (
+        role === "annotation"
+        && className === wanted
+      );
+    }
+  ).length;
+}
+
+
+async function phaseIL6RefreshSourceStatus(
+  item
+) {
+  const targetClass =
+    String(
+      phaseIL1Refs()
+        .classSelect
+        ?.value
+      || ""
+    ).trim();
+
+  if (!targetClass) return;
+
+  const key =
+    phaseIL6SourceKey(
+      item.imageId,
+      item.annotationFile
+    );
+
+  phaseIL6SourceStatus.set(
+    key,
+    "Checking target class…"
+  );
+
+  phaseIL6RenderTrainingSources();
+
+  try {
+    const response =
+      await apiFetch(
+        `${API}/annotations/${item.imageId}`
+        + `?file=${encodeURIComponent(item.annotationFile)}`,
+        {
+          timeoutMs: 10000,
+        }
+      );
+
+    const collection =
+      normalizeFeatureCollectionClient(
+        await response.json()
+      );
+
+    const count =
+      phaseIL6TargetCount(
+        collection,
+        targetClass
+      );
+
+    phaseIL6SourceStatus.set(
+      key,
+      count > 0
+        ? (
+            `${targetClass}: ${count} annotation`
+            + `${count === 1 ? "" : "s"}`
+          )
+        : (
+            `${targetClass}: 0`
+            + " · reduced negative-only source"
+          )
+    );
+  } catch (error) {
+    phaseIL6SourceStatus.set(
+      key,
+      `Unavailable: ${error.message}`
+    );
+  }
+
+  phaseIL6RenderTrainingSources();
+}
+
+
+function phaseIL6RenderTrainingSources() {
+  const list =
+    document.getElementById(
+      "phaseIL6TrainingList"
+    );
+
+  if (!list) return;
+
+  list.innerHTML = "";
+
+  if (!phaseIL6TrainingSources.length) {
+    const empty =
+      document.createElement("p");
+
+    empty.className =
+      "phase-il6-empty";
+
+    empty.textContent =
+      "No auxiliary training sources selected.";
+
+    list.append(empty);
+    phaseIL6UpdateSourceUi();
+    return;
+  }
+
+  for (
+    const item
+    of phaseIL6TrainingSources
+  ) {
+    const row =
+      document.createElement("div");
+
+    row.className =
+      "phase-il6-source-row";
+
+    const text =
+      document.createElement("div");
+
+    text.className =
+      "phase-il6-source-text";
+
+    const image =
+      (images || []).find(
+        (candidate) =>
+          String(candidate.id)
+          === String(item.imageId)
+      );
+
+    const title =
+      document.createElement(
+        "strong"
+      );
+
+    title.textContent =
+      image?.name
+      || item.imageId;
+
+    const file =
+      document.createElement(
+        "span"
+      );
+
+    file.textContent =
+      `Annotation file: ${item.annotationFile}`;
+
+    const status =
+      document.createElement(
+        "small"
+      );
+
+    const key =
+      phaseIL6SourceKey(
+        item.imageId,
+        item.annotationFile
+      );
+
+    status.textContent =
+      phaseIL6SourceStatus.get(
+        key
+      )
+      || "Target status not checked yet";
+
+    text.append(
+      title,
+      file,
+      status
+    );
+
+    const remove =
+      document.createElement(
+        "button"
+      );
+
+    remove.type =
+      "button";
+    remove.textContent =
+      "Remove";
+
+    remove.addEventListener(
+      "click",
+      () => {
+        phaseIL6TrainingSources =
+          phaseIL6TrainingSources
+            .filter(
+              (candidate) =>
+                phaseIL6SourceKey(
+                  candidate.imageId,
+                  candidate.annotationFile
+                ) !== key
+            );
+
+        phaseIL6SourceStatus.delete(
+          key
+        );
+
+        phaseIL6SaveTrainingSources();
+        phaseIL6RenderTrainingSources();
+      }
+    );
+
+    row.append(
+      text,
+      remove
+    );
+
+    list.append(row);
+  }
+
+  phaseIL6UpdateSourceUi();
+}
+
+
+async function phaseIL6RefreshAllSourceStatus() {
+  phaseIL6SourceStatus.clear();
+
+  for (
+    const item
+    of phaseIL6TrainingSources
+  ) {
+    await phaseIL6RefreshSourceStatus(
+      item
+    );
+  }
+}
+
+
+async function phaseIL6OpenTrainingSet() {
+  const overlay =
+    document.getElementById(
+      "phaseIL6TrainingOverlay"
+    );
+
+  const imageSelect =
+    document.getElementById(
+      "phaseIL6ImageSelect"
+    );
+
+  if (
+    !overlay
+    || !imageSelect
+  ) {
+    return;
+  }
+
+  imageSelect.innerHTML = "";
+
+  const candidates =
+    (images || [])
+      .filter(
+        (image) =>
+          !image?.localNative
+          && (
+            image?.hasAnnotations
+            || String(image?.id)
+               === String(
+                 currentImage?.id
+               )
+          )
+      )
+      .sort(
+        (a, b) =>
+          String(a?.name || "")
+            .localeCompare(
+              String(b?.name || "")
+            )
+      );
+
+  for (const image of candidates) {
+    const option =
+      document.createElement(
+        "option"
+      );
+
+    option.value =
+      image.id;
+
+    option.textContent =
+      image.name
+      + (
+          String(image.id)
+          === String(
+            currentImage?.id
+          )
+            ? " · current"
+            : ""
+        );
+
+    imageSelect.append(option);
+  }
+
+  if (
+    currentImage?.id
+    && candidates.some(
+      (item) =>
+        String(item.id)
+        === String(
+          currentImage.id
+        )
+    )
+  ) {
+    imageSelect.value =
+      currentImage.id;
+  }
+
+  overlay.hidden = false;
+
+  await phaseIL6PopulateFileSelect();
+
+  phaseIL6RenderTrainingSources();
+
+  phaseIL6RefreshAllSourceStatus()
+    .catch(
+      (error) =>
+        console.warn(
+          "Could not refresh IL6 training source status",
+          error
+        )
+    );
+}
+
+
+function phaseIL6CloseTrainingSet() {
+  const overlay =
+    document.getElementById(
+      "phaseIL6TrainingOverlay"
+    );
+
+  if (overlay) {
+    overlay.hidden = true;
+  }
+
+  phaseIL6UpdateSourceUi();
+}
+
+
+async function phaseIL6AddTrainingSource() {
+  const imageSelect =
+    document.getElementById(
+      "phaseIL6ImageSelect"
+    );
+
+  const fileSelect =
+    document.getElementById(
+      "phaseIL6FileSelect"
+    );
+
+  const message =
+    document.getElementById(
+      "phaseIL6TrainingMessage"
+    );
+
+  const imageId =
+    String(
+      imageSelect?.value
+      || ""
+    );
+
+  const annotationFile =
+    String(
+      fileSelect?.value
+      || "Default"
+    );
+
+  if (!imageId) return;
+
+  const key =
+    phaseIL6SourceKey(
+      imageId,
+      annotationFile
+    );
+
+  const currentKey =
+    phaseIL6SourceKey(
+      currentImage?.id,
+      currentAnnotationFile
+    );
+
+  if (key === currentKey) {
+    if (message) {
+      message.textContent =
+        "The current image + annotation file is already included automatically with higher priority.";
+    }
+    return;
+  }
+
+  if (
+    phaseIL6TrainingSources
+      .some(
+        (item) =>
+          phaseIL6SourceKey(
+            item.imageId,
+            item.annotationFile
+          ) === key
+      )
+  ) {
+    if (message) {
+      message.textContent =
+        "That image + annotation file is already selected.";
+    }
+    return;
+  }
+
+  if (
+    phaseIL6TrainingSources.length
+    >= 12
+  ) {
+    if (message) {
+      message.textContent =
+        "A maximum of 12 auxiliary sources is supported.";
+    }
+    return;
+  }
+
+  const item = {
+    imageId,
+    annotationFile,
+  };
+
+  phaseIL6TrainingSources.push(
+    item
+  );
+
+  phaseIL6SaveTrainingSources();
+  phaseIL6RenderTrainingSources();
+
+  if (message) {
+    message.textContent = "";
+  }
+
+  await phaseIL6RefreshSourceStatus(
+    item
+  );
+}
+
+
+function phaseIL6EnsureTrainingSetUi() {
+  if (
+    document.getElementById(
+      "phaseIL6TrainingOverlay"
+    )
+  ) {
+    return;
+  }
+
+  const overlay =
+    document.createElement("div");
+
+  overlay.id =
+    "phaseIL6TrainingOverlay";
+
+  overlay.className =
+    "phase-il6-training-overlay";
+
+  overlay.hidden = true;
+
+  overlay.innerHTML = `
+    <section class="phase-il6-training-card"
+             role="dialog"
+             aria-labelledby="phaseIL6TrainingTitle">
+      <div class="phase-il6-training-header">
+        <div>
+          <h3 id="phaseIL6TrainingTitle">
+            Training set
+          </h3>
+          <p>
+            Choose an image and the annotation file
+            that should contribute examples.
+          </p>
+        </div>
+        <button id="phaseIL6TrainingClose"
+                type="button"
+                aria-label="Close">×</button>
+      </div>
+
+      <div class="phase-il6-add-grid">
+        <label>
+          <span>Image</span>
+          <select id="phaseIL6ImageSelect"></select>
+        </label>
+
+        <label>
+          <span>Annotation file</span>
+          <select id="phaseIL6FileSelect"></select>
+        </label>
+
+        <button id="phaseIL6AddSource"
+                type="button">
+          Add source
+        </button>
+      </div>
+
+      <p id="phaseIL6TrainingMessage"
+         class="phase-il6-message"></p>
+
+      <div class="phase-il6-priority-note">
+        Current image = highest priority.
+        Auxiliary images with the target class add
+        positive + negative examples. If the target
+        class is absent, only a small negative sample
+        is used.
+      </div>
+
+      <div id="phaseIL6TrainingList"
+           class="phase-il6-training-list"></div>
+
+      <div class="phase-il6-training-footer">
+        <button id="phaseIL6TrainingDone"
+                type="button">
+          Done
+        </button>
+      </div>
+    </section>
+  `;
+
+  document.body.append(
+    overlay
+  );
+
+  document
+    .getElementById(
+      "phaseIL6ImageSelect"
+    )
+    ?.addEventListener(
+      "change",
+      () =>
+        phaseIL6PopulateFileSelect()
+    );
+
+  document
+    .getElementById(
+      "phaseIL6AddSource"
+    )
+    ?.addEventListener(
+      "click",
+      () =>
+        phaseIL6AddTrainingSource()
+    );
+
+  document
+    .getElementById(
+      "phaseIL6TrainingClose"
+    )
+    ?.addEventListener(
+      "click",
+      phaseIL6CloseTrainingSet
+    );
+
+  document
+    .getElementById(
+      "phaseIL6TrainingDone"
+    )
+    ?.addEventListener(
+      "click",
+      phaseIL6CloseTrainingSet
+    );
+
+  overlay.addEventListener(
+    "click",
+    (event) => {
+      if (event.target === overlay) {
+        phaseIL6CloseTrainingSet();
+      }
+    }
+  );
+}
+
+
+function phaseIL6BindSourceControls() {
+  const refs =
+    phaseIL1Refs();
+
+  if (refs.sourceSelect) {
+    const stored =
+      localStorage.getItem(
+        PHASE_IL6_SOURCE_MODE_KEY
+      );
+
+    refs.sourceSelect.value =
+      stored === "set"
+        ? "set"
+        : "current";
+
+    refs.sourceSelect.addEventListener(
+      "change",
+      () => {
+        localStorage.setItem(
+          PHASE_IL6_SOURCE_MODE_KEY,
+          phaseIL6TrainingMode()
+        );
+
+        phaseIL6UpdateSourceUi();
+      }
+    );
+  }
+
+  refs.manageTrainingSet
+    ?.addEventListener(
+      "click",
+      () =>
+        phaseIL6OpenTrainingSet()
+    );
+
+  refs.classSelect
+    ?.addEventListener(
+      "change",
+      () => {
+        phaseIL6SourceStatus.clear();
+      }
+    );
+
+  phaseIL6UpdateSourceUi();
+}
+
 function phaseIL1Refs() {
   return {
     menu:
@@ -16374,6 +17272,22 @@ function phaseIL1Refs() {
     excludeAnnotated:
       document.getElementById(
         "phaseIL1ExcludeAnnotated"
+      ),
+    sourceSelect:
+      document.getElementById(
+        "phaseIL6SourceSelect"
+      ),
+    trainingSetRow:
+      document.getElementById(
+        "phaseIL6TrainingSetRow"
+      ),
+    manageTrainingSet:
+      document.getElementById(
+        "phaseIL6ManageTrainingSet"
+      ),
+    trainingSetSummary:
+      document.getElementById(
+        "phaseIL6TrainingSetSummary"
       ),
     run:
       document.getElementById(
@@ -16491,8 +17405,9 @@ function phaseIL1EnsureUi() {
             Interactive Learning
           </h2>
           <p>
-            Learn from annotations in the current
-            file and preview suggestions.
+            Learn from the current annotation file
+            or selected labeled image sources, then
+            preview suggestions on the current image.
           </p>
         </div>
         <button id="phaseIL1CloseButton"
@@ -16506,6 +17421,30 @@ function phaseIL1EnsureUi() {
           <span>Target class</span>
           <select id="phaseIL1ClassSelect"></select>
         </label>
+
+        <label>
+          <span>Learning source</span>
+          <select id="phaseIL6SourceSelect">
+            <option value="current">
+              Current image
+            </option>
+            <option value="set">
+              Selected training set
+            </option>
+          </select>
+        </label>
+
+        <div id="phaseIL6TrainingSetRow"
+             class="phase-il6-training-set-row"
+             hidden>
+          <button id="phaseIL6ManageTrainingSet"
+                  type="button">
+            Training set…
+          </button>
+          <span id="phaseIL6TrainingSetSummary">
+            Current image + no auxiliary sources
+          </span>
+        </div>
 
         <label>
           <span>
@@ -16622,6 +17561,9 @@ function phaseIL1EnsureUi() {
   `;
 
   document.body.append(overlay);
+
+  phaseIL6EnsureTrainingSetUi();
+  phaseIL6BindSourceControls();
 }
 
 
@@ -17049,6 +17991,8 @@ function phaseIL1SetBusy(busy) {
     refs.smoothing,
     refs.minArea,
     refs.excludeAnnotated,
+    refs.sourceSelect,
+    refs.manageTrainingSet,
   ]) {
     if (control) {
       control.disabled =
@@ -17256,9 +18200,29 @@ async function phaseIL1Run() {
       targetClass
     );
 
-  if (count < 1) {
+  const trainingMode =
+    phaseIL6TrainingMode();
+
+  const trainingSources =
+    phaseIL6TrainingPayload();
+
+  if (
+    count < 1
+    && trainingMode === "current"
+  ) {
     phaseIL1UpdateTrainingHint(
       `Annotate some ${targetClass} first, then run learning again.`
+    );
+    return;
+  }
+
+  if (
+    count < 1
+    && trainingMode === "set"
+    && !trainingSources.length
+  ) {
+    phaseIL1UpdateTrainingHint(
+      `Add a labeled training source containing ${targetClass}.`
     );
     return;
   }
@@ -17306,6 +18270,9 @@ async function phaseIL1Run() {
           },
           body: JSON.stringify({
             targetClass,
+            trainingMode,
+            currentAnnotationFile,
+            trainingSources,
             feedback:
               phaseIL2FeedbackPayload(
                 targetClass

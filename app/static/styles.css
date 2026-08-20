@@ -2582,3 +2582,158 @@ body.phase-b-focus-mode
     flex-wrap: nowrap;
   }
 }
+
+/* ==========================================================================
+   Phase IL6 - multi-image training sources
+   ========================================================================== */
+
+.phase-il6-training-set-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.phase-il6-training-set-row[hidden] {
+  display: none;
+}
+
+.phase-il6-training-set-row span {
+  min-width: 0;
+  font-size: 12px;
+  opacity: .82;
+}
+
+.phase-il6-training-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10060;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(10, 15, 24, .52);
+}
+
+.phase-il6-training-overlay[hidden] {
+  display: none;
+}
+
+.phase-il6-training-card {
+  width: min(720px, calc(100vw - 28px));
+  max-height: min(760px, calc(100vh - 28px));
+  overflow: auto;
+  border-radius: 14px;
+  padding: 16px;
+  background: var(--panel, #fff);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .28);
+}
+
+.phase-il6-training-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.phase-il6-training-header h3,
+.phase-il6-training-header p {
+  margin: 0;
+}
+
+.phase-il6-training-header p {
+  margin-top: 4px;
+  opacity: .78;
+  font-size: 13px;
+}
+
+.phase-il6-add-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, .75fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.phase-il6-add-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.phase-il6-add-grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+.phase-il6-message {
+  min-height: 18px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.phase-il6-priority-note {
+  margin: 10px 0 12px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: rgba(120, 130, 150, .10);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.phase-il6-training-list {
+  display: grid;
+  gap: 8px;
+}
+
+.phase-il6-source-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(120, 130, 150, .25);
+  border-radius: 9px;
+}
+
+.phase-il6-source-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.phase-il6-source-text strong,
+.phase-il6-source-text span,
+.phase-il6-source-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phase-il6-source-text small {
+  opacity: .72;
+}
+
+.phase-il6-empty {
+  margin: 8px 0;
+  opacity: .7;
+  font-size: 13px;
+}
+
+.phase-il6-training-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+@media (max-width: 700px) {
+  .phase-il6-add-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .phase-il6-training-card {
+    width: calc(100vw - 18px);
+    max-height: calc(100vh - 18px);
+    padding: 13px;
+  }
+}
