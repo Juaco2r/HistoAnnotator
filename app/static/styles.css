@@ -2993,3 +2993,51 @@ body.phase-r-picking-reference .phase-r-panel {
     font-size: 11px;
   }
 }
+
+/* ==========================================================================
+   Phase IL9 - learning evaluation and CSV report
+   ========================================================================== */
+
+.phase-il9-evaluation {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.phase-il9-progress {
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 9px;
+  background: rgba(120, 130, 150, .07);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.phase-il9-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.phase-il9-actions button {
+  min-height: 32px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+.phase-il9-actions button:disabled {
+  opacity: .48;
+}
+
+@media (max-width: 760px) {
+  .phase-il9-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .phase-il9-actions button {
+    width: 100%;
+  }
+}
+

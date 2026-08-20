@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL8.3";
+  const VERSION = "1.4.0-dev-IL9.1c";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -19345,6 +19345,11 @@ function phaseIL7EvaluateStatus({
   suggestionCount,
   delta,
 }) {
+  // Phase IL9.1 - review-performance stability refinement
+  //
+  // Active Learning deliberately surfaces difficult/uncertain candidates.
+  // Absolute uncertainty is therefore secondary to reviewer performance.
+
   if (suggestionCount < 1) {
     return {
       state:
@@ -19353,10 +19358,29 @@ function phaseIL7EvaluateStatus({
         "No suggestions",
       reason:
         "No candidate regions were returned at the current settings.",
+      recentReviewed:
+        0,
+      recentCorrectionRate:
+        null,
+      recentAcceptanceRate:
+        null,
+      uncertaintyChange:
+        null,
     };
   }
 
   if (!history.length) {
+    const firstCorrectionRate =
+      Number.isFinite(
+        Number(
+          delta?.correctionRate
+        )
+      )
+        ? Number(
+            delta.correctionRate
+          )
+        : null;
+
     return {
       state:
         "building",
@@ -19364,6 +19388,26 @@ function phaseIL7EvaluateStatus({
         "Building",
       reason:
         "First measured learning round.",
+      recentReviewed:
+        Math.max(
+          0,
+          Number(
+            delta?.reviewed || 0
+          )
+        ),
+      recentCorrectionRate:
+        firstCorrectionRate,
+      recentAcceptanceRate:
+        Number.isFinite(
+          firstCorrectionRate
+        )
+          ? (
+              1
+              - firstCorrectionRate
+            )
+          : null,
+      uncertaintyChange:
+        null,
     };
   }
 
@@ -19390,44 +19434,137 @@ function phaseIL7EvaluateStatus({
         )
       : null;
 
+  const previousWindow = {
+    reviewed:
+      Math.max(
+        0,
+        Number(
+          previous
+            ?.reviewedSincePrevious
+          || 0
+        )
+      ),
+    corrections:
+      Math.max(
+        0,
+        Number(
+          previous
+            ?.correctionsSincePrevious
+          || 0
+        )
+      ),
+  };
+
+  const currentWindow = {
+    reviewed:
+      Math.max(
+        0,
+        Number(
+          delta?.reviewed || 0
+        )
+      ),
+    corrections:
+      Math.max(
+        0,
+        Number(
+          delta?.corrections || 0
+        )
+      ),
+  };
+
+  const recentWindows =
+    [
+      previousWindow,
+      currentWindow,
+    ].filter(
+      (item) =>
+        item.reviewed > 0
+    );
+
+  const recentReviewed =
+    recentWindows.reduce(
+      (sum, item) =>
+        sum + item.reviewed,
+      0
+    );
+
+  const recentCorrections =
+    recentWindows.reduce(
+      (sum, item) =>
+        sum + item.corrections,
+      0
+    );
+
+  const recentCorrectionRate =
+    recentReviewed > 0
+      ? (
+          recentCorrections
+          / recentReviewed
+        )
+      : null;
+
+  const recentAcceptanceRate =
+    Number.isFinite(
+      recentCorrectionRate
+    )
+      ? (
+          1
+          - recentCorrectionRate
+        )
+      : null;
+
+  const currentCorrectionRate =
+    Number.isFinite(
+      Number(
+        delta?.correctionRate
+      )
+    )
+      ? Number(
+          delta.correctionRate
+        )
+      : null;
+
   const enoughRounds =
     history.length >= 2;
 
-  const enoughReviewed =
-    delta.reviewed >= 4;
+  const twoReviewedWindows =
+    recentWindows.length >= 2;
 
-  const lowCorrection =
+  const enoughRecentReviewed =
+    recentReviewed >= 8;
+
+  const highRecentAcceptance =
     Number.isFinite(
-      delta.correctionRate
+      recentAcceptanceRate
     )
-    && delta.correctionRate <= 0.20;
+    && recentAcceptanceRate >= 0.80;
 
-  const moderateCorrection =
+  const lowRecentCorrection =
+    Number.isFinite(
+      recentCorrectionRate
+    )
+    && recentCorrectionRate <= 0.20;
+
+  const latestWindowAcceptable =
+    Number.isFinite(
+      currentCorrectionRate
+    )
+    && currentCorrectionRate <= 0.25;
+
+  const uncertaintyNotExploding =
     !Number.isFinite(
-      delta.correctionRate
-    )
-    || delta.correctionRate <= 0.45;
-
-  const lowUncertainty =
-    Number.isFinite(uncertainty)
-    && uncertainty <= 0.35;
-
-  const moderateUncertainty =
-    Number.isFinite(uncertainty)
-    && uncertainty <= 0.50;
-
-  const uncertaintyStable =
-    Number.isFinite(
       uncertaintyChange
     )
-    && uncertaintyChange <= 0.08;
+    || uncertaintyChange <= 0.25;
 
   if (
     enoughRounds
-    && enoughReviewed
-    && lowCorrection
-    && lowUncertainty
-    && uncertaintyStable
+    && twoReviewedWindows
+    && enoughRecentReviewed
+    && highRecentAcceptance
+    && lowRecentCorrection
+    && latestWindowAcceptable
+    && uncertaintyNotExploding
   ) {
     return {
       state:
@@ -19435,15 +19572,35 @@ function phaseIL7EvaluateStatus({
       label:
         "Stable",
       reason:
-        "Low uncertainty, few corrections and little round-to-round change.",
+        "Recent review performance is consistently high with few corrections.",
+      recentReviewed,
+      recentCorrectionRate,
+      recentAcceptanceRate,
+      uncertaintyChange,
     };
   }
 
+  const moderateRecentCorrection =
+    Number.isFinite(
+      recentCorrectionRate
+    )
+    && recentCorrectionRate <= 0.35;
+
+  const usefulRecentReview =
+    recentReviewed >= 6;
+
+  const latestReasonable =
+    Number.isFinite(
+      currentCorrectionRate
+    )
+    && currentCorrectionRate <= 0.35;
+
   if (
-    moderateUncertainty
+    enoughRounds
+    && usefulRecentReview
     && (
-      !enoughReviewed
-      || moderateCorrection
+      moderateRecentCorrection
+      || latestReasonable
     )
   ) {
     return {
@@ -19452,7 +19609,11 @@ function phaseIL7EvaluateStatus({
       label:
         "Stabilizing",
       reason:
-        "Predictions are becoming more certain; more reviewed examples are useful before declaring stability.",
+        "Recent review performance is improving; another consistent round can confirm stability.",
+      recentReviewed,
+      recentCorrectionRate,
+      recentAcceptanceRate,
+      uncertaintyChange,
     };
   }
 
@@ -19462,7 +19623,11 @@ function phaseIL7EvaluateStatus({
     label:
       "Improving",
     reason:
-      "The latest reviewed examples can still meaningfully change the learner.",
+      "Reviewer corrections remain useful for the learner.",
+    recentReviewed,
+    recentCorrectionRate,
+    recentAcceptanceRate,
+    uncertaintyChange,
   };
 }
 
@@ -19537,13 +19702,15 @@ function phaseIL7RenderStatus(
 
   if (
     Number.isFinite(
-      Number(entry.uncertainty)
+      Number(
+        entry.recentAcceptanceRate
+      )
     )
   ) {
     details.push(
-      `mean uncertainty ${(
+      `recent acceptance ${(
         Number(
-          entry.uncertainty
+          entry.recentAcceptanceRate
         ) * 100
       ).toFixed(0)}%`
     );
@@ -19552,14 +19719,41 @@ function phaseIL7RenderStatus(
   if (
     Number.isFinite(
       Number(
-        entry.correctionRate
+        entry.recentCorrectionRate
       )
     )
   ) {
     details.push(
-      `correction rate ${(
+      `recent correction ${(
         Number(
-          entry.correctionRate
+          entry.recentCorrectionRate
+        ) * 100
+      ).toFixed(0)}%`
+    );
+  }
+
+  if (
+    Number(
+      entry.recentReviewed
+      || 0
+    ) > 0
+  ) {
+    details.push(
+      `recent reviewed ${Number(
+        entry.recentReviewed
+      )}`
+    );
+  }
+
+  if (
+    Number.isFinite(
+      Number(entry.uncertainty)
+    )
+  ) {
+    details.push(
+      `candidate uncertainty ${(
+        Number(
+          entry.uncertainty
         ) * 100
       ).toFixed(0)}%`
     );
@@ -19662,6 +19856,44 @@ function phaseIL7RecordRound({
       )
         ? delta.correctionRate
         : null,
+    recentReviewed:
+      Math.max(
+        0,
+        Number(
+          status.recentReviewed
+          || 0
+        )
+      ),
+    recentCorrectionRate:
+      Number.isFinite(
+        Number(
+          status.recentCorrectionRate
+        )
+      )
+        ? Number(
+            status.recentCorrectionRate
+          )
+        : null,
+    recentAcceptanceRate:
+      Number.isFinite(
+        Number(
+          status.recentAcceptanceRate
+        )
+      )
+        ? Number(
+            status.recentAcceptanceRate
+          )
+        : null,
+    uncertaintyChange:
+      Number.isFinite(
+        Number(
+          status.uncertaintyChange
+        )
+      )
+        ? Number(
+            status.uncertaintyChange
+          )
+        : null,
     reviewedSincePrevious:
       delta.reviewed,
     correctionsSincePrevious:
@@ -19699,6 +19931,7 @@ function phaseIL7Initialize() {
     );
 
   phaseIL7RenderStatus();
+  phaseIL9Initialize();
 }
 
 
@@ -19756,6 +19989,1521 @@ function phaseIL8ApplySourceReports(
   }
 
   phaseIL6RenderTrainingSources();
+}
+
+
+
+// ========================================================================
+// Phase IL9 - learning evaluation and CSV report
+//
+// Local-only evaluation metadata. No geometry, model weights or images are
+// copied into this history. A configuration is:
+// image + annotation file + target class + source mode + selected sources.
+// ========================================================================
+
+const PHASE_IL9_HISTORY_PREFIX =
+  "histoannotator.il9.evaluation.v1::";
+
+let phaseIL9ActiveContext =
+  null;
+
+
+function phaseIL9Uid(prefix = "il9") {
+  try {
+    if (window.crypto?.randomUUID) {
+      return `${prefix}-${window.crypto.randomUUID()}`;
+    }
+  } catch (_) {}
+
+  return (
+    `${prefix}-${Date.now()}-`
+    + Math.random()
+      .toString(36)
+      .slice(2, 10)
+  );
+}
+
+
+function phaseIL9CurrentConfig() {
+  const refs =
+    phaseIL1Refs();
+
+  const targetClass =
+    String(
+      refs.classSelect?.value
+      || phaseIL1State.targetClass
+      || ""
+    ).trim();
+
+  const trainingMode =
+    phaseIL6TrainingMode();
+
+  const trainingSources =
+    phaseIL6TrainingPayload();
+
+  return {
+    imageId:
+      String(
+        currentImage?.id || ""
+      ),
+    imageName:
+      String(
+        currentImage?.name || ""
+      ),
+    annotationFile:
+      String(
+        currentAnnotationFile
+        || "Default"
+      ),
+    targetClass,
+    trainingMode,
+    trainingSources:
+      trainingSources.map(
+        (item) => ({
+          imageId:
+            String(
+              item?.imageId || ""
+            ),
+          annotationFile:
+            String(
+              item?.annotationFile
+              || "Default"
+            ),
+        })
+      ),
+    sourceSignature:
+      phaseIL7SourceSignature(
+        trainingMode,
+        trainingSources
+      ),
+  };
+}
+
+
+function phaseIL9StorageKey(
+  config = phaseIL9CurrentConfig()
+) {
+  if (
+    !config?.imageId
+    || !config?.targetClass
+  ) {
+    return null;
+  }
+
+  return (
+    PHASE_IL9_HISTORY_PREFIX
+    + encodeURIComponent(
+        [
+          config.imageId,
+          config.annotationFile,
+          config.targetClass
+            .toLowerCase(),
+          config.sourceSignature,
+        ].join("||")
+      )
+  );
+}
+
+
+function phaseIL9EmptyStore(config) {
+  return {
+    schemaVersion: 1,
+    configuration: {
+      imageId:
+        config.imageId,
+      imageName:
+        config.imageName,
+      annotationFile:
+        config.annotationFile,
+      targetClass:
+        config.targetClass,
+      trainingMode:
+        config.trainingMode,
+      sourceSignature:
+        config.sourceSignature,
+      trainingSources:
+        deepClone(
+          config.trainingSources
+        ),
+    },
+    sessions: [],
+  };
+}
+
+
+function phaseIL9ReadStore(
+  key,
+  config = null
+) {
+  if (!key) {
+    return config
+      ? phaseIL9EmptyStore(config)
+      : null;
+  }
+
+  try {
+    const parsed =
+      JSON.parse(
+        localStorage.getItem(key)
+        || "null"
+      );
+
+    if (
+      parsed
+      && typeof parsed === "object"
+      && Array.isArray(
+        parsed.sessions
+      )
+    ) {
+      return parsed;
+    }
+  } catch (_) {}
+
+  return config
+    ? phaseIL9EmptyStore(config)
+    : null;
+}
+
+
+function phaseIL9WriteStore(
+  key,
+  store
+) {
+  if (!key || !store) return;
+
+  store.sessions =
+    (
+      Array.isArray(
+        store.sessions
+      )
+        ? store.sessions
+        : []
+    )
+      .slice(-20)
+      .map(
+        (session) => ({
+          ...session,
+          rounds:
+            (
+              Array.isArray(
+                session?.rounds
+              )
+                ? session.rounds
+                : []
+            ).slice(-60),
+        })
+      );
+
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify(store)
+    );
+  } catch (error) {
+    console.warn(
+      "IL9 evaluation history could not be saved",
+      error
+    );
+  }
+}
+
+
+function phaseIL9NewSessionRecord(
+  config
+) {
+  return {
+    id:
+      phaseIL9Uid("session"),
+    startedAt:
+      new Date().toISOString(),
+    endedAt:
+      null,
+    imageId:
+      config.imageId,
+    imageName:
+      config.imageName,
+    annotationFile:
+      config.annotationFile,
+    targetClass:
+      config.targetClass,
+    trainingMode:
+      config.trainingMode,
+    sourceSignature:
+      config.sourceSignature,
+    trainingSources:
+      deepClone(
+        config.trainingSources
+      ),
+    rounds: [],
+  };
+}
+
+
+function phaseIL9EnsureSession(
+  store,
+  config
+) {
+  let session =
+    store.sessions[
+      store.sessions.length - 1
+    ];
+
+  if (
+    !session
+    || session.endedAt
+  ) {
+    session =
+      phaseIL9NewSessionRecord(
+        config
+      );
+
+    store.sessions.push(
+      session
+    );
+  }
+
+  return session;
+}
+
+
+function phaseIL9RoundMetrics(
+  round
+) {
+  const decisions =
+    Object.values(
+      round?.decisions || {}
+    );
+
+  const reviewed =
+    decisions.length;
+
+  const accepted =
+    decisions.filter(
+      (item) =>
+        item?.decision
+        === "accepted"
+        && !item?.edited
+    ).length;
+
+  const rejected =
+    decisions.filter(
+      (item) =>
+        item?.decision
+        === "rejected"
+    ).length;
+
+  const reclassified =
+    decisions.filter(
+      (item) =>
+        item?.decision
+        === "reclassified"
+    ).length;
+
+  const edited =
+    decisions.filter(
+      (item) =>
+        Boolean(
+          item?.edited
+        )
+        || item?.decision
+          === "edited"
+    ).length;
+
+  const corrections =
+    decisions.filter(
+      (item) =>
+        item?.decision
+          !== "accepted"
+        || Boolean(
+          item?.edited
+        )
+    ).length;
+
+  const later =
+    new Set(
+      Array.isArray(
+        round?.laterIds
+      )
+        ? round.laterIds
+        : []
+    ).size;
+
+  return {
+    reviewed,
+    accepted,
+    rejected,
+    edited,
+    reclassified,
+    later,
+    corrections,
+    acceptanceRate:
+      reviewed > 0
+        ? accepted / reviewed
+        : null,
+    correctionRate:
+      reviewed > 0
+        ? corrections / reviewed
+        : null,
+    editRate:
+      reviewed > 0
+        ? edited / reviewed
+        : null,
+    reclassificationRate:
+      reviewed > 0
+        ? reclassified / reviewed
+        : null,
+  };
+}
+
+
+function phaseIL9SessionMetrics(
+  session
+) {
+  const rounds =
+    Array.isArray(
+      session?.rounds
+    )
+      ? session.rounds
+      : [];
+
+  const totals = {
+    reviewed: 0,
+    accepted: 0,
+    rejected: 0,
+    edited: 0,
+    reclassified: 0,
+    later: 0,
+    corrections: 0,
+  };
+
+  let stableRound =
+    null;
+
+  for (const round of rounds) {
+    const metrics =
+      phaseIL9RoundMetrics(
+        round
+      );
+
+    for (
+      const key
+      of Object.keys(totals)
+    ) {
+      totals[key] +=
+        Number(
+          metrics[key] || 0
+        );
+    }
+
+    if (
+      stableRound === null
+      && String(
+        round?.stabilityState
+        || ""
+      ) === "stable"
+    ) {
+      stableRound =
+        Number(
+          round?.round || 0
+        )
+        || null;
+    }
+  }
+
+  return {
+    ...totals,
+    rounds:
+      rounds.length,
+    stableRound,
+    acceptanceRate:
+      totals.reviewed > 0
+        ? (
+            totals.accepted
+            / totals.reviewed
+          )
+        : null,
+    correctionRate:
+      totals.reviewed > 0
+        ? (
+            totals.corrections
+            / totals.reviewed
+          )
+        : null,
+  };
+}
+
+
+function phaseIL9Mean(
+  values
+) {
+  const usable =
+    values
+      .map(Number)
+      .filter(
+        Number.isFinite
+      );
+
+  if (!usable.length) {
+    return null;
+  }
+
+  return (
+    usable.reduce(
+      (sum, value) =>
+        sum + value,
+      0
+    )
+    / usable.length
+  );
+}
+
+
+function phaseIL9SourceMetrics(
+  model
+) {
+  const reports =
+    Array.isArray(
+      model?.trainingSources
+    )
+      ? model.trainingSources
+      : [];
+
+  const similarities =
+    reports.map(
+      (item) =>
+        item?.appearanceSimilarity
+    );
+
+  const weights =
+    reports.map(
+      (item) =>
+        item?.effectiveWeight
+    );
+
+  const usableSimilarities =
+    similarities
+      .map(Number)
+      .filter(
+        Number.isFinite
+      );
+
+  return {
+    auxiliarySourceCount:
+      reports.length,
+    meanAuxiliarySimilarity:
+      phaseIL9Mean(
+        similarities
+      ),
+    minAuxiliarySimilarity:
+      usableSimilarities.length
+        ? Math.min(
+            ...usableSimilarities
+          )
+        : null,
+    maxAuxiliarySimilarity:
+      usableSimilarities.length
+        ? Math.max(
+            ...usableSimilarities
+          )
+        : null,
+    meanAuxiliaryWeight:
+      phaseIL9Mean(
+        weights
+      ),
+  };
+}
+
+
+function phaseIL9SuggestionId(
+  suggestion
+) {
+  return String(
+    suggestion?.id || ""
+  );
+}
+
+
+function phaseIL9MutateActiveRound(
+  mutate
+) {
+  const context =
+    phaseIL9ActiveContext;
+
+  if (!context?.key) {
+    return false;
+  }
+
+  const store =
+    phaseIL9ReadStore(
+      context.key
+    );
+
+  if (!store) return false;
+
+  const session =
+    store.sessions.find(
+      (item) =>
+        String(item?.id || "")
+        === String(
+          context.sessionId || ""
+        )
+    );
+
+  if (!session) {
+    return false;
+  }
+
+  const round =
+    (session.rounds || [])
+      .find(
+        (item) =>
+          String(item?.id || "")
+          === String(
+            context.roundId || ""
+          )
+      );
+
+  if (!round) {
+    return false;
+  }
+
+  mutate(
+    round,
+    session,
+    store
+  );
+
+  phaseIL9WriteStore(
+    context.key,
+    store
+  );
+
+  phaseIL9RenderProgress(
+    context.key
+  );
+
+  return true;
+}
+
+
+function phaseIL9RecordDecisionById(
+  suggestionId,
+  decision,
+  {
+    edited = false,
+  } = {}
+) {
+  const id =
+    String(
+      suggestionId || ""
+    );
+
+  if (!id) return;
+
+  const normalized =
+    String(
+      decision || ""
+    ).toLowerCase();
+
+  const allowed =
+    new Set([
+      "accepted",
+      "rejected",
+      "edited",
+      "reclassified",
+    ]);
+
+  if (!allowed.has(normalized)) {
+    return;
+  }
+
+  phaseIL9MutateActiveRound(
+    (round) => {
+      round.decisions =
+        round.decisions
+        && typeof round.decisions
+          === "object"
+          ? round.decisions
+          : {};
+
+      if (round.decisions[id]) {
+        return;
+      }
+
+      round.decisions[id] = {
+        decision:
+          normalized,
+        edited:
+          Boolean(edited)
+          || normalized === "edited",
+        decidedAt:
+          new Date().toISOString(),
+      };
+
+      round.lastActionAt =
+        new Date().toISOString();
+    }
+  );
+}
+
+
+function phaseIL9RecordDecision(
+  suggestion,
+  decision,
+  options = {}
+) {
+  phaseIL9RecordDecisionById(
+    phaseIL9SuggestionId(
+      suggestion
+    ),
+    decision,
+    options
+  );
+}
+
+
+function phaseIL9RecordLater(
+  suggestion
+) {
+  const id =
+    phaseIL9SuggestionId(
+      suggestion
+    );
+
+  if (!id) return;
+
+  phaseIL9MutateActiveRound(
+    (round) => {
+      const ids =
+        new Set(
+          Array.isArray(
+            round.laterIds
+          )
+            ? round.laterIds
+            : []
+        );
+
+      ids.add(id);
+
+      round.laterIds =
+        [...ids];
+
+      round.lastActionAt =
+        new Date().toISOString();
+    }
+  );
+}
+
+
+function phaseIL9StartRound({
+  config,
+  learningStartedAt,
+  model,
+  suggestions,
+  stabilityEntry,
+  sensitivity,
+  smoothing,
+  minAreaPercent,
+  excludeAnnotated,
+}) {
+  const key =
+    phaseIL9StorageKey(
+      config
+    );
+
+  if (!key) return;
+
+  const store =
+    phaseIL9ReadStore(
+      key,
+      config
+    );
+
+  store.configuration = {
+    imageId:
+      config.imageId,
+    imageName:
+      config.imageName,
+    annotationFile:
+      config.annotationFile,
+    targetClass:
+      config.targetClass,
+    trainingMode:
+      config.trainingMode,
+    sourceSignature:
+      config.sourceSignature,
+    trainingSources:
+      deepClone(
+        config.trainingSources
+      ),
+  };
+
+  const session =
+    phaseIL9EnsureSession(
+      store,
+      config
+    );
+
+  const now =
+    Date.now();
+
+  const sourceMetrics =
+    phaseIL9SourceMetrics(
+      model
+    );
+
+  const round = {
+    id:
+      phaseIL9Uid("round"),
+    round:
+      (session.rounds?.length || 0)
+      + 1,
+    startedAt:
+      new Date(
+        learningStartedAt
+      ).toISOString(),
+    completedAt:
+      new Date(now)
+        .toISOString(),
+    lastActionAt:
+      null,
+    learningDurationMs:
+      Math.max(
+        0,
+        now
+        - Number(
+            learningStartedAt
+            || now
+          )
+      ),
+    suggestionsGenerated:
+      Array.isArray(
+        suggestions
+      )
+        ? suggestions.length
+        : 0,
+    meanUncertainty:
+      phaseIL7MeanUncertainty(
+        suggestions
+      ),
+    sensitivity:
+      Number(
+        sensitivity
+      ),
+    smoothing:
+      Number(
+        smoothing
+      ),
+    minAreaPercent:
+      Number(
+        minAreaPercent
+      ),
+    excludeAnnotated:
+      Boolean(
+        excludeAnnotated
+      ),
+    modelType:
+      String(
+        model?.type || ""
+      ),
+    positiveTrainingPixels:
+      Number(
+        model?.positiveTrainingPixels
+        || 0
+      ),
+    negativeTrainingPixels:
+      Number(
+        model?.negativeTrainingPixels
+        || 0
+      ),
+    auxiliarySourceCount:
+      sourceMetrics
+        .auxiliarySourceCount,
+    meanAuxiliarySimilarity:
+      sourceMetrics
+        .meanAuxiliarySimilarity,
+    minAuxiliarySimilarity:
+      sourceMetrics
+        .minAuxiliarySimilarity,
+    maxAuxiliarySimilarity:
+      sourceMetrics
+        .maxAuxiliarySimilarity,
+    meanAuxiliaryWeight:
+      sourceMetrics
+        .meanAuxiliaryWeight,
+    stabilityState:
+      String(
+        stabilityEntry?.state
+        || "unassessed"
+      ),
+    stabilityLabel:
+      String(
+        stabilityEntry?.label
+        || "Not assessed"
+      ),
+    stabilityRecentReviewed:
+      Math.max(
+        0,
+        Number(
+          stabilityEntry
+            ?.recentReviewed
+          || 0
+        )
+      ),
+    stabilityRecentAcceptanceRate:
+      Number.isFinite(
+        Number(
+          stabilityEntry
+            ?.recentAcceptanceRate
+        )
+      )
+        ? Number(
+            stabilityEntry
+              .recentAcceptanceRate
+          )
+        : null,
+    stabilityRecentCorrectionRate:
+      Number.isFinite(
+        Number(
+          stabilityEntry
+            ?.recentCorrectionRate
+        )
+      )
+        ? Number(
+            stabilityEntry
+              .recentCorrectionRate
+          )
+        : null,
+    decisions: {},
+    laterIds: [],
+  };
+
+  session.rounds ||= [];
+  session.rounds.push(
+    round
+  );
+
+  phaseIL9WriteStore(
+    key,
+    store
+  );
+
+  phaseIL9ActiveContext = {
+    key,
+    sessionId:
+      session.id,
+    roundId:
+      round.id,
+  };
+
+  phaseIL9RenderProgress(
+    key
+  );
+}
+
+
+function phaseIL9UiRefs() {
+  return {
+    progress:
+      document.getElementById(
+        "phaseIL9Progress"
+      ),
+    exportButton:
+      document.getElementById(
+        "phaseIL9ExportButton"
+      ),
+    newSessionButton:
+      document.getElementById(
+        "phaseIL9NewSessionButton"
+      ),
+  };
+}
+
+
+function phaseIL9StoreForDisplay(
+  preferredKey = null
+) {
+  const config =
+    phaseIL9CurrentConfig();
+
+  const currentKey =
+    phaseIL9StorageKey(
+      config
+    );
+
+  const key =
+    preferredKey
+    || (
+      (
+        phaseIL1State
+          .suggestions
+          ?.length
+        || phaseIL21EditSession
+      )
+        ? phaseIL9ActiveContext?.key
+        : null
+    )
+    || currentKey;
+
+  if (!key) {
+    return {
+      key: null,
+      store: null,
+    };
+  }
+
+  return {
+    key,
+    store:
+      phaseIL9ReadStore(
+        key,
+        key === currentKey
+          ? config
+          : null
+      ),
+  };
+}
+
+
+function phaseIL9RenderProgress(
+  preferredKey = null
+) {
+  const refs =
+    phaseIL9UiRefs();
+
+  if (!refs.progress) return;
+
+  const {
+    store,
+  } =
+    phaseIL9StoreForDisplay(
+      preferredKey
+    );
+
+  const session =
+    store?.sessions?.[
+      store.sessions.length - 1
+    ];
+
+  if (
+    !session
+    || !session.rounds?.length
+  ) {
+    refs.progress.textContent =
+      "Learning progress · no rounds yet";
+
+    refs.progress.title =
+      "Run Learn & suggest to start an evaluation session.";
+
+    if (refs.exportButton) {
+      refs.exportButton.disabled =
+        !store?.sessions?.some(
+          (item) =>
+            item?.rounds?.length
+        );
+    }
+
+    return;
+  }
+
+  const metrics =
+    phaseIL9SessionMetrics(
+      session
+    );
+
+  const latest =
+    session.rounds[
+      session.rounds.length - 1
+    ];
+
+  const acceptance =
+    metrics.acceptanceRate === null
+      ? "—"
+      : (
+          `${Math.round(
+            metrics.acceptanceRate
+            * 100
+          )}%`
+        );
+
+  const stateText =
+    metrics.stableRound
+      ? (
+          `Stable after ${metrics.stableRound} round`
+          + `${metrics.stableRound === 1 ? "" : "s"}`
+        )
+      : (
+          latest?.stabilityLabel
+          || "Not assessed"
+        );
+
+  refs.progress.textContent =
+    (
+      `Learning progress · Reviewed ${metrics.reviewed}`
+      + ` · Accepted ${acceptance}`
+      + ` · Round ${metrics.rounds}`
+      + ` · ${stateText}`
+    );
+
+  refs.progress.title =
+    (
+      `Rejected ${metrics.rejected}`
+      + ` · Edited ${metrics.edited}`
+      + ` · Reclassified ${metrics.reclassified}`
+      + ` · Later ${metrics.later}`
+      + (
+          metrics.correctionRate === null
+            ? ""
+            : (
+                ` · Correction rate `
+                + `${Math.round(
+                    metrics.correctionRate
+                    * 100
+                  )}%`
+              )
+        )
+    );
+
+  if (refs.exportButton) {
+    refs.exportButton.disabled =
+      false;
+  }
+}
+
+
+function phaseIL9FormatRate(
+  value
+) {
+  const number =
+    Number(value);
+
+  if (!Number.isFinite(number)) {
+    return "";
+  }
+
+  return (
+    number * 100
+  ).toFixed(2);
+}
+
+
+function phaseIL9ReviewElapsedMs(
+  round
+) {
+  if (
+    !round?.completedAt
+    || !round?.lastActionAt
+  ) {
+    return null;
+  }
+
+  const start =
+    Date.parse(
+      round.completedAt
+    );
+
+  const end =
+    Date.parse(
+      round.lastActionAt
+    );
+
+  if (
+    !Number.isFinite(start)
+    || !Number.isFinite(end)
+  ) {
+    return null;
+  }
+
+  return Math.max(
+    0,
+    end - start
+  );
+}
+
+
+function phaseIL9ExportReport() {
+  const {
+    key,
+    store,
+  } =
+    phaseIL9StoreForDisplay();
+
+  const sessions =
+    store?.sessions || [];
+
+  if (
+    !key
+    || !sessions.some(
+      (session) =>
+        session?.rounds?.length
+    )
+  ) {
+    setStatus(
+      "No learning evaluation rounds to export",
+      "error"
+    );
+    return;
+  }
+
+  const header = [
+    "SessionId",
+    "SessionStartedAt",
+    "Image",
+    "AnnotationFile",
+    "TargetClass",
+    "SourceMode",
+    "SourceSignature",
+    "AuxiliarySources",
+    "Round",
+    "RoundStartedAt",
+    "RoundCompletedAt",
+    "LearningDuration_s",
+    "ReviewElapsed_s",
+    "SuggestionsGenerated",
+    "Reviewed",
+    "Accepted",
+    "Rejected",
+    "Edited",
+    "Reclassified",
+    "Later",
+    "AcceptanceRate_pct",
+    "CorrectionRate_pct",
+    "EditRate_pct",
+    "ReclassificationRate_pct",
+    "MeanUncertainty",
+    "StabilityState",
+    "StabilityLabel",
+    "StabilityRecentReviewed",
+    "StabilityRecentAcceptanceRate_pct",
+    "StabilityRecentCorrectionRate_pct",
+    "Model",
+    "PositiveTrainingPixels",
+    "NegativeTrainingPixels",
+    "MeanAuxiliarySimilarity_pct",
+    "MinAuxiliarySimilarity_pct",
+    "MaxAuxiliarySimilarity_pct",
+    "MeanAuxiliaryWeight",
+    "Sensitivity",
+    "Smoothing",
+    "MinimumSuggestionArea_pct",
+    "ExcludeAnnotated",
+  ];
+
+  const rows = [
+    header,
+  ];
+
+  for (const session of sessions) {
+    for (
+      const round
+      of session?.rounds || []
+    ) {
+      const metrics =
+        phaseIL9RoundMetrics(
+          round
+        );
+
+      const reviewElapsed =
+        phaseIL9ReviewElapsedMs(
+          round
+        );
+
+      rows.push([
+        session.id || "",
+        session.startedAt || "",
+        session.imageName || "",
+        session.annotationFile || "",
+        session.targetClass || "",
+        session.trainingMode || "",
+        session.sourceSignature || "",
+        Array.isArray(
+          session.trainingSources
+        )
+          ? session.trainingSources.length
+          : 0,
+        round.round || "",
+        round.startedAt || "",
+        round.completedAt || "",
+        Number.isFinite(
+          Number(
+            round.learningDurationMs
+          )
+        )
+          ? (
+              Number(
+                round.learningDurationMs
+              ) / 1000
+            ).toFixed(3)
+          : "",
+        reviewElapsed === null
+          ? ""
+          : (
+              reviewElapsed / 1000
+            ).toFixed(3),
+        round.suggestionsGenerated ?? "",
+        metrics.reviewed,
+        metrics.accepted,
+        metrics.rejected,
+        metrics.edited,
+        metrics.reclassified,
+        metrics.later,
+        phaseIL9FormatRate(
+          metrics.acceptanceRate
+        ),
+        phaseIL9FormatRate(
+          metrics.correctionRate
+        ),
+        phaseIL9FormatRate(
+          metrics.editRate
+        ),
+        phaseIL9FormatRate(
+          metrics.reclassificationRate
+        ),
+        Number.isFinite(
+          Number(
+            round.meanUncertainty
+          )
+        )
+          ? Number(
+              round.meanUncertainty
+            ).toFixed(6)
+          : "",
+        round.stabilityState || "",
+        round.stabilityLabel || "",
+        round.stabilityRecentReviewed ?? "",
+        phaseIL9FormatRate(
+          round.stabilityRecentAcceptanceRate
+        ),
+        phaseIL9FormatRate(
+          round.stabilityRecentCorrectionRate
+        ),
+        round.modelType || "",
+        round.positiveTrainingPixels ?? "",
+        round.negativeTrainingPixels ?? "",
+        phaseIL9FormatRate(
+          round.meanAuxiliarySimilarity
+        ),
+        phaseIL9FormatRate(
+          round.minAuxiliarySimilarity
+        ),
+        phaseIL9FormatRate(
+          round.maxAuxiliarySimilarity
+        ),
+        Number.isFinite(
+          Number(
+            round.meanAuxiliaryWeight
+          )
+        )
+          ? Number(
+              round.meanAuxiliaryWeight
+            ).toFixed(6)
+          : "",
+        round.sensitivity ?? "",
+        round.smoothing ?? "",
+        round.minAreaPercent ?? "",
+        round.excludeAnnotated
+          ? "true"
+          : "false",
+      ]);
+    }
+  }
+
+  const csv =
+    rows
+      .map(
+        (row) =>
+          row
+            .map(
+              phaseECsvCell
+            )
+            .join(",")
+      )
+      .join("\r\n")
+    + "\r\n";
+
+  const configuration =
+    store.configuration || {};
+
+  const imagePart =
+    String(
+      configuration.imageName
+      || "image"
+    )
+      .replace(
+        /\.[^.]+$/,
+        ""
+      )
+      .replace(
+        /[^A-Za-z0-9._-]+/g,
+        "_"
+      );
+
+  const classPart =
+    String(
+      configuration.targetClass
+      || "class"
+    )
+      .replace(
+        /[^A-Za-z0-9._-]+/g,
+        "_"
+      );
+
+  phaseEDownloadText(
+    `${imagePart}_${classPart}_learning_report.csv`,
+    csv
+  );
+
+  setStatus(
+    "Learning report CSV exported",
+    "saved"
+  );
+}
+
+
+function phaseIL9StartNewSession() {
+  const config =
+    phaseIL9CurrentConfig();
+
+  const key =
+    phaseIL9StorageKey(
+      config
+    );
+
+  if (!key) {
+    setStatus(
+      "Choose an image and target class first",
+      "error"
+    );
+    return;
+  }
+
+  const hasActiveReview =
+    Boolean(
+      phaseIL1State
+        .suggestions
+        ?.length
+    )
+    || Boolean(
+      phaseIL21EditSession
+    );
+
+  if (
+    hasActiveReview
+    && !window.confirm(
+      "Start a new evaluation session? Current temporary suggestions will be cleared."
+    )
+  ) {
+    return;
+  }
+
+  const store =
+    phaseIL9ReadStore(
+      key,
+      config
+    );
+
+  const previous =
+    store.sessions[
+      store.sessions.length - 1
+    ];
+
+  if (
+    previous
+    && !previous.endedAt
+  ) {
+    previous.endedAt =
+      new Date().toISOString();
+  }
+
+  const session =
+    phaseIL9NewSessionRecord(
+      config
+    );
+
+  store.sessions.push(
+    session
+  );
+
+  phaseIL9WriteStore(
+    key,
+    store
+  );
+
+  phaseIL9ActiveContext =
+    null;
+
+  if (hasActiveReview) {
+    phaseIL1ClearSuggestions(
+      "New evaluation session started. Run Learn & suggest.",
+      true
+    );
+  }
+
+  phaseIL9RenderProgress(
+    key
+  );
+
+  setStatus(
+    "New learning evaluation session started",
+    "saved"
+  );
+}
+
+
+function phaseIL9Initialize() {
+  const refs =
+    phaseIL9UiRefs();
+
+  if (
+    refs.exportButton
+    && !refs.exportButton
+      .dataset.il9Bound
+  ) {
+    refs.exportButton
+      .dataset.il9Bound =
+        "true";
+
+    refs.exportButton
+      .addEventListener(
+        "click",
+        phaseIL9ExportReport
+      );
+  }
+
+  if (
+    refs.newSessionButton
+    && !refs.newSessionButton
+      .dataset.il9Bound
+  ) {
+    refs.newSessionButton
+      .dataset.il9Bound =
+        "true";
+
+    refs.newSessionButton
+      .addEventListener(
+        "click",
+        phaseIL9StartNewSession
+      );
+  }
+
+  const ilRefs =
+    phaseIL1Refs();
+
+  ilRefs.classSelect
+    ?.addEventListener(
+      "change",
+      () =>
+        phaseIL9RenderProgress()
+    );
+
+  ilRefs.sourceSelect
+    ?.addEventListener(
+      "change",
+      () =>
+        phaseIL9RenderProgress()
+    );
+
+  phaseIL9RenderProgress();
 }
 
 
@@ -20048,6 +21796,26 @@ function phaseIL1EnsureUi() {
            data-state="unassessed"
            title="Run Learn & suggest to start measuring learning stability.">
         Learning: not assessed
+      </div>
+
+      <div class="phase-il9-evaluation">
+        <div id="phaseIL9Progress"
+             class="phase-il9-progress">
+          Learning progress · no rounds yet
+        </div>
+
+        <div class="phase-il9-actions">
+          <button id="phaseIL9ExportButton"
+                  type="button"
+                  disabled>
+            Export learning report
+          </button>
+
+          <button id="phaseIL9NewSessionButton"
+                  type="button">
+            New session
+          </button>
+        </div>
       </div>
 
       <div id="phaseIL1SuggestionPanel"
@@ -20505,6 +22273,7 @@ function phaseIL1Open() {
 
   phaseIL1PopulateClasses();
   phaseIL7RenderStatus();
+  phaseIL9RenderProgress();
 
   refs.overlay.hidden =
     false;
@@ -20780,6 +22549,9 @@ async function phaseIL1Run() {
     return;
   }
 
+  const phaseIL9LearningStartedAt =
+    Date.now();
+
   phaseIL1SetBusy(true);
 
   phaseIL1State.targetClass =
@@ -20896,13 +22668,63 @@ async function phaseIL1Run() {
         targetClass
       );
 
-    phaseIL7RecordRound({
-      targetClass,
-      trainingMode,
-      trainingSources,
+    const phaseIL9StabilityEntry =
+      phaseIL7RecordRound({
+        targetClass,
+        trainingMode,
+        trainingSources,
+        suggestions:
+          phaseIL1State.suggestions,
+        feedbackSummary,
+      });
+
+    phaseIL9StartRound({
+      config: {
+        imageId:
+          String(currentImage?.id || ""),
+        imageName:
+          String(currentImage?.name || ""),
+        annotationFile:
+          String(
+            currentAnnotationFile
+            || "Default"
+          ),
+        targetClass,
+        trainingMode,
+        trainingSources:
+          deepClone(
+            trainingSources
+          ),
+        sourceSignature:
+          phaseIL7SourceSignature(
+            trainingMode,
+            trainingSources
+          ),
+      },
+      learningStartedAt:
+        phaseIL9LearningStartedAt,
+      model,
       suggestions:
         phaseIL1State.suggestions,
-      feedbackSummary,
+      stabilityEntry:
+        phaseIL9StabilityEntry,
+      sensitivity:
+        Number(
+          refs.sensitivity?.value
+          || 50
+        ),
+      smoothing:
+        Number(
+          refs.smoothing?.value
+          || 45
+        ),
+      minAreaPercent:
+        minArea,
+      excludeAnnotated:
+        Boolean(
+          refs.excludeAnnotated
+            ?.checked
+        ),
     });
 
     phaseIL1UpdateTrainingHint(
@@ -21214,6 +23036,11 @@ function phaseIL1Reject() {
     suggestion
   );
 
+  phaseIL9RecordDecision(
+    suggestion,
+    "rejected"
+  );
+
   phaseIL1RemoveCurrentSuggestion();
 
   setStatus(
@@ -21345,6 +23172,18 @@ function phaseIL1AcceptCurrent(
     feature,
     finalClass,
     false
+  );
+
+  phaseIL9RecordDecision(
+    suggestion,
+    feature?.properties
+      ?.histoannotator
+      ?.interactiveLearning
+      ?.decision
+      || "accepted",
+    {
+      edited: false,
+    }
   );
 
   pushUndo();
@@ -22403,6 +24242,10 @@ function phaseIL2ReviewLater() {
     suggestions[0].reviewLater =
       true;
 
+    phaseIL9RecordLater(
+      suggestions[0]
+    );
+
     phaseIL1UpdateTrainingHint(
       "Only one suggestion remains. It is marked Review later."
     );
@@ -22419,6 +24262,10 @@ function phaseIL2ReviewLater() {
 
   current.reviewLater =
     true;
+
+  phaseIL9RecordLater(
+    current
+  );
 
   suggestions.push(current);
 
@@ -22488,6 +24335,14 @@ function phaseIL2AssignCurrent() {
     className;
   il.reclassifiedAt =
     new Date().toISOString();
+
+  phaseIL9RecordDecision(
+    suggestion,
+    "reclassified",
+    {
+      edited: false,
+    }
+  );
 
   pushUndo();
 
@@ -22876,6 +24731,22 @@ function phaseIL21FinishEdit() {
   );
 
   markChanged();
+
+  phaseIL9RecordDecisionById(
+    String(
+      phaseIL21EditSession
+        ?.suggestionId
+      || ""
+    ),
+    feature?.properties
+      ?.histoannotator
+      ?.interactiveLearning
+      ?.decision
+      || "edited",
+    {
+      edited: true,
+    }
+  );
 
   phaseIL1State.applyingSuggestion = false;
   phaseIL21EditSession = null;
@@ -23632,7 +25503,6 @@ function phaseIL1Initialize() {
     phaseIL11Initialize();
     phaseIL12Initialize();
     phaseRInitialize();
-    phaseIL7Initialize();
     setClassManagerOpen(false);
     els.inputGuide.hidden = false;
     setDrawingProfile("default");
@@ -23644,6 +25514,23 @@ function phaseIL1Initialize() {
     requestPersistentStorage();
     registerOfflineServiceWorker();
     await Promise.all([loadClasses(), loadImages(false)]);
+
+    // Phase IL9.1a - bootstrap isolation
+    // Core image/class loading must complete before optional
+    // Interactive Learning evaluation initialization.
+    try {
+      phaseIL7Initialize();
+    } catch (error) {
+      console.error(
+        "Interactive Learning evaluation initialization failed",
+        error
+      );
+
+      setStatus(
+        "Images loaded · Learning evaluation initialization needs attention",
+        "local"
+      );
+    }
   }
 
   start().catch((error) => setStatus(`Startup error: ${error.message}`, "error"));
