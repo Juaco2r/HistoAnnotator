@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL10.3a"}
+    return {"status": "ok", "version": "1.4.0-dev-IL11.0"}
 
 
 @app.get("/health")
@@ -5827,9 +5827,15 @@ def interactive_learning_capabilities() -> dict[str, Any]:
             {
                 "id": "C",
                 "label": "Deep Spatial",
-                "available": False,
+                "available": bool(
+                    runtime.get(
+                        "ready",
+                        False,
+                    )
+                ),
                 "approach": (
-                    "patch-based deep segmentation"
+                    "frozen ResNet18 spatial embeddings "
+                    "+ trainable convolutional segmentation head"
                 ),
                 "device": "auto",
             },
@@ -8036,6 +8042,434 @@ def _il10_b_deep_feature_probability_map(
     }
 
 
+
+# ============================================================================
+# Phase IL11.0 - Deep Spatial current-image model
+# ============================================================================
+def _il11_c_mask_to_grid(
+    mask: np.ndarray,
+    grid_height: int,
+    grid_width: int,
+    torch_module: Any,
+) -> np.ndarray:
+    import torch.nn.functional as F
+
+    tensor = torch_module.from_numpy(
+        np.asarray(mask, dtype=np.float32)
+    ).view(
+        1,
+        1,
+        int(mask.shape[0]),
+        int(mask.shape[1]),
+    )
+
+    pooled = F.adaptive_max_pool2d(
+        tensor,
+        (int(grid_height), int(grid_width)),
+    )
+
+    return (
+        pooled[0, 0]
+        .detach()
+        .cpu()
+        .numpy()
+        > 0.0
+    )
+
+
+def _il11_c_spatial_probability_map(
+    image_id: str,
+    rgb: np.ndarray,
+    positive_mask: np.ndarray,
+    negative_mask: np.ndarray,
+    positive_feedback_mask: np.ndarray,
+    negative_feedback_mask: np.ndarray,
+    sensitivity: float,
+    rng: np.random.Generator,
+) -> dict[str, Any]:
+    try:
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Deep Spatial requires PyTorch: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+
+    if (
+        rgb.ndim != 3
+        or rgb.shape[2] != 3
+        or rgb.shape[:2] != positive_mask.shape
+        or rgb.shape[:2] != negative_mask.shape
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Deep Spatial received an invalid RGB/mask layout",
+        )
+
+    original_height, original_width = map(
+        int,
+        rgb.shape[:2],
+    )
+
+    requested_device = _il10_b_device(torch)
+    maximum_side = 1280 if requested_device == "cuda" else 896
+    fallback_reason = None
+    used_device = requested_device
+
+    try:
+        (
+            embeddings,
+            analysis_height,
+            analysis_width,
+            cache_info,
+        ) = _il10_b_cached_embedding_grid(
+            rgb,
+            torch,
+            requested_device,
+            maximum_side,
+            image_id,
+        )
+    except RuntimeError as exc:
+        if requested_device != "cuda":
+            raise
+
+        fallback_reason = (
+            "CUDA embedding extraction failed; "
+            f"used CPU fallback: {type(exc).__name__}"
+        )
+        used_device = "cpu"
+        maximum_side = 896
+
+        (
+            embeddings,
+            analysis_height,
+            analysis_width,
+            cache_info,
+        ) = _il10_b_cached_embedding_grid(
+            rgb,
+            torch,
+            used_device,
+            maximum_side,
+            image_id,
+        )
+
+    grid_height, grid_width, embedding_dimensions = map(
+        int,
+        embeddings.shape,
+    )
+
+    base_positive_grid = _il11_c_mask_to_grid(
+        positive_mask,
+        grid_height,
+        grid_width,
+        torch,
+    )
+    base_negative_grid = _il11_c_mask_to_grid(
+        negative_mask,
+        grid_height,
+        grid_width,
+        torch,
+    )
+    feedback_positive_grid = _il11_c_mask_to_grid(
+        positive_feedback_mask,
+        grid_height,
+        grid_width,
+        torch,
+    )
+    feedback_negative_grid = _il11_c_mask_to_grid(
+        negative_feedback_mask,
+        grid_height,
+        grid_width,
+        torch,
+    )
+
+    training_positive_grid = (
+        base_positive_grid
+        | feedback_positive_grid
+    )
+    training_negative_grid = (
+        base_negative_grid
+        | feedback_negative_grid
+    )
+
+    # Explicit feedback overrides prior/coarser supervision.
+    training_positive_grid &= ~feedback_negative_grid
+    training_negative_grid &= ~feedback_positive_grid
+    training_negative_grid &= ~training_positive_grid
+
+    positive_cells = int(
+        np.count_nonzero(training_positive_grid)
+    )
+    negative_cells = int(
+        np.count_nonzero(training_negative_grid)
+    )
+
+    if positive_cells < 2:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Deep Spatial needs positive annotations covering "
+                "at least two deep-grid cells."
+            ),
+        )
+
+    if negative_cells < 2:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Deep Spatial needs negative/context examples covering "
+                "at least two deep-grid cells."
+            ),
+        )
+
+    positive_samples = _il10_b_sample_embeddings(
+        embeddings,
+        training_positive_grid,
+        8000,
+        rng,
+    )
+    negative_samples = _il10_b_sample_embeddings(
+        embeddings,
+        training_negative_grid,
+        8000,
+        rng,
+    )
+    positive_feedback_samples = _il10_b_sample_embeddings(
+        embeddings,
+        feedback_positive_grid,
+        3000,
+        rng,
+    )
+    negative_feedback_samples = _il10_b_sample_embeddings(
+        embeddings,
+        feedback_negative_grid,
+        3000,
+        rng,
+    )
+
+    feature_tensor = (
+        torch.from_numpy(
+            np.ascontiguousarray(
+                embeddings.transpose(2, 0, 1)
+            )
+        )
+        .unsqueeze(0)
+        .float()
+        .to(used_device)
+    )
+
+    label_numpy = np.zeros(
+        (grid_height, grid_width),
+        dtype=np.float32,
+    )
+    label_numpy[training_positive_grid] = 1.0
+
+    train_numpy = (
+        training_positive_grid
+        | training_negative_grid
+    ).astype(np.float32)
+
+    supervision_weight_numpy = np.ones(
+        (grid_height, grid_width),
+        dtype=np.float32,
+    )
+    supervision_weight_numpy[
+        feedback_positive_grid
+        | feedback_negative_grid
+    ] = 2.5
+
+    label_tensor = (
+        torch.from_numpy(label_numpy)
+        .view(1, 1, grid_height, grid_width)
+        .to(used_device)
+    )
+    train_tensor = (
+        torch.from_numpy(train_numpy)
+        .view(1, 1, grid_height, grid_width)
+        .to(used_device)
+    )
+    supervision_weight_tensor = (
+        torch.from_numpy(supervision_weight_numpy)
+        .view(1, 1, grid_height, grid_width)
+        .to(used_device)
+    )
+
+    hidden_1 = min(
+        64,
+        max(24, embedding_dimensions // 2),
+    )
+    hidden_2 = min(
+        32,
+        max(16, hidden_1 // 2),
+    )
+
+    torch.manual_seed(1729)
+    if used_device == "cuda":
+        try:
+            torch.cuda.manual_seed_all(1729)
+        except Exception:
+            pass
+
+    head = nn.Sequential(
+        nn.Conv2d(
+            embedding_dimensions,
+            hidden_1,
+            kernel_size=3,
+            padding=1,
+        ),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(
+            hidden_1,
+            hidden_2,
+            kernel_size=3,
+            padding=2,
+            dilation=2,
+        ),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(
+            hidden_2,
+            1,
+            kernel_size=1,
+        ),
+    ).to(used_device)
+
+    optimizer = torch.optim.AdamW(
+        head.parameters(),
+        lr=0.01,
+        weight_decay=1e-4,
+    )
+
+    class_balance = float(
+        np.clip(
+            negative_cells / float(max(1, positive_cells)),
+            0.25,
+            4.0,
+        )
+    )
+    positive_weight = torch.tensor(
+        class_balance,
+        dtype=torch.float32,
+        device=used_device,
+    )
+
+    training_steps = 90 if used_device == "cuda" else 60
+    final_loss = None
+
+    head.train()
+
+    for _step in range(training_steps):
+        optimizer.zero_grad(set_to_none=True)
+        logits = head(feature_tensor)
+
+        pixel_loss = F.binary_cross_entropy_with_logits(
+            logits,
+            label_tensor,
+            reduction="none",
+            pos_weight=positive_weight,
+        )
+
+        weighted_mask = (
+            train_tensor
+            * supervision_weight_tensor
+        )
+
+        supervised_loss = (
+            (pixel_loss * weighted_mask).sum()
+            / weighted_mask.sum().clamp_min(1.0)
+        )
+
+        probability = torch.sigmoid(logits)
+        spatial_x = (
+            probability[:, :, :, 1:]
+            - probability[:, :, :, :-1]
+        ).abs().mean()
+        spatial_y = (
+            probability[:, :, 1:, :]
+            - probability[:, :, :-1, :]
+        ).abs().mean()
+
+        loss = (
+            supervised_loss
+            + 0.01 * (spatial_x + spatial_y)
+        )
+
+        loss.backward()
+        optimizer.step()
+        final_loss = float(loss.detach().cpu())
+
+    head.eval()
+
+    with torch.inference_mode():
+        logits = head(feature_tensor)
+        probability_grid = torch.sigmoid(logits)
+
+        probability_map = (
+            F.interpolate(
+                probability_grid,
+                size=(original_height, original_width),
+                mode="bilinear",
+                align_corners=False,
+            )[0, 0]
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32, copy=False)
+        )
+
+    threshold = float(
+        np.clip(
+            0.50
+            + ((50.0 - float(sensitivity)) / 50.0) * 0.20,
+            0.25,
+            0.75,
+        )
+    )
+
+    return {
+        "positiveSamples": positive_samples,
+        "negativeSamples": negative_samples,
+        "positiveFeedbackSamples": positive_feedback_samples,
+        "negativeFeedbackSamples": negative_feedback_samples,
+        "probabilityMap": probability_map,
+        "threshold": threshold,
+        "model": {
+            "type": "deep-spatial-resnet18-head-v1",
+            "learningModel": "C",
+            "learningModelLabel": "Deep Spatial",
+            "backbone": "resnet18-layer2-imagenet1k-v1",
+            "encoderTrainable": False,
+            "segmentationHead": (
+                "conv3x3-relu-dilated3x3-relu-conv1x1"
+            ),
+            "headTrainable": True,
+            "trainingUnits": "spatial-embedding-grid-cells",
+            "embeddingDimensions": embedding_dimensions,
+            "embeddingStrideApprox": 8,
+            "spatialContext": "convolutional-neighbourhood",
+            "analysisInputWidth": int(analysis_width),
+            "analysisInputHeight": int(analysis_height),
+            "deepGridWidth": grid_width,
+            "deepGridHeight": grid_height,
+            "positiveGridCells": positive_cells,
+            "negativeGridCells": negative_cells,
+            "trainingSteps": training_steps,
+            "finalTrainingLoss": final_loss,
+            "computeDevice": used_device,
+            "devicePolicy": "auto",
+            "acceleratorUsed": used_device in {"cuda", "mps"},
+            "deviceFallbackReason": fallback_reason,
+            "embeddingCacheHit": bool(cache_info.get("hit")),
+            "embeddingCacheSource": cache_info.get("source"),
+            "embeddingCacheKey": cache_info.get("key"),
+        },
+    }
+
+
 @app.post("/api/interactive-learning/{image_id}/suggest")
 def interactive_learning_suggest(
     image_id: str,
@@ -8186,14 +8620,29 @@ def interactive_learning_suggest(
 
     # Phase IL10.1 - B is functional for the current image.
     # Multi-image deep embedding extraction/caching is deferred to IL10.2.
-    if learning_model == "C":
+    # Phase IL11.0: C is functional for the current image.
+    if learning_model == "C" and training_mode != "current":
         raise HTTPException(
             status_code=422,
             detail=(
-                "Model C · Deep Spatial is reserved for a later phase. "
-                "Use A · Classical or B · Deep Features."
+                "C · Deep Spatial currently supports Current image only. "
+                "Multi-image spatial training will be added in a later IL11 phase."
             ),
         )
+
+    if learning_model == "C":
+        deep_runtime = _il10_deep_runtime_capabilities()
+        if not bool(deep_runtime.get("ready")):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "C · Deep Spatial is unavailable on this server: "
+                    + str(
+                        deep_runtime.get("reason")
+                        or "PyTorch/torchvision runtime is not ready"
+                    )
+                ),
+            )
 
 
     if learning_model == "B":
@@ -8524,7 +8973,36 @@ def interactive_learning_suggest(
     rng = np.random.default_rng(1729)
     deep_model_info: dict[str, Any] = {}
 
-    if learning_model == "B":
+    if learning_model == "C":
+        deep_result = _il11_c_spatial_probability_map(
+            image_id,
+            rgb,
+            positive_mask,
+            negative_mask,
+            hard_positive_mask,
+            hard_negative_mask,
+            sensitivity,
+            rng,
+        )
+        positive_samples = deep_result["positiveSamples"]
+        negative_samples = deep_result["negativeSamples"]
+        positive_feedback_samples = deep_result[
+            "positiveFeedbackSamples"
+        ]
+        negative_feedback_samples = deep_result[
+            "negativeFeedbackSamples"
+        ]
+        training_source_reports: list[dict[str, Any]] = []
+        tree_workers = 0
+        probability_map = deep_result["probabilityMap"]
+        probability_threshold = float(
+            deep_result["threshold"]
+        )
+        deep_model_info = dict(
+            deep_result["model"]
+        )
+
+    elif learning_model == "B":
         deep_result = _il10_b_deep_feature_probability_map(
             rgb,
             positive_mask,
@@ -9080,6 +9558,17 @@ def interactive_learning_suggest(
             "minSamplesLeaf": None,
             "workers": 0,
         })
+    elif learning_model == "C":
+        model_payload.update(
+            deep_model_info
+        )
+        model_payload.update({
+            "type": "deep-spatial-resnet18-head-v1",
+            "estimators": None,
+            "maxDepth": None,
+            "minSamplesLeaf": None,
+            "workers": 0,
+        })
     else:
         model_payload["learningModelLabel"] = "Classical"
         model_payload["computeDevice"] = "cpu"
@@ -9111,6 +9600,19 @@ def interactive_learning_suggest(
             "representation": "resnet18-layer2-grid",
         }
 
+
+    if learning_model == "C":
+        model_payload["currentImagePriority"] = {
+            "basePositiveMaximum": 8000,
+            "baseNegativeMaximum": 8000,
+            "feedbackMaximumPerSign": 3000,
+            "auxiliaryPositiveMaximumTotal": 0,
+            "auxiliaryNegativeMaximumTotal": 0,
+            "representation": "resnet18-layer2-spatial-head",
+            "spatialTraining": True,
+            "encoderFrozen": True,
+        }
+        training_source_reports = []
 
     model_payload["auxiliaryWeighting"] = {
         "strategy":
