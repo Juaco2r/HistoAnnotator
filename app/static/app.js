@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL6";
+  const VERSION = "1.4.0-dev-IL7";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -4955,6 +4955,266 @@
     });
   }
 
+
+  // ======================================================================
+  // Phase IL7 + UX reference view
+  // Class color helpers.
+  // ======================================================================
+
+  const PHASE_UX_CLASS_COLOR_HISTORY =
+    "histoannotator.classColorHistory.v1";
+
+  function phaseUXNormalizeHexColor(value) {
+    const color =
+      String(value || "")
+        .trim()
+        .toLowerCase();
+
+    return /^#[0-9a-f]{6}$/.test(color)
+      ? color
+      : null;
+  }
+
+  function phaseUXReadColorHistory() {
+    try {
+      const parsed =
+        JSON.parse(
+          localStorage.getItem(
+            PHASE_UX_CLASS_COLOR_HISTORY
+          )
+          || "[]"
+        );
+
+      return Array.isArray(parsed)
+        ? parsed
+            .map(phaseUXNormalizeHexColor)
+            .filter(Boolean)
+        : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function phaseUXRememberClassColor(value) {
+    const color =
+      phaseUXNormalizeHexColor(value);
+
+    if (!color) return;
+
+    const colors =
+      new Set(
+        phaseUXReadColorHistory()
+      );
+
+    colors.add(color);
+
+    try {
+      localStorage.setItem(
+        PHASE_UX_CLASS_COLOR_HISTORY,
+        JSON.stringify(
+          [...colors].slice(-256)
+        )
+      );
+    } catch (_) {}
+  }
+
+  function phaseUXRandomIndex(length) {
+    if (length <= 1) return 0;
+
+    try {
+      if (window.crypto?.getRandomValues) {
+        const buffer =
+          new Uint32Array(1);
+
+        window.crypto.getRandomValues(
+          buffer
+        );
+
+        return buffer[0] % length;
+      }
+    } catch (_) {}
+
+    return Math.floor(
+      Math.random() * length
+    );
+  }
+
+  function phaseUXHslToHex(
+    hue,
+    saturation = 72,
+    lightness = 58
+  ) {
+    const h =
+      (
+        Number(hue) % 360
+        + 360
+      ) % 360;
+
+    const s =
+      Math.max(
+        0,
+        Math.min(
+          100,
+          Number(saturation)
+        )
+      ) / 100;
+
+    const l =
+      Math.max(
+        0,
+        Math.min(
+          100,
+          Number(lightness)
+        )
+      ) / 100;
+
+    const chroma =
+      (
+        1
+        - Math.abs(
+            2 * l - 1
+          )
+      ) * s;
+
+    const x =
+      chroma
+      * (
+          1
+          - Math.abs(
+              (
+                h / 60
+              ) % 2
+              - 1
+            )
+        );
+
+    const m =
+      l - chroma / 2;
+
+    let rgb;
+
+    if (h < 60) {
+      rgb = [chroma, x, 0];
+    } else if (h < 120) {
+      rgb = [x, chroma, 0];
+    } else if (h < 180) {
+      rgb = [0, chroma, x];
+    } else if (h < 240) {
+      rgb = [0, x, chroma];
+    } else if (h < 300) {
+      rgb = [x, 0, chroma];
+    } else {
+      rgb = [chroma, 0, x];
+    }
+
+    return (
+      "#"
+      + rgb
+        .map(
+          (channel) =>
+            Math.round(
+              (
+                channel + m
+              ) * 255
+            )
+              .toString(16)
+              .padStart(2, "0")
+        )
+        .join("")
+    );
+  }
+
+  function phaseUXSuggestedUnusedClassColor() {
+    const currentUsed =
+      new Set(
+        (classes || [])
+          .map(
+            (item) =>
+              phaseUXNormalizeHexColor(
+                item?.color
+              )
+          )
+          .filter(Boolean)
+      );
+
+    const everUsed =
+      new Set([
+        ...phaseUXReadColorHistory(),
+        ...currentUsed,
+      ]);
+
+    const palette = [
+      "#ff6b6b",
+      "#4dabf7",
+      "#69db7c",
+      "#ffd43b",
+      "#b197fc",
+      "#ffa94d",
+      "#38d9a9",
+      "#f06595",
+      "#74c0fc",
+      "#8ce99a",
+      "#e599f7",
+      "#ffc078",
+      "#63e6be",
+      "#faa2c1",
+      "#91a7ff",
+      "#a9e34b",
+      "#da77f2",
+      "#ffe066",
+      "#66d9e8",
+      "#ff8787",
+      "#9775fa",
+      "#20c997",
+      "#fcc419",
+      "#e64980",
+    ];
+
+    const available =
+      palette.filter(
+        (color) =>
+          !everUsed.has(color)
+      );
+
+    if (available.length) {
+      return available[
+        phaseUXRandomIndex(
+          available.length
+        )
+      ];
+    }
+
+    for (
+      let attempt = 0;
+      attempt < 64;
+      attempt += 1
+    ) {
+      const hue =
+        (
+          phaseUXRandomIndex(360)
+          + attempt * 137.508
+        ) % 360;
+
+      const color =
+        phaseUXHslToHex(
+          hue,
+          72,
+          58
+        );
+
+      if (!everUsed.has(color)) {
+        return color;
+      }
+    }
+
+    return phaseUXHslToHex(
+      Date.now() % 360,
+      72,
+      58
+    );
+  }
+
+
   function openClassEditor(index = null) {
     // Phase D4 guard openClassEditor
     if (
@@ -4973,7 +5233,14 @@
 
     setClassManagerOpen(true);
     classEditIndex = index;
-    const item = index === null ? { name: "", color: "#ff6b6b" } : classes[index];
+    const item =
+      index === null
+        ? {
+            name: "",
+            color:
+              phaseUXSuggestedUnusedClassColor(),
+          }
+        : classes[index];
     els.classNameInput.value = item.name;
     els.classColorInput.value = item.color;
     els.classEditor.hidden = false;
@@ -5018,18 +5285,49 @@
     }
     if (classEditIndex === null) {
       classes.push({ name, color });
-      currentClass = classes[classes.length - 1];
+
+      phaseUXRememberClassColor(
+        color
+      );
+
+      currentClass =
+        classes[classes.length - 1];
       if (reviewState.active && reviewPendingNewClassAssignment) {
         reviewPendingNewClassAssignment = false;
         assignReviewFeatureClass(currentClass.name);
       }
     } else {
-      const oldName = classes[classEditIndex].name;
-      classes[classEditIndex] = { name, color };
-      if (currentClass?.name === oldName) currentClass = classes[classEditIndex];
+      const oldName =
+        classes[classEditIndex].name;
+
+      classes[classEditIndex] = {
+        name,
+        color,
+      };
+
+      phaseUXRememberClassColor(
+        color
+      );
+
+      if (
+        currentClass?.name
+        === oldName
+      ) {
+        currentClass =
+          classes[classEditIndex];
+      }
     }
+
     closeClassEditor();
     renderClassButtons();
+
+    if (phaseBFocusActive) {
+      phaseBRenderFocusClasses();
+    }
+
+    // Old Features are drawn from the current class color immediately.
+    drawAnnotations();
+
     syncClassesToServer();
   }
 
@@ -5055,6 +5353,10 @@
     }
     const item = classes[index];
     if (!window.confirm(`Remove “${item.name}” from the class list? Existing annotations will keep that class name.`)) return;
+
+    phaseUXRememberClassColor(
+      item.color
+    );
     classes.splice(index, 1);
     if (currentClass?.name === item.name) currentClass = classes[0];
     renderClassButtons();
@@ -9895,6 +10197,8 @@
     phaseBSetFocusClassesOpen(false);
     if (phaseBFocusActive) phaseBRenderFocusClasses();
 
+    updatePathologistActions();
+
     requestAnimationFrame(() => {
       window.dispatchEvent(new Event("resize"));
       drawAnnotations();
@@ -10321,17 +10625,100 @@
 
   function updatePathologistActions() {
     if (!els.pathologistActions) return;
+
     // Pathologist controls are intentionally shown only while the stylus is
     // lifted. While a freehand segment is actively being drawn they would be
     // impossible to press and can cover the tissue being traced.
-    const strokeActive = activeDraft?.type === "freehand-pathologist" || Boolean(pointerState);
-    const active = drawingProfile === "pathologist" && mode === "freehand" && Boolean(pathologistDraft) && !strokeActive;
-    els.pathologistActions.hidden = !active;
+    const strokeActive =
+      activeDraft?.type
+      === "freehand-pathologist"
+      || Boolean(pointerState);
+
+    const active =
+      drawingProfile === "pathologist"
+      && mode === "freehand"
+      && Boolean(pathologistDraft)
+      && !strokeActive;
+
+    const focusActions =
+      document.getElementById(
+        "phaseUXFocusPathologistActions"
+      );
+
+    els.pathologistActions.hidden =
+      !active
+      || phaseBFocusActive;
+
+    if (focusActions) {
+      focusActions.hidden =
+        !active
+        || !phaseBFocusActive;
+    }
+
     if (!active) return;
-    els.finishPathologistContour.disabled = (pathologistDraft.outer?.length || 0) < 3 || geometryBusy;
-    els.addPathologistHole.disabled = (pathologistDraft.outer?.length || 0) < 3 || geometryBusy;
-    els.cancelPathologistContour.disabled = geometryBusy;
-    els.addPathologistHole.textContent = pathologistDraft.current === "hole" ? "○ New inner contour" : "○ Inner contour";
+
+    const canComplete =
+      (
+        pathologistDraft.outer?.length
+        || 0
+      ) >= 3
+      && !geometryBusy;
+
+    const canAddInner =
+      (
+        pathologistDraft.outer?.length
+        || 0
+      ) >= 3
+      && !geometryBusy;
+
+    els.finishPathologistContour.disabled =
+      !canComplete;
+
+    els.addPathologistHole.disabled =
+      !canAddInner;
+
+    els.cancelPathologistContour.disabled =
+      geometryBusy;
+
+    els.addPathologistHole.textContent =
+      pathologistDraft.current === "hole"
+        ? "○ New inner contour"
+        : "○ Inner contour";
+
+    const focusComplete =
+      document.getElementById(
+        "phaseUXFocusPathologistComplete"
+      );
+
+    const focusInner =
+      document.getElementById(
+        "phaseUXFocusPathologistInner"
+      );
+
+    const focusCancel =
+      document.getElementById(
+        "phaseUXFocusPathologistCancel"
+      );
+
+    if (focusComplete) {
+      focusComplete.disabled =
+        !canComplete;
+    }
+
+    if (focusInner) {
+      focusInner.disabled =
+        !canAddInner;
+
+      focusInner.textContent =
+        pathologistDraft.current === "hole"
+          ? "New inner"
+          : "Inner area";
+    }
+
+    if (focusCancel) {
+      focusCancel.disabled =
+        geometryBusy;
+    }
   }
 
   function beginPathologistHole() {
@@ -10452,6 +10839,16 @@
   function handlePointerDown(event) {
     trackPenLifecycle(event);
     if (suppressPalmTouch(event)) return;
+
+    if (
+      phaseRConsumeReferencePick(
+        event
+      )
+    ) {
+      updateDiagnostics();
+      return;
+    }
+
     if (!captureAnnotationEvent(event)) {
       updateDiagnostics();
       return;
@@ -12555,13 +12952,35 @@ if (!geometry) {
   }
 
   function colorForFeature(feature) {
-    const classification = feature.properties?.classification;
-    const name = classification?.name;
-    const known = classes.find((item) => item.name === name);
-    return rgbArrayToHex(classification?.color)
-      || colorRgbIntegerToHex(classification?.colorRGB)
-      || feature.properties?.histoannotator?.color
-      || known?.color
+    const classification =
+      feature.properties
+        ?.classification;
+
+    const name =
+      classification?.name;
+
+    const known =
+      classes.find(
+        (item) =>
+          item.name === name
+      );
+
+    /*
+     * The current class definition is authoritative for display.
+     * Older Features may still contain the historical RGB value that was
+     * active when they were created, but they should visually follow the
+     * class color selected by the user today.
+     */
+    return known?.color
+      || rgbArrayToHex(
+          classification?.color
+        )
+      || colorRgbIntegerToHex(
+          classification?.colorRGB
+        )
+      || feature.properties
+        ?.histoannotator
+        ?.color
       || "#ffffff";
   }
 
@@ -16311,6 +16730,1250 @@ function phaseGInitialize() {
 
 
 // ========================================================================
+
+// ========================================================================
+// Phase IL7 + UX reference view
+// ========================================================================
+
+const PHASE_R_POSITION_KEY =
+  "histoannotator.referenceView.position.v1";
+
+let phaseRViewer =
+  null;
+
+let phaseRState = {
+  open: false,
+  collapsed: false,
+  picking: false,
+  imageId: null,
+  center: null,
+  syncFrame: null,
+};
+
+
+function phaseUXEnsureFocusPathologistActions() {
+  if (
+    document.getElementById(
+      "phaseUXFocusPathologistActions"
+    )
+  ) {
+    return;
+  }
+
+  const shell =
+    document.querySelector(
+      ".viewer-shell"
+    );
+
+  if (!shell) return;
+
+  const bar =
+    document.createElement(
+      "div"
+    );
+
+  bar.id =
+    "phaseUXFocusPathologistActions";
+
+  bar.className =
+    "phase-ux-focus-pathologist-actions";
+
+  bar.hidden = true;
+
+  bar.innerHTML = `
+    <button id="phaseUXFocusPathologistComplete"
+            type="button">Complete</button>
+    <button id="phaseUXFocusPathologistInner"
+            type="button">Inner area</button>
+    <button id="phaseUXFocusPathologistCancel"
+            type="button">Cancel</button>
+  `;
+
+  shell.append(bar);
+
+  document
+    .getElementById(
+      "phaseUXFocusPathologistComplete"
+    )
+    ?.addEventListener(
+      "click",
+      () =>
+        completePathologistDraft()
+    );
+
+  document
+    .getElementById(
+      "phaseUXFocusPathologistInner"
+    )
+    ?.addEventListener(
+      "click",
+      beginPathologistHole
+    );
+
+  document
+    .getElementById(
+      "phaseUXFocusPathologistCancel"
+    )
+    ?.addEventListener(
+      "click",
+      cancelPathologistDraft
+    );
+}
+
+
+function phaseRRefs() {
+  return {
+    menu:
+      document.getElementById(
+        "phaseRMenuButton"
+      ),
+    panel:
+      document.getElementById(
+        "phaseRPanel"
+      ),
+    header:
+      document.getElementById(
+        "phaseRHeader"
+      ),
+    content:
+      document.getElementById(
+        "phaseRContent"
+      ),
+    message:
+      document.getElementById(
+        "phaseRMessage"
+      ),
+    position:
+      document.getElementById(
+        "phaseRPosition"
+      ),
+    zoom:
+      document.getElementById(
+        "phaseRZoom"
+      ),
+    pick:
+      document.getElementById(
+        "phaseRPickButton"
+      ),
+    collapse:
+      document.getElementById(
+        "phaseRCollapseButton"
+      ),
+    close:
+      document.getElementById(
+        "phaseRCloseButton"
+      ),
+  };
+}
+
+
+function phaseRCenterStorageKey() {
+  if (!currentImage?.id) return null;
+
+  return (
+    "histoannotator.referenceView.center.v1::"
+    + currentImage.id
+  );
+}
+
+
+function phaseRReadCenter() {
+  const key =
+    phaseRCenterStorageKey();
+
+  if (!key) return null;
+
+  try {
+    const value =
+      JSON.parse(
+        localStorage.getItem(key)
+        || "null"
+      );
+
+    const x =
+      Number(value?.x);
+
+    const y =
+      Number(value?.y);
+
+    if (
+      Number.isFinite(x)
+      && Number.isFinite(y)
+    ) {
+      return phaseGClampPointToImage([
+        x,
+        y,
+      ]);
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+
+function phaseRSaveCenter() {
+  const key =
+    phaseRCenterStorageKey();
+
+  if (
+    !key
+    || !Array.isArray(
+      phaseRState.center
+    )
+  ) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        x:
+          Number(
+            phaseRState.center[0]
+          ),
+        y:
+          Number(
+            phaseRState.center[1]
+          ),
+      })
+    );
+  } catch (_) {}
+}
+
+
+function phaseRDefaultCenter() {
+  if (
+    !viewer
+    || !viewer.world
+      ?.getItemCount?.()
+  ) {
+    return null;
+  }
+
+  try {
+    const item =
+      viewer.world.getItemAt(0);
+
+    const center =
+      viewer.viewport.getCenter();
+
+    const imagePoint =
+      item.viewportToImageCoordinates(
+        center
+      );
+
+    return phaseGClampPointToImage([
+      imagePoint.x,
+      imagePoint.y,
+    ]);
+  } catch (_) {
+    return null;
+  }
+}
+
+
+function phaseRLoadSavedPosition() {
+  try {
+    const value =
+      JSON.parse(
+        localStorage.getItem(
+          PHASE_R_POSITION_KEY
+        )
+        || "null"
+      );
+
+    const left =
+      Number(value?.left);
+
+    const top =
+      Number(value?.top);
+
+    if (
+      Number.isFinite(left)
+      && Number.isFinite(top)
+    ) {
+      return {
+        left,
+        top,
+      };
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+
+function phaseRSavePosition() {
+  const panel =
+    phaseRRefs().panel;
+
+  if (!panel) return;
+
+  const rect =
+    panel.getBoundingClientRect();
+
+  try {
+    localStorage.setItem(
+      PHASE_R_POSITION_KEY,
+      JSON.stringify({
+        left:
+          Math.round(rect.left),
+        top:
+          Math.round(rect.top),
+      })
+    );
+  } catch (_) {}
+}
+
+
+function phaseRClampWindow() {
+  const panel =
+    phaseRRefs().panel;
+
+  if (
+    !panel
+    || panel.hidden
+  ) {
+    return;
+  }
+
+  const rect =
+    panel.getBoundingClientRect();
+
+  const maxLeft =
+    Math.max(
+      4,
+      window.innerWidth
+      - Math.min(
+          rect.width,
+          window.innerWidth - 8
+        )
+      - 4
+    );
+
+  const maxTop =
+    Math.max(
+      4,
+      window.innerHeight
+      - Math.min(
+          rect.height,
+          window.innerHeight - 8
+        )
+      - 4
+    );
+
+  panel.style.left =
+    `${
+      Math.round(
+        Math.max(
+          4,
+          Math.min(
+            maxLeft,
+            rect.left
+          )
+        )
+      )
+    }px`;
+
+  panel.style.top =
+    `${
+      Math.round(
+        Math.max(
+          4,
+          Math.min(
+            maxTop,
+            rect.top
+          )
+        )
+      )
+    }px`;
+
+  panel.style.right =
+    "auto";
+}
+
+
+function phaseRSetMessage(message = "") {
+  const refs =
+    phaseRRefs();
+
+  if (!refs.message) return;
+
+  refs.message.textContent =
+    message;
+
+  refs.message.hidden =
+    !message;
+}
+
+
+function phaseRUpdateLabels() {
+  const refs =
+    phaseRRefs();
+
+  const center =
+    phaseRState.center;
+
+  if (refs.position) {
+    refs.position.textContent =
+      Array.isArray(center)
+        ? (
+            `x ${Math.round(center[0])}`
+            + ` · y ${Math.round(center[1])}`
+          )
+        : "No reference selected";
+  }
+
+  if (refs.zoom) {
+    const magnification =
+      currentApproxMagnification(
+        effectiveCalibration()
+      );
+
+    refs.zoom.textContent =
+      (
+        Number.isFinite(
+          magnification
+        )
+        && magnification > 0
+      )
+        ? (
+            `≈${formatMagnification(
+              magnification
+            )}× matched`
+          )
+        : "Zoom matched";
+  }
+
+  if (refs.pick) {
+    refs.pick.textContent =
+      phaseRState.picking
+        ? "Tap reference area…"
+        : "Pick reference";
+  }
+
+  document.body.classList.toggle(
+    "phase-r-picking-reference",
+    Boolean(
+      phaseRState.picking
+    )
+  );
+}
+
+
+function phaseRCreateViewer() {
+  if (
+    phaseRViewer
+    || !document.getElementById(
+      "phaseRViewer"
+    )
+  ) {
+    return;
+  }
+
+  phaseRViewer =
+    OpenSeadragon({
+      id:
+        "phaseRViewer",
+      showNavigationControl:
+        false,
+      showNavigator:
+        false,
+      animationTime:
+        0,
+      blendTime:
+        0,
+      immediateRender:
+        true,
+      maxZoomPixelRatio:
+        4.0,
+      visibilityRatio:
+        0.05,
+      constrainDuringPan:
+        false,
+      imageLoaderLimit:
+        4,
+      maxImageCacheCount:
+        240,
+      gestureSettingsMouse: {
+        scrollToZoom:
+          false,
+        clickToZoom:
+          false,
+        dblClickToZoom:
+          false,
+        dragToPan:
+          false,
+      },
+      gestureSettingsTouch: {
+        scrollToZoom:
+          false,
+        clickToZoom:
+          false,
+        dblClickToZoom:
+          false,
+        pinchToZoom:
+          false,
+        flickEnabled:
+          false,
+        dragToPan:
+          false,
+      },
+      gestureSettingsPen: {
+        scrollToZoom:
+          false,
+        clickToZoom:
+          false,
+        dblClickToZoom:
+          false,
+        pinchToZoom:
+          false,
+        flickEnabled:
+          false,
+        dragToPan:
+          false,
+      },
+    });
+
+  phaseRViewer
+    .setMouseNavEnabled(false);
+
+  phaseRViewer.addHandler(
+    "open",
+    () => {
+      phaseRSetMessage("");
+      phaseRQueueSync();
+    }
+  );
+
+  phaseRViewer.addHandler(
+    "tile-load-failed",
+    () => {
+      phaseRSetMessage(
+        "Reference tile unavailable"
+      );
+    }
+  );
+}
+
+
+function phaseRSourceForCurrentImage() {
+  if (
+    !currentImage
+    || !currentInfo
+  ) {
+    return null;
+  }
+
+  if (currentImage.localNative) {
+    const session =
+      localTiffSessions.get(
+        currentImage.id
+      );
+
+    return session
+      ? buildLocalTiffViewerSource(
+          session
+        )
+      : null;
+  }
+
+  return buildViewerSource(
+    currentImage.id,
+    currentInfo
+  );
+}
+
+
+function phaseROpenCurrentSource() {
+  if (
+    !phaseRState.open
+    || !phaseRViewer
+  ) {
+    return;
+  }
+
+  if (
+    !currentImage
+    || !currentInfo
+  ) {
+    phaseRViewer.close();
+    phaseRState.imageId = null;
+    phaseRState.center = null;
+
+    phaseRSetMessage(
+      "Open an image to use Reference View"
+    );
+
+    phaseRUpdateLabels();
+    return;
+  }
+
+  const changedImage =
+    String(
+      phaseRState.imageId
+      || ""
+    ) !== String(
+      currentImage.id
+      || ""
+    );
+
+  phaseRState.imageId =
+    currentImage.id;
+
+  if (
+    changedImage
+    || !phaseRState.center
+  ) {
+    phaseRState.center =
+      phaseRReadCenter()
+      || phaseRDefaultCenter();
+  }
+
+  const source =
+    phaseRSourceForCurrentImage();
+
+  if (!source) {
+    phaseRSetMessage(
+      "Reference image source unavailable"
+    );
+    return;
+  }
+
+  phaseRSetMessage(
+    "Loading reference…"
+  );
+
+  phaseRViewer.open(source);
+  phaseRUpdateLabels();
+}
+
+
+function phaseRMainPixelsPerScreenPixel() {
+  if (
+    !viewer
+    || !viewer.world
+      ?.getItemCount?.()
+  ) {
+    return null;
+  }
+
+  const imagePixels =
+    screenToleranceToImage(100);
+
+  if (
+    !Number.isFinite(imagePixels)
+    || imagePixels <= 0
+  ) {
+    return null;
+  }
+
+  return imagePixels / 100;
+}
+
+
+function phaseRSyncMagnification() {
+  if (
+    !phaseRState.open
+    || phaseRState.collapsed
+    || !phaseRViewer
+    || !phaseRViewer.world
+      ?.getItemCount?.()
+    || !Array.isArray(
+      phaseRState.center
+    )
+  ) {
+    return;
+  }
+
+  const imagePixelsPerScreenPixel =
+    phaseRMainPixelsPerScreenPixel();
+
+  if (
+    !Number.isFinite(
+      imagePixelsPerScreenPixel
+    )
+    || imagePixelsPerScreenPixel <= 0
+  ) {
+    return;
+  }
+
+  const container =
+    phaseRViewer.container
+      ?.getBoundingClientRect();
+
+  if (
+    !container
+    || container.width < 20
+    || container.height < 20
+  ) {
+    return;
+  }
+
+  const imageWidth =
+    imagePixelsPerScreenPixel
+    * container.width;
+
+  const imageHeight =
+    imagePixelsPerScreenPixel
+    * container.height;
+
+  const center =
+    phaseGClampPointToImage(
+      phaseRState.center
+    );
+
+  if (!center) return;
+
+  phaseRState.center =
+    center;
+
+  const item =
+    phaseRViewer.world
+      .getItemAt(0);
+
+  const topLeft =
+    item.imageToViewportCoordinates(
+      center[0]
+        - imageWidth / 2,
+      center[1]
+        - imageHeight / 2
+    );
+
+  const bottomRight =
+    item.imageToViewportCoordinates(
+      center[0]
+        + imageWidth / 2,
+      center[1]
+        + imageHeight / 2
+    );
+
+  if (!topLeft || !bottomRight) {
+    return;
+  }
+
+  phaseRViewer.viewport.fitBounds(
+    new OpenSeadragon.Rect(
+      topLeft.x,
+      topLeft.y,
+      Math.max(
+        0.0000001,
+        bottomRight.x
+          - topLeft.x
+      ),
+      Math.max(
+        0.0000001,
+        bottomRight.y
+          - topLeft.y
+      )
+    ),
+    true
+  );
+
+  phaseRViewer.viewport
+    .applyConstraints(true);
+
+  phaseRUpdateLabels();
+}
+
+
+function phaseRQueueSync() {
+  if (
+    phaseRState.syncFrame
+    !== null
+  ) {
+    return;
+  }
+
+  phaseRState.syncFrame =
+    window.requestAnimationFrame(
+      () => {
+        phaseRState.syncFrame = null;
+        phaseRSyncMagnification();
+      }
+    );
+}
+
+
+function phaseRSetCollapsed(collapsed) {
+  const refs =
+    phaseRRefs();
+
+  phaseRState.collapsed =
+    Boolean(collapsed);
+
+  if (refs.content) {
+    refs.content.hidden =
+      phaseRState.collapsed;
+  }
+
+  if (refs.collapse) {
+    refs.collapse.textContent =
+      phaseRState.collapsed
+        ? "▣"
+        : "—";
+
+    refs.collapse.title =
+      phaseRState.collapsed
+        ? "Expand reference view"
+        : "Collapse reference view";
+  }
+
+  if (
+    !phaseRState.collapsed
+    && phaseRViewer
+  ) {
+    window.requestAnimationFrame(
+      () => {
+        phaseRViewer.viewport.resize(
+          new OpenSeadragon.Point(
+            phaseRViewer.container
+              .clientWidth,
+            phaseRViewer.container
+              .clientHeight
+          ),
+          true
+        );
+
+        phaseRQueueSync();
+      }
+    );
+  }
+
+  phaseRClampWindow();
+}
+
+
+function phaseRSetOpen(open) {
+  const refs =
+    phaseRRefs();
+
+  phaseRState.open =
+    Boolean(open);
+
+  phaseRState.picking =
+    false;
+
+  if (refs.panel) {
+    refs.panel.hidden =
+      !phaseRState.open;
+  }
+
+  phaseBToggleSettings(false);
+
+  if (!phaseRState.open) {
+    phaseRUpdateLabels();
+    return;
+  }
+
+  if (
+    !currentImage
+    || !currentInfo
+  ) {
+    phaseRSetMessage(
+      "Open an image to use Reference View"
+    );
+  } else {
+    phaseROpenCurrentSource();
+  }
+
+  phaseRUpdateLabels();
+  phaseRClampWindow();
+}
+
+
+function phaseRBeginPick() {
+  if (
+    !phaseRState.open
+    || !currentImage
+    || !viewer?.world
+      ?.getItemCount?.()
+  ) {
+    setStatus(
+      "Open an image before choosing a reference area",
+      "error"
+    );
+    return;
+  }
+
+  phaseRState.picking = true;
+  phaseRUpdateLabels();
+
+  setStatus(
+    "Tap the tissue area to keep as reference",
+    "local"
+  );
+}
+
+
+function phaseRConsumeReferencePick(event) {
+  if (
+    !phaseRState.picking
+    || !phaseRState.open
+    || !currentImage
+    || !viewer?.world
+      ?.getItemCount?.()
+  ) {
+    return false;
+  }
+
+  if (
+    event.target
+      ?.closest?.(
+        "#phaseRPanel, .navigator"
+      )
+  ) {
+    return false;
+  }
+
+  const viewerPosition =
+    viewerPositionFromPointer(event);
+
+  const point =
+    phaseGClampedImagePointFromViewerPosition(
+      viewerPosition
+    );
+
+  if (!point) {
+    return false;
+  }
+
+  stopPointerEvent(event);
+
+  phaseRState.center =
+    point;
+
+  phaseRState.picking =
+    false;
+
+  phaseRSaveCenter();
+  phaseRUpdateLabels();
+  phaseRQueueSync();
+
+  setStatus(
+    "Reference area fixed · zoom will follow the main viewer",
+    "saved"
+  );
+
+  return true;
+}
+
+
+function phaseRInstallDrag() {
+  const refs =
+    phaseRRefs();
+
+  if (!refs.panel || !refs.header) {
+    return;
+  }
+
+  let drag = null;
+
+  refs.header.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (
+        event.target
+          ?.closest?.("button")
+      ) {
+        return;
+      }
+
+      const rect =
+        refs.panel
+          .getBoundingClientRect();
+
+      drag = {
+        pointerId:
+          event.pointerId,
+        dx:
+          event.clientX
+          - rect.left,
+        dy:
+          event.clientY
+          - rect.top,
+      };
+
+      try {
+        refs.header
+          .setPointerCapture(
+            event.pointerId
+          );
+      } catch (_) {}
+
+      event.preventDefault();
+    }
+  );
+
+  refs.header.addEventListener(
+    "pointermove",
+    (event) => {
+      if (
+        !drag
+        || drag.pointerId
+          !== event.pointerId
+      ) {
+        return;
+      }
+
+      refs.panel.style.left =
+        `${
+          event.clientX
+          - drag.dx
+        }px`;
+
+      refs.panel.style.top =
+        `${
+          event.clientY
+          - drag.dy
+        }px`;
+
+      refs.panel.style.right =
+        "auto";
+
+      phaseRClampWindow();
+      event.preventDefault();
+    }
+  );
+
+  const finish = (event) => {
+    if (
+      !drag
+      || drag.pointerId
+        !== event.pointerId
+    ) {
+      return;
+    }
+
+    drag = null;
+    phaseRClampWindow();
+    phaseRSavePosition();
+  };
+
+  refs.header.addEventListener(
+    "pointerup",
+    finish
+  );
+
+  refs.header.addEventListener(
+    "pointercancel",
+    finish
+  );
+}
+
+
+function phaseREnsureUi() {
+  if (
+    document.getElementById(
+      "phaseRPanel"
+    )
+  ) {
+    return;
+  }
+
+  const settings =
+    document.getElementById(
+      "phaseBSettingsPanel"
+    );
+
+  if (!settings) return;
+
+  const menu =
+    document.createElement(
+      "button"
+    );
+
+  menu.id =
+    "phaseRMenuButton";
+
+  menu.type =
+    "button";
+
+  menu.className =
+    "menu-item";
+
+  menu.textContent =
+    "Reference view…";
+
+  const anchor =
+    document.getElementById(
+      "phaseIL1MenuButton"
+    )
+    || document.getElementById(
+      "phaseGDuplicateAnnotationButton"
+    );
+
+  if (anchor) {
+    anchor.insertAdjacentElement(
+      "afterend",
+      menu
+    );
+  } else {
+    settings.append(menu);
+  }
+
+  const panel =
+    document.createElement(
+      "section"
+    );
+
+  panel.id =
+    "phaseRPanel";
+
+  panel.className =
+    "phase-r-panel";
+
+  panel.hidden = true;
+
+  panel.innerHTML = `
+    <div id="phaseRHeader"
+         class="phase-r-header">
+      <div class="phase-r-title">
+        <strong>Reference</strong>
+        <small id="phaseRZoom">
+          Zoom matched
+        </small>
+      </div>
+
+      <div class="phase-r-header-actions">
+        <button id="phaseRCollapseButton"
+                type="button"
+                title="Collapse reference view">—</button>
+        <button id="phaseRCloseButton"
+                type="button"
+                title="Close reference view">×</button>
+      </div>
+    </div>
+
+    <div id="phaseRContent"
+         class="phase-r-content">
+      <div class="phase-r-viewer-wrap">
+        <div id="phaseRViewer"></div>
+        <div class="phase-r-crosshair"
+             aria-hidden="true"></div>
+        <div id="phaseRMessage"
+             class="phase-r-message"
+             hidden></div>
+      </div>
+
+      <div class="phase-r-footer">
+        <span id="phaseRPosition">
+          No reference selected
+        </span>
+        <button id="phaseRPickButton"
+                type="button">
+          Pick reference
+        </button>
+      </div>
+    </div>
+  `;
+
+  document.body.append(panel);
+
+  const saved =
+    phaseRLoadSavedPosition();
+
+  if (saved) {
+    panel.style.left =
+      `${saved.left}px`;
+
+    panel.style.top =
+      `${saved.top}px`;
+
+    panel.style.right =
+      "auto";
+  }
+
+  phaseRCreateViewer();
+  phaseRInstallDrag();
+
+  menu.addEventListener(
+    "click",
+    () =>
+      phaseRSetOpen(true)
+  );
+
+  phaseRRefs()
+    .pick
+    ?.addEventListener(
+      "click",
+      phaseRBeginPick
+    );
+
+  phaseRRefs()
+    .collapse
+    ?.addEventListener(
+      "click",
+      () =>
+        phaseRSetCollapsed(
+          !phaseRState.collapsed
+        )
+    );
+
+  phaseRRefs()
+    .close
+    ?.addEventListener(
+      "click",
+      () =>
+        phaseRSetOpen(false)
+    );
+}
+
+
+function phaseRInitialize() {
+  phaseUXEnsureFocusPathologistActions();
+  phaseREnsureUi();
+
+  if (!viewer) return;
+
+  viewer.addHandler(
+    "open",
+    () => {
+      if (phaseRState.open) {
+        phaseROpenCurrentSource();
+      }
+    }
+  );
+
+  viewer.addHandler(
+    "close",
+    () => {
+      if (
+        phaseRState.open
+        && phaseRViewer
+      ) {
+        phaseRViewer.close();
+      }
+    }
+  );
+
+  for (
+    const eventName
+    of [
+      "animation",
+      "update-viewport",
+      "resize",
+    ]
+  ) {
+    viewer.addHandler(
+      eventName,
+      phaseRQueueSync
+    );
+  }
+
+  window.addEventListener(
+    "resize",
+    () => {
+      phaseRClampWindow();
+      phaseRQueueSync();
+    }
+  );
+
+  phaseRUpdateLabels();
+}
+
+
 // Phase IL1 — interactive learning foundation
 //
 // Suggestions stay outside featureCollection until Accept/Edit.
@@ -17231,6 +18894,595 @@ function phaseIL6BindSourceControls() {
   phaseIL6UpdateSourceUi();
 }
 
+
+// ========================================================================
+// Phase IL7 - conservative learning stability / saturation
+// ========================================================================
+
+const PHASE_IL7_HISTORY_PREFIX =
+  "histoannotator.il7.learningHistory.v1::";
+
+
+function phaseIL7SourceSignature(
+  trainingMode,
+  trainingSources
+) {
+  if (trainingMode !== "set") {
+    return "current";
+  }
+
+  const sources =
+    Array.isArray(trainingSources)
+      ? trainingSources
+      : [];
+
+  return (
+    "set:"
+    + sources
+      .map(
+        (item) =>
+          `${item?.imageId || ""}::${item?.annotationFile || "Default"}`
+      )
+      .sort()
+      .join("|")
+  );
+}
+
+
+function phaseIL7HistoryKey({
+  targetClass,
+  trainingMode,
+  trainingSources,
+}) {
+  if (!currentImage?.id) {
+    return null;
+  }
+
+  return (
+    PHASE_IL7_HISTORY_PREFIX
+    + encodeURIComponent(
+        [
+          currentImage.id,
+          currentAnnotationFile
+            || "Default",
+          String(
+            targetClass || ""
+          ).toLowerCase(),
+          phaseIL7SourceSignature(
+            trainingMode,
+            trainingSources
+          ),
+        ].join("||")
+      )
+  );
+}
+
+
+function phaseIL7ReadHistory(key) {
+  if (!key) return [];
+
+  try {
+    const parsed =
+      JSON.parse(
+        localStorage.getItem(key)
+        || "[]"
+      );
+
+    return Array.isArray(parsed)
+      ? parsed
+      : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+
+function phaseIL7WriteHistory(
+  key,
+  history
+) {
+  if (!key) return;
+
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify(
+        history.slice(-12)
+      )
+    );
+  } catch (_) {}
+}
+
+
+function phaseIL7MeanUncertainty(
+  suggestions
+) {
+  const values =
+    (
+      Array.isArray(suggestions)
+        ? suggestions
+        : []
+    )
+      .map(
+        (item) =>
+          Number(
+            item?._activeLearning
+              ?.uncertainty
+          )
+      )
+      .filter(Number.isFinite);
+
+  if (!values.length) {
+    return null;
+  }
+
+  return (
+    values.reduce(
+      (sum, value) =>
+        sum + value,
+      0
+    )
+    / values.length
+  );
+}
+
+
+function phaseIL7FeedbackSnapshot(
+  summary
+) {
+  return {
+    accepted:
+      Math.max(
+        0,
+        Number(
+          summary?.accepted || 0
+        )
+      ),
+    rejected:
+      Math.max(
+        0,
+        Number(
+          summary?.rejected || 0
+        )
+      ),
+    edited:
+      Math.max(
+        0,
+        Number(
+          summary?.edited || 0
+        )
+      ),
+    reclassified:
+      Math.max(
+        0,
+        Number(
+          summary?.reclassified || 0
+        )
+      ),
+  };
+}
+
+
+function phaseIL7FeedbackDelta(
+  current,
+  previous
+) {
+  const delta = {};
+
+  for (
+    const key
+    of [
+      "accepted",
+      "rejected",
+      "edited",
+      "reclassified",
+    ]
+  ) {
+    delta[key] =
+      Math.max(
+        0,
+        Number(
+          current?.[key] || 0
+        )
+        - Number(
+            previous?.[key] || 0
+          )
+      );
+  }
+
+  // Edited target annotations are also present among accepted target
+  // Features, so remove that overlap when estimating clean accepts.
+  delta.cleanAccepted =
+    Math.max(
+      0,
+      delta.accepted
+      - delta.edited
+    );
+
+  delta.corrections =
+    delta.rejected
+    + delta.edited
+    + delta.reclassified;
+
+  delta.reviewed =
+    delta.cleanAccepted
+    + delta.corrections;
+
+  delta.correctionRate =
+    delta.reviewed > 0
+      ? (
+          delta.corrections
+          / delta.reviewed
+        )
+      : null;
+
+  return delta;
+}
+
+
+function phaseIL7EvaluateStatus({
+  history,
+  uncertainty,
+  suggestionCount,
+  delta,
+}) {
+  if (suggestionCount < 1) {
+    return {
+      state:
+        "no-suggestions",
+      label:
+        "No suggestions",
+      reason:
+        "No candidate regions were returned at the current settings.",
+    };
+  }
+
+  if (!history.length) {
+    return {
+      state:
+        "building",
+      label:
+        "Building",
+      reason:
+        "First measured learning round.",
+    };
+  }
+
+  const previous =
+    history[
+      history.length - 1
+    ];
+
+  const previousUncertainty =
+    Number(
+      previous?.uncertainty
+    );
+
+  const uncertaintyChange =
+    (
+      Number.isFinite(uncertainty)
+      && Number.isFinite(
+        previousUncertainty
+      )
+    )
+      ? Math.abs(
+          uncertainty
+          - previousUncertainty
+        )
+      : null;
+
+  const enoughRounds =
+    history.length >= 2;
+
+  const enoughReviewed =
+    delta.reviewed >= 4;
+
+  const lowCorrection =
+    Number.isFinite(
+      delta.correctionRate
+    )
+    && delta.correctionRate <= 0.20;
+
+  const moderateCorrection =
+    !Number.isFinite(
+      delta.correctionRate
+    )
+    || delta.correctionRate <= 0.45;
+
+  const lowUncertainty =
+    Number.isFinite(uncertainty)
+    && uncertainty <= 0.35;
+
+  const moderateUncertainty =
+    Number.isFinite(uncertainty)
+    && uncertainty <= 0.50;
+
+  const uncertaintyStable =
+    Number.isFinite(
+      uncertaintyChange
+    )
+    && uncertaintyChange <= 0.08;
+
+  if (
+    enoughRounds
+    && enoughReviewed
+    && lowCorrection
+    && lowUncertainty
+    && uncertaintyStable
+  ) {
+    return {
+      state:
+        "stable",
+      label:
+        "Stable",
+      reason:
+        "Low uncertainty, few corrections and little round-to-round change.",
+    };
+  }
+
+  if (
+    moderateUncertainty
+    && (
+      !enoughReviewed
+      || moderateCorrection
+    )
+  ) {
+    return {
+      state:
+        "stabilizing",
+      label:
+        "Stabilizing",
+      reason:
+        "Predictions are becoming more certain; more reviewed examples are useful before declaring stability.",
+    };
+  }
+
+  return {
+    state:
+      "improving",
+    label:
+      "Improving",
+    reason:
+      "The latest reviewed examples can still meaningfully change the learner.",
+  };
+}
+
+
+function phaseIL7RenderStatus(
+  entry = null
+) {
+  const element =
+    document.getElementById(
+      "phaseIL7Stability"
+    );
+
+  if (!element) return;
+
+  if (!entry) {
+    const refs =
+      phaseIL1Refs();
+
+    const targetClass =
+      String(
+        refs.classSelect?.value
+        || ""
+      ).trim();
+
+    const trainingMode =
+      phaseIL6TrainingMode();
+
+    const trainingSources =
+      phaseIL6TrainingPayload();
+
+    const key =
+      phaseIL7HistoryKey({
+        targetClass,
+        trainingMode,
+        trainingSources,
+      });
+
+    const history =
+      phaseIL7ReadHistory(key);
+
+    entry =
+      history.length
+        ? history[
+            history.length - 1
+          ]
+        : null;
+  }
+
+  if (!entry) {
+    element.dataset.state =
+      "unassessed";
+
+    element.textContent =
+      "Learning: not assessed";
+
+    element.title =
+      "Run Learn & suggest to start measuring learning stability.";
+
+    return;
+  }
+
+  element.dataset.state =
+    entry.state
+    || "unassessed";
+
+  element.textContent =
+    `Learning: ${entry.label || "not assessed"}`;
+
+  const details = [
+    entry.reason,
+  ];
+
+  if (
+    Number.isFinite(
+      Number(entry.uncertainty)
+    )
+  ) {
+    details.push(
+      `mean uncertainty ${(
+        Number(
+          entry.uncertainty
+        ) * 100
+      ).toFixed(0)}%`
+    );
+  }
+
+  if (
+    Number.isFinite(
+      Number(
+        entry.correctionRate
+      )
+    )
+  ) {
+    details.push(
+      `correction rate ${(
+        Number(
+          entry.correctionRate
+        ) * 100
+      ).toFixed(0)}%`
+    );
+  }
+
+  details.push(
+    `round ${Number(
+      entry.round || 1
+    )}`
+  );
+
+  element.title =
+    details
+      .filter(Boolean)
+      .join(" · ");
+}
+
+
+function phaseIL7RecordRound({
+  targetClass,
+  trainingMode,
+  trainingSources,
+  suggestions,
+  feedbackSummary,
+}) {
+  const key =
+    phaseIL7HistoryKey({
+      targetClass,
+      trainingMode,
+      trainingSources,
+    });
+
+  if (!key) return null;
+
+  const history =
+    phaseIL7ReadHistory(key);
+
+  const feedback =
+    phaseIL7FeedbackSnapshot(
+      feedbackSummary
+    );
+
+  const previousFeedback =
+    history.length
+      ? history[
+          history.length - 1
+        ]?.feedback
+      : null;
+
+  const delta =
+    phaseIL7FeedbackDelta(
+      feedback,
+      previousFeedback
+    );
+
+  const uncertainty =
+    phaseIL7MeanUncertainty(
+      suggestions
+    );
+
+  const suggestionCount =
+    Array.isArray(suggestions)
+      ? suggestions.length
+      : 0;
+
+  const status =
+    phaseIL7EvaluateStatus({
+      history,
+      uncertainty,
+      suggestionCount,
+      delta,
+    });
+
+  const entry = {
+    round:
+      (
+        Number(
+          history[
+            history.length - 1
+          ]?.round || 0
+        )
+        + 1
+      ),
+    createdAt:
+      new Date().toISOString(),
+    state:
+      status.state,
+    label:
+      status.label,
+    reason:
+      status.reason,
+    uncertainty:
+      Number.isFinite(uncertainty)
+        ? uncertainty
+        : null,
+    suggestionCount,
+    correctionRate:
+      Number.isFinite(
+        delta.correctionRate
+      )
+        ? delta.correctionRate
+        : null,
+    reviewedSincePrevious:
+      delta.reviewed,
+    correctionsSincePrevious:
+      delta.corrections,
+    feedback,
+  };
+
+  history.push(entry);
+  phaseIL7WriteHistory(
+    key,
+    history
+  );
+  phaseIL7RenderStatus(entry);
+
+  return entry;
+}
+
+
+function phaseIL7Initialize() {
+  const refs =
+    phaseIL1Refs();
+
+  refs.classSelect
+    ?.addEventListener(
+      "change",
+      () =>
+        phaseIL7RenderStatus()
+    );
+
+  refs.sourceSelect
+    ?.addEventListener(
+      "change",
+      () =>
+        phaseIL7RenderStatus()
+    );
+
+  phaseIL7RenderStatus();
+}
+
+
 function phaseIL1Refs() {
   return {
     menu:
@@ -17513,6 +19765,13 @@ function phaseIL1EnsureUi() {
       <div id="phaseIL1TrainingInfo"
            class="phase-il1-training-info">
         Choose a class with existing annotations.
+      </div>
+
+      <div id="phaseIL7Stability"
+           class="phase-il7-stability"
+           data-state="unassessed"
+           title="Run Learn & suggest to start measuring learning stability.">
+        Learning: not assessed
       </div>
 
       <div id="phaseIL1SuggestionPanel"
@@ -17969,6 +20228,7 @@ function phaseIL1Open() {
   );
 
   phaseIL1PopulateClasses();
+  phaseIL7RenderStatus();
 
   refs.overlay.hidden =
     false;
@@ -18350,6 +20610,15 @@ async function phaseIL1Run() {
       phaseIL2FeedbackSummary(
         targetClass
       );
+
+    phaseIL7RecordRound({
+      targetClass,
+      trainingMode,
+      trainingSources,
+      suggestions:
+        phaseIL1State.suggestions,
+      feedbackSummary,
+    });
 
     phaseIL1UpdateTrainingHint(
       (
@@ -21077,6 +23346,8 @@ function phaseIL1Initialize() {
     phaseIL2Initialize();
     phaseIL11Initialize();
     phaseIL12Initialize();
+    phaseRInitialize();
+    phaseIL7Initialize();
     setClassManagerOpen(false);
     els.inputGuide.hidden = false;
     setDrawingProfile("default");

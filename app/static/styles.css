@@ -2737,3 +2737,259 @@ body.phase-b-focus-mode
     padding: 13px;
   }
 }
+
+/* ==========================================================================
+   Phase IL7 + UX reference view
+   ========================================================================== */
+
+.phase-ux-focus-pathologist-actions {
+  position: fixed;
+  z-index: 145;
+  left: 50%;
+  bottom: calc(
+    14px
+    + env(safe-area-inset-bottom)
+    + var(--ha-focus-inset-bottom, 0px)
+  );
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(
+    100vw
+    - 24px
+    - var(--ha-focus-inset-left, 0px)
+    - var(--ha-focus-inset-right, 0px)
+  );
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, .20);
+  border-radius: 12px;
+  background: rgba(17, 26, 42, .94);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .34);
+  backdrop-filter: blur(8px);
+}
+
+.phase-ux-focus-pathologist-actions[hidden] {
+  display: none !important;
+}
+
+.phase-ux-focus-pathologist-actions button {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
+.phase-r-panel {
+  position: fixed;
+  z-index: 140;
+  top: 82px;
+  right: 18px;
+  width: min(360px, calc(100vw - 20px));
+  border: 1px solid rgba(255, 255, 255, .20);
+  border-radius: 13px;
+  overflow: hidden;
+  background: rgba(17, 26, 42, .97);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, .46);
+  color: var(--text);
+  touch-action: none;
+}
+
+.phase-r-panel[hidden] {
+  display: none !important;
+}
+
+.phase-r-header {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 7px 6px 11px;
+  cursor: move;
+  user-select: none;
+  border-bottom: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(8, 12, 20, .90);
+  touch-action: none;
+}
+
+.phase-r-title {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.phase-r-title strong {
+  font-size: 13px;
+}
+
+.phase-r-title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.phase-r-header-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.phase-r-header-actions button {
+  width: 31px;
+  min-height: 30px;
+  padding: 2px;
+}
+
+.phase-r-content {
+  display: grid;
+}
+
+.phase-r-content[hidden] {
+  display: none !important;
+}
+
+.phase-r-viewer-wrap {
+  position: relative;
+  height: 250px;
+  min-height: 160px;
+  background: #090c13;
+  overflow: hidden;
+}
+
+#phaseRViewer {
+  position: absolute;
+  inset: 0;
+}
+
+.phase-r-crosshair {
+  position: absolute;
+  z-index: 8;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.phase-r-crosshair::before,
+.phase-r-crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(255, 242, 0, .96);
+  box-shadow: 0 0 2px rgba(0, 0, 0, .9);
+}
+
+.phase-r-crosshair::before {
+  left: 11px;
+  top: 0;
+  width: 2px;
+  height: 24px;
+}
+
+.phase-r-crosshair::after {
+  left: 0;
+  top: 11px;
+  width: 24px;
+  height: 2px;
+}
+
+.phase-r-message {
+  position: absolute;
+  z-index: 9;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  text-align: center;
+  background: rgba(8, 12, 20, .66);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.phase-r-message[hidden] {
+  display: none !important;
+}
+
+.phase-r-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-top: 1px solid rgba(255, 255, 255, .10);
+}
+
+.phase-r-footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.phase-r-footer button {
+  min-height: 34px;
+  flex: 0 0 auto;
+}
+
+body.phase-r-picking-reference #viewer {
+  cursor: crosshair !important;
+}
+
+body.phase-r-picking-reference .phase-r-panel {
+  outline: 2px solid rgba(255, 242, 0, .76);
+}
+
+.phase-il7-stability {
+  justify-self: start;
+  margin-top: -2px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 999px;
+  background: rgba(120, 130, 150, .10);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.phase-il7-stability[data-state="building"],
+.phase-il7-stability[data-state="improving"] {
+  border-color: rgba(77, 171, 247, .42);
+}
+
+.phase-il7-stability[data-state="stabilizing"] {
+  border-color: rgba(255, 212, 59, .52);
+}
+
+.phase-il7-stability[data-state="stable"] {
+  border-color: rgba(105, 219, 124, .58);
+}
+
+@media (max-width: 760px) {
+  .phase-r-panel {
+    width: min(320px, calc(100vw - 16px));
+    top: 66px;
+    right: 8px;
+  }
+
+  .phase-r-viewer-wrap {
+    height: 210px;
+  }
+
+  .phase-ux-focus-pathologist-actions {
+    gap: 5px;
+    padding: 5px;
+  }
+
+  .phase-ux-focus-pathologist-actions button {
+    min-height: 40px;
+    padding-inline: 9px;
+    font-size: 11px;
+  }
+}
