@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL9.1c"}
+    return {"status": "ok", "version": "1.4.0-dev-IL10.2"}
 
 
 @app.get("/health")
@@ -5722,8 +5722,1616 @@ def _il6_auxiliary_training_samples(
         "positiveSamples": positive_samples,
         "negativeSamples": negative_samples,
         "negativeSource": negative_source,
+        "_deepRgb": rgb,
+        "_deepValidMask": valid_mask,
+        "_deepPositiveMask": positive_mask,
+        "_deepNegativeMask": negative_mask,
+        "_deepExplicitNegativeMask": explicit_negative_mask,
         "appearanceDescriptor":
             appearance_descriptor,
+    }
+
+
+
+# ------------------------------------------------------------------------
+# Phase IL10.0 - multi-model / compute capabilities
+#
+# Deep learning remains optional at this phase. Device policy is automatic:
+# CUDA -> MPS -> CPU. Model A stays the current CPU Extra Trees baseline.
+# ------------------------------------------------------------------------
+
+def _il10_deep_runtime_capabilities() -> dict[str, Any]:
+    # IL10.1: torch + torchvision readiness and automatic device selection.
+    runtime: dict[str, Any] = {
+        "available": False,
+        "ready": False,
+        "torch": False,
+        "torchvision": False,
+        "devicePolicy": "auto",
+        "device": "cpu",
+        "accelerator": None,
+        "torchVersion": None,
+        "torchvisionVersion": None,
+        "reason": None,
+    }
+    try:
+        import torch
+        runtime["torch"] = True
+        runtime["torchVersion"] = str(getattr(torch, "__version__", "") or "")
+    except Exception as exc:
+        runtime["reason"] = f"PyTorch import failed: {type(exc).__name__}: {exc}"
+        return runtime
+    try:
+        import torchvision
+        runtime["torchvision"] = True
+        runtime["torchvisionVersion"] = str(getattr(torchvision, "__version__", "") or "")
+    except Exception as exc:
+        runtime["reason"] = f"torchvision import failed: {type(exc).__name__}: {exc}"
+        return runtime
+
+    device = "cpu"
+    accelerator = None
+    try:
+        if bool(torch.cuda.is_available()):
+            device = "cuda"
+            accelerator = str(torch.cuda.get_device_name(0) or "CUDA")
+        elif hasattr(torch.backends, "mps") and bool(torch.backends.mps.is_available()):
+            device = "mps"
+            accelerator = "Apple Metal / MPS"
+    except Exception:
+        device = "cpu"
+        accelerator = None
+
+    runtime.update({
+        "available": True,
+        "ready": True,
+        "device": device,
+        "accelerator": accelerator,
+    })
+    return runtime
+
+
+@app.get("/api/interactive-learning/capabilities")
+def interactive_learning_capabilities() -> dict[str, Any]:
+    runtime = _il10_deep_runtime_capabilities()
+    deep_runtime = (
+        _il10_deep_runtime_capabilities()
+    )
+
+    return {
+        "devicePolicy": "auto",
+        "deepRuntime": deep_runtime,
+        "models": [
+            {
+                "id": "A",
+                "label": "Classical",
+                "available": True,
+                "approach": (
+                    "engineered appearance features "
+                    "+ Extra Trees"
+                ),
+                "device": "cpu",
+            },
+            {
+                "id": "B",
+                "label": "Deep Features",
+                "available": bool(runtime.get("ready", False)),
+                "approach": (
+                    "pretrained deep embeddings "
+                    "+ lightweight classifier"
+                ),
+                "device": "auto",
+            },
+            {
+                "id": "C",
+                "label": "Deep Spatial",
+                "available": False,
+                "approach": (
+                    "patch-based deep segmentation"
+                ),
+                "device": "auto",
+            },
+        ],
+    }
+
+
+
+# ============================================================================
+# Phase IL10.1 - Model B: pretrained deep features + lightweight classifier
+# ============================================================================
+
+_IL10_B_BACKBONES: dict[str, Any] = {}
+
+
+def _il10_b_device(torch_module: Any) -> str:
+    try:
+        if bool(torch_module.cuda.is_available()):
+            return "cuda"
+    except Exception:
+        pass
+    try:
+        if hasattr(torch_module.backends, "mps") and bool(torch_module.backends.mps.is_available()):
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _il10_b_backbone(torch_module: Any, device: str) -> Any:
+    cached = _IL10_B_BACKBONES.get(device)
+    if cached is not None:
+        return cached
+    from torchvision.models import ResNet18_Weights, resnet18
+    model = resnet18(weights=ResNet18_Weights.DEFAULT)
+    backbone = torch_module.nn.Sequential(
+        model.conv1, model.bn1, model.relu, model.maxpool,
+        model.layer1, model.layer2,
+    )
+    backbone.eval()
+    for parameter in backbone.parameters():
+        parameter.requires_grad_(False)
+    backbone = backbone.to(device)
+    _IL10_B_BACKBONES[device] = backbone
+    return backbone
+
+
+def _il10_b_sample_embeddings(embeddings, mask, maximum, rng):
+    if embeddings.ndim != 3 or mask.shape != embeddings.shape[:2]:
+        raise ValueError("Deep embedding grid and mask are incompatible")
+    indices = np.flatnonzero(mask.reshape(-1))
+    dims = int(embeddings.shape[2])
+    if indices.size == 0:
+        return np.empty((0, dims), dtype=np.float32)
+    if indices.size > maximum:
+        indices = rng.choice(indices, size=maximum, replace=False)
+    return embeddings.reshape(-1, dims)[indices].astype(np.float32, copy=False)
+
+
+
+# ============================================================================
+# Phase IL10.2 - similarity-aware multi-image Deep Features
+# ============================================================================
+
+
+def _il10_b_embedding_grid(
+    rgb: np.ndarray,
+    torch_module: Any,
+    device: str,
+    maximum_side: int,
+) -> tuple[np.ndarray, int, int]:
+    import torch.nn.functional as F
+
+    height, width = map(
+        int,
+        rgb.shape[:2],
+    )
+
+    scale = min(
+        1.0,
+        float(maximum_side)
+        / float(max(height, width)),
+    )
+
+    analysis_height = max(
+        32,
+        int(round(height * scale)),
+    )
+
+    analysis_width = max(
+        32,
+        int(round(width * scale)),
+    )
+
+    tensor = torch_module.from_numpy(
+        np.ascontiguousarray(rgb)
+    ).permute(
+        2,
+        0,
+        1,
+    ).unsqueeze(0).float()
+
+    tensor = tensor / 255.0
+
+    if (
+        analysis_height != height
+        or analysis_width != width
+    ):
+        tensor = F.interpolate(
+            tensor,
+            size=(
+                analysis_height,
+                analysis_width,
+            ),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    mean = torch_module.tensor(
+        [
+            0.485,
+            0.456,
+            0.406,
+        ],
+        dtype=tensor.dtype,
+    ).view(
+        1,
+        3,
+        1,
+        1,
+    )
+
+    std = torch_module.tensor(
+        [
+            0.229,
+            0.224,
+            0.225,
+        ],
+        dtype=tensor.dtype,
+    ).view(
+        1,
+        3,
+        1,
+        1,
+    )
+
+    tensor = (tensor - mean) / std
+
+    if device == "cpu":
+        try:
+            torch_module.set_num_threads(
+                min(
+                    8,
+                    max(
+                        1,
+                        int(os.cpu_count() or 1),
+                    ),
+                )
+            )
+        except Exception:
+            pass
+
+    backbone = _il10_b_backbone(
+        torch_module,
+        device,
+    )
+
+    tensor = tensor.to(device)
+
+    with torch_module.inference_mode():
+        output = backbone(tensor)
+
+    embeddings = (
+        output[0]
+        .detach()
+        .float()
+        .cpu()
+        .permute(
+            1,
+            2,
+            0,
+        )
+        .numpy()
+        .astype(
+            np.float32,
+            copy=False,
+        )
+    )
+
+    return (
+        embeddings,
+        analysis_height,
+        analysis_width,
+    )
+
+
+def _il10_b_mask_occupancy(
+    mask: np.ndarray,
+    grid_height: int,
+    grid_width: int,
+) -> np.ndarray:
+    import torch
+    import torch.nn.functional as F
+
+    source_height, source_width = map(
+        int,
+        mask.shape[:2],
+    )
+
+    tensor = torch.from_numpy(
+        np.asarray(
+            mask,
+            dtype=np.float32,
+        )
+    ).view(
+        1,
+        1,
+        source_height,
+        source_width,
+    )
+
+    return (
+        F.interpolate(
+            tensor,
+            size=(
+                grid_height,
+                grid_width,
+            ),
+            mode="area",
+        )[0, 0]
+        .numpy()
+        .astype(
+            np.float32,
+            copy=False,
+        )
+    )
+
+
+def _il10_b_descriptor(
+    embeddings: np.ndarray,
+    valid_mask: np.ndarray,
+) -> np.ndarray:
+    grid_height, grid_width = map(
+        int,
+        embeddings.shape[:2],
+    )
+
+    occupancy = _il10_b_mask_occupancy(
+        valid_mask,
+        grid_height,
+        grid_width,
+    )
+
+    valid_grid = occupancy >= 0.10
+
+    flat = embeddings.reshape(
+        -1,
+        embeddings.shape[2],
+    )
+
+    indices = np.flatnonzero(
+        valid_grid.reshape(-1)
+    )
+
+    if indices.size:
+        descriptor = np.mean(
+            flat[indices],
+            axis=0,
+        )
+    else:
+        descriptor = np.mean(
+            flat,
+            axis=0,
+        )
+
+    descriptor = np.asarray(
+        descriptor,
+        dtype=np.float32,
+    )
+
+    norm = float(
+        np.linalg.norm(descriptor)
+    )
+
+    if norm > 1e-8:
+        descriptor = descriptor / norm
+
+    return descriptor
+
+
+def _il10_b_similarity(
+    current_descriptor: np.ndarray,
+    source_descriptor: np.ndarray,
+) -> float:
+    current = np.asarray(
+        current_descriptor,
+        dtype=np.float32,
+    )
+
+    source = np.asarray(
+        source_descriptor,
+        dtype=np.float32,
+    )
+
+    if (
+        current.shape != source.shape
+        or current.size == 0
+    ):
+        return 0.0
+
+    denominator = float(
+        np.linalg.norm(current)
+        * np.linalg.norm(source)
+    )
+
+    if denominator <= 1e-8:
+        return 0.0
+
+    cosine = float(
+        np.dot(current, source)
+        / denominator
+    )
+
+    cosine = float(
+        np.clip(
+            cosine,
+            -1.0,
+            1.0,
+        )
+    )
+
+    distance = max(
+        0.0,
+        1.0 - cosine,
+    )
+
+    similarity = float(
+        np.exp(
+            -2.5 * distance
+        )
+    )
+
+    return float(
+        np.clip(
+            similarity,
+            0.0,
+            1.0,
+        )
+    )
+
+
+def _il10_b_similarity_label(
+    similarity: float,
+    same_physical_image: bool,
+) -> str:
+    if same_physical_image:
+        return "same image"
+
+    if similarity >= 0.82:
+        return "very similar"
+
+    if similarity >= 0.65:
+        return "similar"
+
+    if similarity >= 0.45:
+        return "moderate"
+
+    return "distant"
+
+
+def _il10_b_effective_weight(
+    similarity: float,
+    target_present: bool,
+) -> tuple[float, float | None]:
+    weight = float(
+        np.clip(
+            (
+                0.20
+                + 0.65
+                * (
+                    float(similarity)
+                    ** 1.35
+                )
+            ),
+            0.20,
+            0.85,
+        )
+    )
+
+    target_absent_cap = (
+        None
+        if target_present
+        else 0.45
+    )
+
+    if target_absent_cap is not None:
+        weight = min(
+            weight,
+            target_absent_cap,
+        )
+
+    return (
+        float(weight),
+        target_absent_cap,
+    )
+
+
+def _il10_b_cap_weighted_pool(
+    batches: list[tuple[np.ndarray, float]],
+    maximum: int,
+    rng: np.random.Generator,
+    feature_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    feature_batches: list[np.ndarray] = []
+    weight_batches: list[np.ndarray] = []
+
+    for batch, weight in batches:
+        if (
+            not isinstance(batch, np.ndarray)
+            or batch.ndim != 2
+            or batch.shape[0] < 1
+        ):
+            continue
+
+        feature_batches.append(
+            batch.astype(
+                np.float32,
+                copy=False,
+            )
+        )
+
+        weight_batches.append(
+            np.full(
+                batch.shape[0],
+                float(weight),
+                dtype=np.float32,
+            )
+        )
+
+    if not feature_batches:
+        return (
+            np.empty(
+                (
+                    0,
+                    feature_count,
+                ),
+                dtype=np.float32,
+            ),
+            np.empty(
+                (0,),
+                dtype=np.float32,
+            ),
+        )
+
+    features = np.vstack(
+        feature_batches
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
+    weights = np.concatenate(
+        weight_batches
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
+    if features.shape[0] <= maximum:
+        return (
+            features,
+            weights,
+        )
+
+    probabilities = np.maximum(
+        weights,
+        1e-4,
+    ).astype(
+        np.float64,
+        copy=False,
+    )
+
+    probabilities /= np.sum(
+        probabilities
+    )
+
+    indices = rng.choice(
+        features.shape[0],
+        size=maximum,
+        replace=False,
+        p=probabilities,
+    )
+
+    return (
+        features[indices],
+        weights[indices],
+    )
+
+
+def _il10_b_auxiliary_source(
+    source_result: dict[str, Any],
+    current_descriptor: np.ndarray,
+    current_image_id: str,
+    source_image_id: str,
+    torch_module: Any,
+    device: str,
+    rng: np.random.Generator,
+) -> dict[str, Any]:
+    rgb = source_result[
+        "_deepRgb"
+    ]
+
+    valid_mask = source_result[
+        "_deepValidMask"
+    ]
+
+    positive_mask = source_result[
+        "_deepPositiveMask"
+    ]
+
+    explicit_negative_mask = source_result[
+        "_deepExplicitNegativeMask"
+    ]
+
+    target_present = bool(
+        source_result[
+            "targetPresent"
+        ]
+    )
+
+    negative_mask = (
+        source_result[
+            "_deepNegativeMask"
+        ]
+        if target_present
+        else explicit_negative_mask
+    )
+
+    maximum_side = (
+        896
+        if device == "cuda"
+        else 704
+    )
+
+    embeddings, _, _ = _il10_b_embedding_grid(
+        rgb,
+        torch_module,
+        device,
+        maximum_side,
+    )
+
+    grid_height, grid_width = map(
+        int,
+        embeddings.shape[:2],
+    )
+
+    source_descriptor = _il10_b_descriptor(
+        embeddings,
+        valid_mask,
+    )
+
+    same_physical_image = (
+        str(source_image_id)
+        == str(current_image_id)
+    )
+
+    similarity = (
+        1.0
+        if same_physical_image
+        else _il10_b_similarity(
+            current_descriptor,
+            source_descriptor,
+        )
+    )
+
+    (
+        effective_weight,
+        target_absent_cap,
+    ) = _il10_b_effective_weight(
+        similarity,
+        target_present,
+    )
+
+    positive_occupancy = _il10_b_mask_occupancy(
+        positive_mask,
+        grid_height,
+        grid_width,
+    )
+
+    negative_occupancy = _il10_b_mask_occupancy(
+        negative_mask,
+        grid_height,
+        grid_width,
+    )
+
+    positive_grid = (
+        positive_occupancy >= 0.05
+    )
+
+    if (
+        target_present
+        and np.count_nonzero(
+            positive_grid
+        ) < 8
+    ):
+        positive_grid = (
+            positive_occupancy > 0.0
+        )
+
+    negative_grid = (
+        negative_occupancy >= 0.35
+    )
+
+    if np.count_nonzero(
+        negative_grid
+    ) < 8:
+        negative_grid = (
+            negative_occupancy > 0.0
+        )
+
+    positive_limit = (
+        max(
+            400,
+            int(
+                round(
+                    2600
+                    * (
+                        effective_weight
+                        / 0.85
+                    )
+                )
+            ),
+        )
+        if target_present
+        else 0
+    )
+
+    negative_limit = (
+        max(
+            400,
+            int(
+                round(
+                    2600
+                    * (
+                        effective_weight
+                        / 0.85
+                    )
+                )
+            ),
+        )
+        if target_present
+        else max(
+            100,
+            int(
+                round(
+                    700
+                    * (
+                        effective_weight
+                        / 0.45
+                    )
+                )
+            ),
+        )
+    )
+
+    positive_samples = (
+        _il10_b_sample_embeddings(
+            embeddings,
+            positive_grid,
+            positive_limit,
+            rng,
+        )
+        if positive_limit > 0
+        else np.empty(
+            (
+                0,
+                embeddings.shape[2],
+            ),
+            dtype=np.float32,
+        )
+    )
+
+    negative_samples = _il10_b_sample_embeddings(
+        embeddings,
+        negative_grid,
+        negative_limit,
+        rng,
+    )
+
+    return {
+        "positiveSamples":
+            positive_samples,
+        "negativeSamples":
+            negative_samples,
+        "appearanceSimilarity":
+            float(similarity),
+        "similarityLabel":
+            _il10_b_similarity_label(
+                similarity,
+                same_physical_image,
+            ),
+        "effectiveWeight":
+            float(effective_weight),
+        "targetAbsentWeightCap":
+            target_absent_cap,
+        "samePhysicalImage":
+            bool(
+                same_physical_image
+            ),
+        "similarityBasis":
+            "deep-resnet18-cosine",
+    }
+
+
+def _il10_b_deep_feature_probability_map(
+    rgb: np.ndarray,
+    positive_mask: np.ndarray,
+    negative_mask: np.ndarray,
+    positive_feedback_mask: np.ndarray,
+    negative_feedback_mask: np.ndarray,
+    valid_mask: np.ndarray,
+    sensitivity: float,
+    rng: np.random.Generator,
+    *,
+    image_id: str,
+    current_annotation_file: str,
+    target_class: str,
+    training_mode: str,
+    raw_training_sources: list[Any],
+    max_side: int,
+) -> dict[str, Any]:
+    try:
+        import torch
+        import torch.nn.functional as F
+        import torchvision  # noqa: F401
+        from sklearn.linear_model import (
+            LogisticRegression,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Deep Features requires PyTorch, "
+                "torchvision and scikit-learn: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+
+    if (
+        rgb.ndim != 3
+        or rgb.shape[2] != 3
+        or rgb.shape[:2]
+        != positive_mask.shape
+        or valid_mask.shape
+        != positive_mask.shape
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Deep Features received an "
+                "invalid RGB/mask layout"
+            ),
+        )
+
+    original_height, original_width = map(
+        int,
+        rgb.shape[:2],
+    )
+
+    requested_device = _il10_b_device(
+        torch
+    )
+
+    maximum_side = (
+        1280
+        if requested_device == "cuda"
+        else 896
+    )
+
+    used_device = requested_device
+    fallback_reason = None
+
+    try:
+        (
+            embeddings,
+            analysis_height,
+            analysis_width,
+        ) = _il10_b_embedding_grid(
+            rgb,
+            torch,
+            requested_device,
+            maximum_side,
+        )
+    except Exception as exc:
+        if requested_device == "cpu":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Deep Features backbone "
+                    "inference failed on CPU: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            ) from exc
+
+        fallback_reason = (
+            f"{requested_device} failed; "
+            "CPU fallback used: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        try:
+            if requested_device == "cuda":
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        used_device = "cpu"
+
+        (
+            embeddings,
+            analysis_height,
+            analysis_width,
+        ) = _il10_b_embedding_grid(
+            rgb,
+            torch,
+            "cpu",
+            896,
+        )
+
+    grid_height, grid_width = map(
+        int,
+        embeddings.shape[:2],
+    )
+
+    current_descriptor = _il10_b_descriptor(
+        embeddings,
+        valid_mask,
+    )
+
+    pos_occ = _il10_b_mask_occupancy(
+        positive_mask,
+        grid_height,
+        grid_width,
+    )
+
+    neg_occ = _il10_b_mask_occupancy(
+        negative_mask,
+        grid_height,
+        grid_width,
+    )
+
+    pos_feedback_occ = _il10_b_mask_occupancy(
+        positive_feedback_mask,
+        grid_height,
+        grid_width,
+    )
+
+    neg_feedback_occ = _il10_b_mask_occupancy(
+        negative_feedback_mask,
+        grid_height,
+        grid_width,
+    )
+
+    positive_grid = pos_occ >= 0.05
+
+    if np.count_nonzero(
+        positive_grid
+    ) < 12:
+        positive_grid = pos_occ > 0.0
+
+    negative_grid = neg_occ >= 0.45
+
+    if np.count_nonzero(
+        negative_grid
+    ) < 12:
+        negative_grid = neg_occ >= 0.15
+
+    if np.count_nonzero(
+        negative_grid
+    ) < 12:
+        negative_grid = neg_occ > 0.0
+
+    positive_samples = _il10_b_sample_embeddings(
+        embeddings,
+        positive_grid,
+        8000,
+        rng,
+    )
+
+    negative_samples = _il10_b_sample_embeddings(
+        embeddings,
+        negative_grid,
+        8000,
+        rng,
+    )
+
+    positive_feedback_samples = _il10_b_sample_embeddings(
+        embeddings,
+        pos_feedback_occ > 0.0,
+        3000,
+        rng,
+    )
+
+    negative_feedback_samples = _il10_b_sample_embeddings(
+        embeddings,
+        neg_feedback_occ > 0.0,
+        3000,
+        rng,
+    )
+
+    current_positive = positive_samples
+    current_negative = negative_samples
+
+    if positive_feedback_samples.shape[0]:
+        current_positive = np.vstack([
+            current_positive,
+            positive_feedback_samples,
+        ])
+
+    if negative_feedback_samples.shape[0]:
+        current_negative = np.vstack([
+            current_negative,
+            negative_feedback_samples,
+        ])
+
+    auxiliary_positive_batches: list[
+        tuple[np.ndarray, float]
+    ] = []
+
+    auxiliary_negative_batches: list[
+        tuple[np.ndarray, float]
+    ] = []
+
+    training_source_reports: list[
+        dict[str, Any]
+    ] = []
+
+    if training_mode == "set":
+        seen_sources: set[
+            tuple[str, str]
+        ] = set()
+
+        for source in raw_training_sources[:12]:
+            if not isinstance(
+                source,
+                dict,
+            ):
+                continue
+
+            source_image_id = str(
+                source.get(
+                    "imageId",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            source_file = normalize_annotation_file(
+                str(
+                    source.get(
+                        "annotationFile",
+                        "Default",
+                    )
+                    or "Default"
+                )
+            )
+
+            if not source_image_id:
+                continue
+
+            source_key = (
+                source_image_id,
+                source_file.casefold(),
+            )
+
+            if source_key in seen_sources:
+                continue
+
+            seen_sources.add(
+                source_key
+            )
+
+            if (
+                source_image_id == image_id
+                and source_file.casefold()
+                == current_annotation_file.casefold()
+            ):
+                continue
+
+            source_result = _il6_auxiliary_training_samples(
+                source_image_id,
+                source_file,
+                target_class,
+                min(
+                    896,
+                    max(
+                        512,
+                        int(max_side),
+                    ),
+                ),
+                rng,
+            )
+
+            deep_source = _il10_b_auxiliary_source(
+                source_result,
+                current_descriptor,
+                image_id,
+                source_image_id,
+                torch,
+                used_device,
+                rng,
+            )
+
+            weight = float(
+                deep_source[
+                    "effectiveWeight"
+                ]
+            )
+
+            if (
+                deep_source[
+                    "positiveSamples"
+                ].shape[0]
+            ):
+                auxiliary_positive_batches.append(
+                    (
+                        deep_source[
+                            "positiveSamples"
+                        ],
+                        weight,
+                    )
+                )
+
+            if (
+                deep_source[
+                    "negativeSamples"
+                ].shape[0]
+            ):
+                auxiliary_negative_batches.append(
+                    (
+                        deep_source[
+                            "negativeSamples"
+                        ],
+                        weight,
+                    )
+                )
+
+            training_source_reports.append({
+                "imageId":
+                    source_result[
+                        "imageId"
+                    ],
+                "imageName":
+                    source_result[
+                        "imageName"
+                    ],
+                "annotationFile":
+                    source_result[
+                        "annotationFile"
+                    ],
+                "targetClass":
+                    target_class,
+                "targetPresent":
+                    bool(
+                        source_result[
+                            "targetPresent"
+                        ]
+                    ),
+                "targetAnnotations":
+                    int(
+                        source_result[
+                            "targetAnnotations"
+                        ]
+                    ),
+                "negativeAnnotations":
+                    int(
+                        source_result.get(
+                            "negativeAnnotations",
+                            0,
+                        )
+                    ),
+                "positiveSamples":
+                    int(
+                        deep_source[
+                            "positiveSamples"
+                        ].shape[0]
+                    ),
+                "negativeSamples":
+                    int(
+                        deep_source[
+                            "negativeSamples"
+                        ].shape[0]
+                    ),
+                "negativeSource":
+                    (
+                        source_result[
+                            "negativeSource"
+                        ]
+                        if source_result[
+                            "targetPresent"
+                        ]
+                        else (
+                            "explicit annotated "
+                            "non-target classes only"
+                        )
+                    ),
+                "appearanceSimilarity":
+                    float(
+                        deep_source[
+                            "appearanceSimilarity"
+                        ]
+                    ),
+                "similarityLabel":
+                    deep_source[
+                        "similarityLabel"
+                    ],
+                "effectiveWeight":
+                    float(
+                        deep_source[
+                            "effectiveWeight"
+                        ]
+                    ),
+                "targetAbsentWeightCap":
+                    deep_source[
+                        "targetAbsentWeightCap"
+                    ],
+                "samePhysicalImage":
+                    bool(
+                        deep_source[
+                            "samePhysicalImage"
+                        ]
+                    ),
+                "similarityBasis":
+                    deep_source[
+                        "similarityBasis"
+                    ],
+            })
+
+    feature_count = int(
+        embeddings.shape[2]
+    )
+
+    (
+        auxiliary_positive,
+        auxiliary_positive_weights,
+    ) = _il10_b_cap_weighted_pool(
+        auxiliary_positive_batches,
+        12000,
+        rng,
+        feature_count,
+    )
+
+    (
+        auxiliary_negative,
+        auxiliary_negative_weights,
+    ) = _il10_b_cap_weighted_pool(
+        auxiliary_negative_batches,
+        12000,
+        rng,
+        feature_count,
+    )
+
+    positive_parts: list[
+        np.ndarray
+    ] = []
+
+    positive_weight_parts: list[
+        np.ndarray
+    ] = []
+
+    negative_parts: list[
+        np.ndarray
+    ] = []
+
+    negative_weight_parts: list[
+        np.ndarray
+    ] = []
+
+    if current_positive.shape[0]:
+        positive_parts.append(
+            current_positive
+        )
+        positive_weight_parts.append(
+            np.ones(
+                current_positive.shape[0],
+                dtype=np.float32,
+            )
+        )
+
+    if auxiliary_positive.shape[0]:
+        positive_parts.append(
+            auxiliary_positive
+        )
+        positive_weight_parts.append(
+            auxiliary_positive_weights
+        )
+
+    if current_negative.shape[0]:
+        negative_parts.append(
+            current_negative
+        )
+        negative_weight_parts.append(
+            np.ones(
+                current_negative.shape[0],
+                dtype=np.float32,
+            )
+        )
+
+    if auxiliary_negative.shape[0]:
+        negative_parts.append(
+            auxiliary_negative
+        )
+        negative_weight_parts.append(
+            auxiliary_negative_weights
+        )
+
+    training_positive = (
+        np.vstack(
+            positive_parts
+        ).astype(
+            np.float32,
+            copy=False,
+        )
+        if positive_parts
+        else np.empty(
+            (
+                0,
+                feature_count,
+            ),
+            dtype=np.float32,
+        )
+    )
+
+    training_negative = (
+        np.vstack(
+            negative_parts
+        ).astype(
+            np.float32,
+            copy=False,
+        )
+        if negative_parts
+        else np.empty(
+            (
+                0,
+                feature_count,
+            ),
+            dtype=np.float32,
+        )
+    )
+
+    positive_weights = (
+        np.concatenate(
+            positive_weight_parts
+        ).astype(
+            np.float32,
+            copy=False,
+        )
+        if positive_weight_parts
+        else np.empty(
+            (0,),
+            dtype=np.float32,
+        )
+    )
+
+    negative_weights = (
+        np.concatenate(
+            negative_weight_parts
+        ).astype(
+            np.float32,
+            copy=False,
+        )
+        if negative_weight_parts
+        else np.empty(
+            (0,),
+            dtype=np.float32,
+        )
+    )
+
+    if training_positive.shape[0] < 8:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Deep Features needs positive "
+                "examples in the current image "
+                "or at least one selected "
+                "training source."
+            ),
+        )
+
+    if training_negative.shape[0] < 8:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Deep Features needs negative/"
+                "context examples in the current "
+                "image or selected training sources."
+            ),
+        )
+
+    training_x = np.vstack([
+        training_positive,
+        training_negative,
+    ]).astype(
+        np.float32,
+        copy=False,
+    )
+
+    training_y = np.concatenate([
+        np.ones(
+            training_positive.shape[0],
+            dtype=np.uint8,
+        ),
+        np.zeros(
+            training_negative.shape[0],
+            dtype=np.uint8,
+        ),
+    ])
+
+    training_weights = np.concatenate([
+        positive_weights,
+        negative_weights,
+    ]).astype(
+        np.float32,
+        copy=False,
+    )
+
+    classifier = LogisticRegression(
+        solver="liblinear",
+        class_weight="balanced",
+        C=1.0,
+        max_iter=300,
+        random_state=1729,
+    )
+
+    try:
+        classifier.fit(
+            training_x,
+            training_y,
+            sample_weight=
+                training_weights,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Deep Features could not fit "
+                "the weighted multi-image "
+                "classifier: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+
+    flat_embeddings = embeddings.reshape(
+        -1,
+        embeddings.shape[2],
+    )
+
+    probability_grid = (
+        classifier.predict_proba(
+            flat_embeddings
+        )[:, 1]
+        .reshape(
+            grid_height,
+            grid_width,
+        )
+        .astype(
+            np.float32,
+            copy=False,
+        )
+    )
+
+    probability_map = (
+        F.interpolate(
+            torch.from_numpy(
+                probability_grid
+            ).view(
+                1,
+                1,
+                grid_height,
+                grid_width,
+            ),
+            size=(
+                original_height,
+                original_width,
+            ),
+            mode="bilinear",
+            align_corners=False,
+        )[0, 0]
+        .numpy()
+        .astype(
+            np.float32,
+            copy=False,
+        )
+    )
+
+    probability_threshold = float(
+        np.clip(
+            (
+                0.50
+                + (
+                    (
+                        50.0
+                        - float(
+                            sensitivity
+                        )
+                    )
+                    / 50.0
+                )
+                * 0.20
+            ),
+            0.25,
+            0.75,
+        )
+    )
+
+    return {
+        "positiveSamples":
+            training_positive,
+        "negativeSamples":
+            training_negative,
+        "positiveFeedbackSamples":
+            positive_feedback_samples,
+        "negativeFeedbackSamples":
+            negative_feedback_samples,
+        "probabilityMap":
+            probability_map,
+        "threshold":
+            probability_threshold,
+        "trainingSources":
+            training_source_reports,
+        "auxiliaryPositiveSamples":
+            int(
+                auxiliary_positive.shape[0]
+            ),
+        "auxiliaryNegativeSamples":
+            int(
+                auxiliary_negative.shape[0]
+            ),
+        "model": {
+            "type":
+                "deep-features-resnet18-v2",
+            "learningModel":
+                "B",
+            "learningModelLabel":
+                "Deep Features",
+            "backbone":
+                (
+                    "resnet18-layer2-"
+                    "imagenet1k-v1"
+                ),
+            "embeddingDimensions":
+                int(
+                    embeddings.shape[2]
+                ),
+            "embeddingStrideApprox":
+                8,
+            "classifier":
+                (
+                    "weighted-logistic-"
+                    "regression"
+                ),
+            "trainingUnits":
+                "embedding-grid-cells",
+            "analysisInputWidth":
+                int(
+                    analysis_width
+                ),
+            "analysisInputHeight":
+                int(
+                    analysis_height
+                ),
+            "deepGridWidth":
+                int(
+                    grid_width
+                ),
+            "deepGridHeight":
+                int(
+                    grid_height
+                ),
+            "computeDevice":
+                used_device,
+            "devicePolicy":
+                "auto",
+            "acceleratorUsed":
+                used_device
+                in {
+                    "cuda",
+                    "mps",
+                },
+            "deviceFallbackReason":
+                fallback_reason,
+            "multiImage":
+                training_mode == "set",
+            "similarityBasis":
+                "deep-resnet18-cosine",
+            "currentImageWeight":
+                1.0,
+            "auxiliaryPositiveMaximumTotal":
+                12000,
+            "auxiliaryNegativeMaximumTotal":
+                12000,
+            "targetAbsentAuxiliaryWeightCap":
+                0.45,
+        },
     }
 
 
@@ -5740,6 +7348,24 @@ def interactive_learning_suggest(
         raise HTTPException(
             status_code=422,
             detail="targetClass is required",
+        )
+
+    learning_model = str(
+        payload.get(
+            "learningModel",
+            "A",
+        )
+        or "A"
+    ).strip().upper()
+
+    if learning_model not in {
+        "A",
+        "B",
+        "C",
+    }:
+        raise HTTPException(
+            status_code=422,
+            detail="learningModel must be A, B or C",
         )
 
     if target_class.casefold() == "artifact":
@@ -5856,6 +7482,29 @@ def interactive_learning_suggest(
         raw_training_sources = []
 
     raw_training_sources = raw_training_sources[:12]
+
+    # Phase IL10.1 - B is functional for the current image.
+    # Multi-image deep embedding extraction/caching is deferred to IL10.2.
+    if learning_model == "C":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Model C · Deep Spatial is reserved for a later phase. "
+                "Use A · Classical or B · Deep Features."
+            ),
+        )
+
+
+    if learning_model == "B":
+        deep_runtime = _il10_deep_runtime_capabilities()
+        if not bool(deep_runtime.get("ready")):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "B · Deep Features is unavailable on this server: "
+                    + str(deep_runtime.get("reason") or "PyTorch/torchvision runtime is not ready")
+                ),
+            )
 
     path, relative = safe_image_path(image_id)
 
@@ -6172,417 +7821,475 @@ def interactive_learning_suggest(
 
     feature_cube = _il1_feature_cube(rgb)
     rng = np.random.default_rng(1729)
+    deep_model_info: dict[str, Any] = {}
 
-    positive_samples = _il1_sample_features(
-        feature_cube,
-        positive_mask,
-        40000,
-        rng,
-    )
-    negative_samples = _il1_sample_features(
-        feature_cube,
-        negative_mask,
-        40000,
-        rng,
-    )
-
-    positive_feedback_samples = (
-        _il1_sample_features(
-            feature_cube,
+    if learning_model == "B":
+        deep_result = _il10_b_deep_feature_probability_map(
+            rgb,
+            positive_mask,
+            negative_mask,
             hard_positive_mask,
-            12000,
-            rng,
-        )
-    )
-
-    negative_feedback_samples = (
-        _il1_sample_features(
-            feature_cube,
             hard_negative_mask,
-            12000,
+            valid_mask,
+            sensitivity,
+            rng,
+            image_id=image_id,
+            current_annotation_file=current_annotation_file,
+            target_class=target_class,
+            training_mode=training_mode,
+            raw_training_sources=raw_training_sources,
+            max_side=max_side,
+        )
+
+        positive_samples = deep_result[
+            "positiveSamples"
+        ]
+        negative_samples = deep_result[
+            "negativeSamples"
+        ]
+        positive_feedback_samples = deep_result[
+            "positiveFeedbackSamples"
+        ]
+        negative_feedback_samples = deep_result[
+            "negativeFeedbackSamples"
+        ]
+
+        training_source_reports = list(
+            deep_result[
+                "trainingSources"
+            ]
+        )
+
+        tree_workers = 0
+
+        probability_map = deep_result[
+            "probabilityMap"
+        ]
+
+        probability_threshold = float(
+            deep_result[
+                "threshold"
+            ]
+        )
+
+        deep_model_info = dict(
+            deep_result[
+                "model"
+            ]
+        )
+
+    else:
+
+        positive_samples = _il1_sample_features(
+            feature_cube,
+            positive_mask,
+            40000,
             rng,
         )
-    )
-
-    if positive_feedback_samples.shape[0]:
-        positive_samples = np.vstack([
-            positive_samples,
-            positive_feedback_samples,
-        ])
-
-    if negative_feedback_samples.shape[0]:
-        negative_samples = np.vstack([
-            negative_samples,
-            negative_feedback_samples,
-        ])
-
-    # IL8 reference appearance is always the currently viewed image.
-    current_appearance_descriptor = (
-        _il8_appearance_descriptor(
+        negative_samples = _il1_sample_features(
             feature_cube,
-            valid_mask,
+            negative_mask,
+            40000,
+            rng,
         )
-    )
 
-    # Phase IL6: selected image + annotation-file sources.
-    training_source_reports: list[dict[str, Any]] = []
-    auxiliary_positive_batches: list[np.ndarray] = []
-    auxiliary_negative_batches: list[np.ndarray] = []
-
-    if training_mode == "set":
-        seen_sources: set[tuple[str, str]] = set()
-
-        for source in raw_training_sources:
-            if not isinstance(source, dict):
-                continue
-
-            source_image_id = str(
-                source.get(
-                    "imageId",
-                    "",
-                )
-                or ""
-            ).strip()
-
-            source_file = normalize_annotation_file(
-                str(
-                    source.get(
-                        "annotationFile",
-                        "Default",
-                    )
-                    or "Default"
-                )
-            )
-
-            if not source_image_id:
-                continue
-
-            source_key = (
-                source_image_id,
-                source_file.casefold(),
-            )
-
-            if source_key in seen_sources:
-                continue
-
-            seen_sources.add(source_key)
-
-            # Live current document already uses transient featureCollection,
-            # including local edits not yet synchronized.
-            if (
-                source_image_id == image_id
-                and source_file.casefold()
-                == current_annotation_file.casefold()
-            ):
-                continue
-
-            source_result = _il6_auxiliary_training_samples(
-                source_image_id,
-                source_file,
-                target_class,
-                max_side,
+        positive_feedback_samples = (
+            _il1_sample_features(
+                feature_cube,
+                hard_positive_mask,
+                12000,
                 rng,
             )
-
-            same_physical_image = (
-                source_image_id == image_id
-            )
-
-            if same_physical_image:
-                # Same WSI pixels: annotation-file choice changes labels,
-                # not tissue appearance. This is the positive control for
-                # IL8 similarity and must be exactly 1.00.
-                similarity = {
-                    "similarity": 1.0,
-                    "distance": 0.0,
-                    "label": "same image",
-                    "weight": 0.85,
-                }
-            else:
-                similarity = (
-                    _il8_appearance_similarity(
-                        current_appearance_descriptor,
-                        source_result.get(
-                            "appearanceDescriptor"
-                        ),
-                    )
-                )
-
-            target_absent_weight_cap = None
-
-            if not bool(
-                source_result[
-                    "targetPresent"
-                ]
-            ):
-                # A target-absent source can only contribute explicit
-                # negatives, so it should never approach the influence of
-                # a source containing positive examples of the target.
-                target_absent_weight_cap = 0.45
-                similarity["weight"] = min(
-                    float(
-                        similarity["weight"]
-                    ),
-                    target_absent_weight_cap,
-                )
-
-            weighted_positive = (
-                _il8_weight_sample_batch(
-                    source_result[
-                        "positiveSamples"
-                    ],
-                    similarity["weight"],
-                    rng,
-                )
-            )
-            weighted_negative = (
-                _il8_weight_sample_batch(
-                    source_result[
-                        "negativeSamples"
-                    ],
-                    similarity["weight"],
-                    rng,
-                )
-            )
-
-            auxiliary_positive_batches.append(
-                weighted_positive
-            )
-            auxiliary_negative_batches.append(
-                weighted_negative
-            )
-
-            training_source_reports.append({
-                "imageId": source_result["imageId"],
-                "imageName": source_result["imageName"],
-                "annotationFile": source_result["annotationFile"],
-                "targetPresent": bool(
-                    source_result["targetPresent"]
-                ),
-                "targetAnnotations": int(
-                    source_result["targetAnnotations"]
-                ),
-                "negativeAnnotations": int(
-                    source_result["negativeAnnotations"]
-                ),
-                "positiveSamplesRaw": int(
-                    source_result["positiveSamples"].shape[0]
-                ),
-                "negativeSamplesRaw": int(
-                    source_result["negativeSamples"].shape[0]
-                ),
-                "positiveSamples": int(
-                    weighted_positive.shape[0]
-                ),
-                "negativeSamples": int(
-                    weighted_negative.shape[0]
-                ),
-                "negativeSource": source_result["negativeSource"],
-                "appearanceSimilarity": float(
-                    similarity["similarity"]
-                ),
-                "appearanceDistance": (
-                    float(
-                        similarity["distance"]
-                    )
-                    if similarity["distance"] is not None
-                    else None
-                ),
-                "similarityLabel": similarity["label"],
-                "effectiveWeight": float(
-                    similarity["weight"]
-                ),
-                "samePhysicalImage": bool(
-                    same_physical_image
-                ),
-                "targetAbsentWeightCap": (
-                    float(
-                        target_absent_weight_cap
-                    )
-                    if target_absent_weight_cap
-                    is not None
-                    else None
-                ),
-                "descriptorSamples": int(
-                    (
-                        source_result.get(
-                            "appearanceDescriptor"
-                        )
-                        or {}
-                    ).get(
-                        "samples",
-                        0,
-                    )
-                ),
-            })
-
-        # Auxiliary budgets remain below the current image 40k/40k budget.
-        auxiliary_positive = _il6_cap_sample_pool(
-            auxiliary_positive_batches,
-            12000,
-            rng,
-            feature_cube.shape[2],
         )
 
-        auxiliary_negative = _il6_cap_sample_pool(
-            auxiliary_negative_batches,
-            12000,
-            rng,
-            feature_cube.shape[2],
+        negative_feedback_samples = (
+            _il1_sample_features(
+                feature_cube,
+                hard_negative_mask,
+                12000,
+                rng,
+            )
         )
 
-        if auxiliary_positive.shape[0]:
+        if positive_feedback_samples.shape[0]:
             positive_samples = np.vstack([
                 positive_samples,
-                auxiliary_positive,
+                positive_feedback_samples,
             ])
 
-        if auxiliary_negative.shape[0]:
+        if negative_feedback_samples.shape[0]:
             negative_samples = np.vstack([
                 negative_samples,
-                auxiliary_negative,
+                negative_feedback_samples,
             ])
 
-    if positive_samples.shape[0] < 24:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f'Class "{target_class}" needs positive examples '
-                "in the current image or at least one selected "
-                "training source."
-            ),
+        # IL8 reference appearance is always the currently viewed image.
+        current_appearance_descriptor = (
+            _il8_appearance_descriptor(
+                feature_cube,
+                valid_mask,
+            )
         )
 
-    if negative_samples.shape[0] < 24:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Interactive Learning needs negative/context "
-                "examples in the current image or selected "
-                "training sources."
-            ),
-        )
+        # Phase IL6: selected image + annotation-file sources.
+        training_source_reports: list[dict[str, Any]] = []
+        auxiliary_positive_batches: list[np.ndarray] = []
+        auxiliary_negative_batches: list[np.ndarray] = []
 
-    # Phase IL4 - nonlinear Extra Trees appearance model
-    training_x = np.vstack([
-        positive_samples,
-        negative_samples,
-    ]).astype(
-        np.float32,
-        copy=False,
-    )
+        if training_mode == "set":
+            seen_sources: set[tuple[str, str]] = set()
 
-    training_y = np.concatenate([
-        np.ones(
-            positive_samples.shape[0],
-            dtype=np.uint8,
-        ),
-        np.zeros(
-            negative_samples.shape[0],
-            dtype=np.uint8,
-        ),
-    ])
+            for source in raw_training_sources:
+                if not isinstance(source, dict):
+                    continue
 
-    tree_workers = min(
-        4,
-        max(
-            1,
-            int(os.cpu_count() or 1),
-        ),
-    )
+                source_image_id = str(
+                    source.get(
+                        "imageId",
+                        "",
+                    )
+                    or ""
+                ).strip()
 
-    classifier = ExtraTreesClassifier(
-        n_estimators=48,
-        max_depth=18,
-        min_samples_leaf=8,
-        max_features="sqrt",
-        class_weight="balanced",
-        random_state=1729,
-        n_jobs=tree_workers,
-    )
-
-    classifier.fit(
-        training_x,
-        training_y,
-    )
-
-    classes = [
-        int(value)
-        for value
-        in classifier.classes_.tolist()
-    ]
-
-    if 1 not in classes:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Interactive Learning could not "
-                "train a positive class."
-            ),
-        )
-
-    positive_column = classes.index(1)
-
-    probability_threshold = float(
-        np.clip(
-            (
-                0.50
-                + (
-                    (50.0 - sensitivity)
-                    / 50.0
+                source_file = normalize_annotation_file(
+                    str(
+                        source.get(
+                            "annotationFile",
+                            "Default",
+                        )
+                        or "Default"
+                    )
                 )
-                * 0.20
-            ),
-            0.30,
-            0.70,
-        )
-    )
 
-    flat_features = feature_cube.reshape(
-        -1,
-        feature_cube.shape[2],
-    )
+                if not source_image_id:
+                    continue
 
-    probability_flat = np.empty(
-        flat_features.shape[0],
-        dtype=np.float32,
-    )
+                source_key = (
+                    source_image_id,
+                    source_file.casefold(),
+                )
 
-    inference_chunk = 200000
+                if source_key in seen_sources:
+                    continue
 
-    for chunk_start in range(
-        0,
-        flat_features.shape[0],
-        inference_chunk,
-    ):
-        chunk_end = min(
-            flat_features.shape[0],
-            chunk_start + inference_chunk,
-        )
+                seen_sources.add(source_key)
 
-        chunk_probability = (
-            classifier.predict_proba(
-                flat_features[
-                    chunk_start:
-                    chunk_end
-                ]
-            )[:, positive_column]
-        )
+                # Live current document already uses transient featureCollection,
+                # including local edits not yet synchronized.
+                if (
+                    source_image_id == image_id
+                    and source_file.casefold()
+                    == current_annotation_file.casefold()
+                ):
+                    continue
 
-        probability_flat[
-            chunk_start:
-            chunk_end
-        ] = chunk_probability.astype(
+                source_result = _il6_auxiliary_training_samples(
+                    source_image_id,
+                    source_file,
+                    target_class,
+                    max_side,
+                    rng,
+                )
+
+                same_physical_image = (
+                    source_image_id == image_id
+                )
+
+                if same_physical_image:
+                    # Same WSI pixels: annotation-file choice changes labels,
+                    # not tissue appearance. This is the positive control for
+                    # IL8 similarity and must be exactly 1.00.
+                    similarity = {
+                        "similarity": 1.0,
+                        "distance": 0.0,
+                        "label": "same image",
+                        "weight": 0.85,
+                    }
+                else:
+                    similarity = (
+                        _il8_appearance_similarity(
+                            current_appearance_descriptor,
+                            source_result.get(
+                                "appearanceDescriptor"
+                            ),
+                        )
+                    )
+
+                target_absent_weight_cap = None
+
+                if not bool(
+                    source_result[
+                        "targetPresent"
+                    ]
+                ):
+                    # A target-absent source can only contribute explicit
+                    # negatives, so it should never approach the influence of
+                    # a source containing positive examples of the target.
+                    target_absent_weight_cap = 0.45
+                    similarity["weight"] = min(
+                        float(
+                            similarity["weight"]
+                        ),
+                        target_absent_weight_cap,
+                    )
+
+                weighted_positive = (
+                    _il8_weight_sample_batch(
+                        source_result[
+                            "positiveSamples"
+                        ],
+                        similarity["weight"],
+                        rng,
+                    )
+                )
+                weighted_negative = (
+                    _il8_weight_sample_batch(
+                        source_result[
+                            "negativeSamples"
+                        ],
+                        similarity["weight"],
+                        rng,
+                    )
+                )
+
+                auxiliary_positive_batches.append(
+                    weighted_positive
+                )
+                auxiliary_negative_batches.append(
+                    weighted_negative
+                )
+
+                training_source_reports.append({
+                    "imageId": source_result["imageId"],
+                    "imageName": source_result["imageName"],
+                    "annotationFile": source_result["annotationFile"],
+                    "targetPresent": bool(
+                        source_result["targetPresent"]
+                    ),
+                    "targetAnnotations": int(
+                        source_result["targetAnnotations"]
+                    ),
+                    "negativeAnnotations": int(
+                        source_result["negativeAnnotations"]
+                    ),
+                    "positiveSamplesRaw": int(
+                        source_result["positiveSamples"].shape[0]
+                    ),
+                    "negativeSamplesRaw": int(
+                        source_result["negativeSamples"].shape[0]
+                    ),
+                    "positiveSamples": int(
+                        weighted_positive.shape[0]
+                    ),
+                    "negativeSamples": int(
+                        weighted_negative.shape[0]
+                    ),
+                    "negativeSource": source_result["negativeSource"],
+                    "appearanceSimilarity": float(
+                        similarity["similarity"]
+                    ),
+                    "appearanceDistance": (
+                        float(
+                            similarity["distance"]
+                        )
+                        if similarity["distance"] is not None
+                        else None
+                    ),
+                    "similarityLabel": similarity["label"],
+                    "effectiveWeight": float(
+                        similarity["weight"]
+                    ),
+                    "samePhysicalImage": bool(
+                        same_physical_image
+                    ),
+                    "targetAbsentWeightCap": (
+                        float(
+                            target_absent_weight_cap
+                        )
+                        if target_absent_weight_cap
+                        is not None
+                        else None
+                    ),
+                    "descriptorSamples": int(
+                        (
+                            source_result.get(
+                                "appearanceDescriptor"
+                            )
+                            or {}
+                        ).get(
+                            "samples",
+                            0,
+                        )
+                    ),
+                })
+
+            # Auxiliary budgets remain below the current image 40k/40k budget.
+            auxiliary_positive = _il6_cap_sample_pool(
+                auxiliary_positive_batches,
+                12000,
+                rng,
+                feature_cube.shape[2],
+            )
+
+            auxiliary_negative = _il6_cap_sample_pool(
+                auxiliary_negative_batches,
+                12000,
+                rng,
+                feature_cube.shape[2],
+            )
+
+            if auxiliary_positive.shape[0]:
+                positive_samples = np.vstack([
+                    positive_samples,
+                    auxiliary_positive,
+                ])
+
+            if auxiliary_negative.shape[0]:
+                negative_samples = np.vstack([
+                    negative_samples,
+                    auxiliary_negative,
+                ])
+
+        if positive_samples.shape[0] < 24:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f'Class "{target_class}" needs positive examples '
+                    "in the current image or at least one selected "
+                    "training source."
+                ),
+            )
+
+        if negative_samples.shape[0] < 24:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Interactive Learning needs negative/context "
+                    "examples in the current image or selected "
+                    "training sources."
+                ),
+            )
+
+        # Phase IL4 - nonlinear Extra Trees appearance model
+        training_x = np.vstack([
+            positive_samples,
+            negative_samples,
+        ]).astype(
             np.float32,
             copy=False,
         )
 
-    probability_map = (
-        probability_flat.reshape(
-            thumb_height,
-            thumb_width,
+        training_y = np.concatenate([
+            np.ones(
+                positive_samples.shape[0],
+                dtype=np.uint8,
+            ),
+            np.zeros(
+                negative_samples.shape[0],
+                dtype=np.uint8,
+            ),
+        ])
+
+        tree_workers = min(
+            4,
+            max(
+                1,
+                int(os.cpu_count() or 1),
+            ),
         )
-    )
+
+        classifier = ExtraTreesClassifier(
+            n_estimators=48,
+            max_depth=18,
+            min_samples_leaf=8,
+            max_features="sqrt",
+            class_weight="balanced",
+            random_state=1729,
+            n_jobs=tree_workers,
+        )
+
+        classifier.fit(
+            training_x,
+            training_y,
+        )
+
+        classes = [
+            int(value)
+            for value
+            in classifier.classes_.tolist()
+        ]
+
+        if 1 not in classes:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Interactive Learning could not "
+                    "train a positive class."
+                ),
+            )
+
+        positive_column = classes.index(1)
+
+        probability_threshold = float(
+            np.clip(
+                (
+                    0.50
+                    + (
+                        (50.0 - sensitivity)
+                        / 50.0
+                    )
+                    * 0.20
+                ),
+                0.30,
+                0.70,
+            )
+        )
+
+        flat_features = feature_cube.reshape(
+            -1,
+            feature_cube.shape[2],
+        )
+
+        probability_flat = np.empty(
+            flat_features.shape[0],
+            dtype=np.float32,
+        )
+
+        inference_chunk = 200000
+
+        for chunk_start in range(
+            0,
+            flat_features.shape[0],
+            inference_chunk,
+        ):
+            chunk_end = min(
+                flat_features.shape[0],
+                chunk_start + inference_chunk,
+            )
+
+            chunk_probability = (
+                classifier.predict_proba(
+                    flat_features[
+                        chunk_start:
+                        chunk_end
+                    ]
+                )[:, positive_column]
+            )
+
+            probability_flat[
+                chunk_start:
+                chunk_end
+            ] = chunk_probability.astype(
+                np.float32,
+                copy=False,
+            )
+
+        probability_map = (
+            probability_flat.reshape(
+                thumb_height,
+                thumb_width,
+            )
+        )
 
     candidate_mask = valid_mask.copy()
 
@@ -6661,6 +8368,22 @@ def interactive_learning_suggest(
         ),
     }
 
+    model_payload["learningModel"] = learning_model
+    model_payload["devicePolicy"] = "auto"
+    if learning_model == "B":
+        model_payload.update(deep_model_info)
+        model_payload.update({
+            "type": "deep-features-resnet18-v1",
+            "estimators": None,
+            "maxDepth": None,
+            "minSamplesLeaf": None,
+            "workers": 0,
+        })
+    else:
+        model_payload["learningModelLabel"] = "Classical"
+        model_payload["computeDevice"] = "cpu"
+        model_payload["acceleratorUsed"] = False
+
     model_payload["trainingMode"] = training_mode
     model_payload["currentImagePriority"] = {
         "basePositiveMaximum": 40000,
@@ -6677,6 +8400,16 @@ def interactive_learning_suggest(
         "targetAbsentAuxiliaryWeightMaximum": 0.45,
     }
     model_payload["trainingSources"] = training_source_reports
+    if learning_model == "B":
+        model_payload["currentImagePriority"] = {
+            "basePositiveMaximum": 8000,
+            "baseNegativeMaximum": 8000,
+            "feedbackMaximumPerSign": 3000,
+            "auxiliaryPositiveMaximumTotal": 12000,
+            "auxiliaryNegativeMaximumTotal": 12000,
+            "representation": "resnet18-layer2-grid",
+        }
+
 
     model_payload["auxiliaryWeighting"] = {
         "strategy":

@@ -1,0 +1,5 @@
+services:
+  histoannotator:
+    # Optional overlay for NVIDIA hosts. CPU-only servers keep using the
+    # standalone compose file without this overlay.
+    gpus: all

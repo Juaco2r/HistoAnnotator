@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL9.1c";
+  const VERSION = "1.4.0-dev-IL10.2";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -17983,6 +17983,233 @@ function phaseRInitialize() {
 const PHASE_IL1_REJECTION_KEY =
   "histoannotator.il1.rejections.v1";
 
+// ========================================================================
+// Phase IL10.0 - multi-model framework
+//
+// A = current classical Extra Trees workflow.
+// B/C are registered now so UI, backend payloads and evaluation can use a
+// stable model identifier before the deep implementations are introduced.
+// Deep models will use server-side device="auto": CUDA/MPS when available,
+// otherwise CPU.
+// ========================================================================
+
+const PHASE_IL10_MODEL_KEY =
+  "histoannotator.il10.learningModel.v1";
+
+let phaseIL10Capabilities =
+  null;
+
+
+function phaseIL10LearningModel() {
+  const select =
+    document.getElementById(
+      "phaseIL10ModelSelect"
+    );
+
+  const value =
+    String(
+      select?.value
+      || localStorage.getItem(
+        PHASE_IL10_MODEL_KEY
+      )
+      || "A"
+    )
+      .trim()
+      .toUpperCase();
+
+  return ["A", "B", "C"].includes(value)
+    ? value
+    : "A";
+}
+
+
+function phaseIL10ModelLabel(
+  value = phaseIL10LearningModel()
+) {
+  if (value === "B") {
+    return "B · Deep Features";
+  }
+
+  if (value === "C") {
+    return "C · Deep Spatial";
+  }
+
+  return "A · Classical";
+}
+
+
+function phaseIL10ModelOption(
+  value
+) {
+  return document.querySelector(
+    `#phaseIL10ModelSelect option[value="${value}"]`
+  );
+}
+
+
+function phaseIL10RenderCapabilities() {
+  const status =
+    document.getElementById(
+      "phaseIL10ModelStatus"
+    );
+
+  if (!status) return;
+
+  const capabilities =
+    phaseIL10Capabilities;
+
+  if (!capabilities) {
+    status.textContent =
+      "A uses CPU · deep models will use GPU automatically when available.";
+    return;
+  }
+
+  const models =
+    Array.isArray(capabilities.models)
+      ? capabilities.models
+      : [];
+
+  for (const value of ["A", "B", "C"]) {
+    const option =
+      phaseIL10ModelOption(value);
+
+    const model =
+      models.find(
+        (item) =>
+          String(item?.id || "")
+            .toUpperCase()
+          === value
+      );
+
+    if (option) {
+      option.disabled =
+        !Boolean(model?.available);
+    }
+  }
+
+  const deep =
+    capabilities.deepRuntime
+    || {};
+
+  const device =
+    String(
+      deep.recommendedDevice
+      || "cpu"
+    ).toUpperCase();
+
+  if (deep.torchInstalled) {
+    const hardware =
+      deep.deviceName
+        ? ` · ${deep.deviceName}`
+        : "";
+
+    status.textContent =
+      `Deep runtime ready · auto device: ${device}${hardware}`;
+  } else {
+    status.textContent =
+      "A ready · deep runtime will be installed for B/C; CPU fallback remains supported.";
+  }
+
+  const select =
+    document.getElementById(
+      "phaseIL10ModelSelect"
+    );
+
+  if (
+    select
+    && select.selectedOptions?.[0]
+      ?.disabled
+  ) {
+    select.value = "A";
+    localStorage.setItem(
+      PHASE_IL10_MODEL_KEY,
+      "A"
+    );
+  }
+}
+
+
+async function phaseIL10LoadCapabilities() {
+  try {
+    const response =
+      await apiFetch(
+        `${API}/interactive-learning/capabilities`,
+        {
+          timeoutMs: 5000,
+        }
+      );
+
+    phaseIL10Capabilities =
+      await response.json();
+
+    phaseIL10RenderCapabilities();
+  } catch (_) {
+    phaseIL10Capabilities =
+      null;
+
+    phaseIL10RenderCapabilities();
+  }
+}
+
+
+function phaseIL10InitializeModelSelector() {
+  const select =
+    document.getElementById(
+      "phaseIL10ModelSelect"
+    );
+
+  if (!select) return;
+
+  const stored =
+    String(
+      localStorage.getItem(
+        PHASE_IL10_MODEL_KEY
+      )
+      || "A"
+    )
+      .trim()
+      .toUpperCase();
+
+  select.value =
+    ["A", "B", "C"].includes(stored)
+      ? stored
+      : "A";
+
+  if (
+    select.selectedOptions?.[0]
+      ?.disabled
+  ) {
+    select.value = "A";
+  }
+
+  select.addEventListener(
+    "change",
+    () => {
+      const model =
+        phaseIL10LearningModel();
+
+      localStorage.setItem(
+        PHASE_IL10_MODEL_KEY,
+        model
+      );
+
+      phaseIL1ClearSuggestions(
+        `${phaseIL10ModelLabel(model)} selected. Run Learn & suggest.`,
+        true
+      );
+
+      try {
+        phaseIL7RenderStatus();
+      } catch (_) {}
+    }
+  );
+
+  phaseIL10RenderCapabilities();
+  phaseIL10LoadCapabilities();
+}
+
+
+
 let phaseIL1State = {
   open: false,
   busy: false,
@@ -21699,6 +21926,25 @@ function phaseIL1EnsureUi() {
         </label>
 
         <label>
+          <span>Learning model</span>
+          <select id="phaseIL10ModelSelect"
+                  title="Choose the learning approach">
+            <option value="A">
+              A · Classical
+            </option>
+            <option value="B" disabled>
+              B · Deep Features
+            </option>
+            <option value="C" disabled>
+              C · Deep Spatial
+            </option>
+          </select>
+          <small id="phaseIL10ModelStatus">
+            A uses CPU · deep models will use GPU automatically when available.
+          </small>
+        </label>
+
+        <label>
           <span>Learning source</span>
           <select id="phaseIL6SourceSelect">
             <option value="current">
@@ -22511,6 +22757,9 @@ async function phaseIL1Run() {
   const trainingSources =
     phaseIL6TrainingPayload();
 
+  const learningModel =
+    phaseIL10LearningModel();
+
   if (
     count < 1
     && trainingMode === "current"
@@ -22578,6 +22827,7 @@ async function phaseIL1Run() {
           },
           body: JSON.stringify({
             targetClass,
+            learningModel,
             trainingMode,
             currentAnnotationFile,
             trainingSources,
@@ -22612,10 +22862,7 @@ async function phaseIL1Run() {
           // Multi-image IL can legitimately spend longer loading
           // thumbnails and building feature cubes. Keep a shorter timeout
           // for current-image learning, but allow selected sets up to 3 min.
-          timeoutMs:
-            trainingMode === "set"
-              ? 180000
-              : 90000,
+          timeoutMs: learningModel === "B" ? (trainingMode === "set" ? 300000 : 180000) : (trainingMode === "set" ? 180000 : 90000),
         }
       );
 
@@ -25142,6 +25389,7 @@ function phaseIL2Initialize() {
 
 function phaseIL1Initialize() {
   phaseIL1EnsureUi();
+  phaseIL10InitializeModelSelector();
 
   const refs =
     phaseIL1Refs();

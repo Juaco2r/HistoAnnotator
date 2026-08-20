@@ -10,3 +10,5 @@ opencv-python-headless>=4.10,<5.0
 
 tifffile>=2025.1,<2027
 qrcode[pil]>=8,<9
+torch>=2.5,<3
+torchvision>=0.20,<1

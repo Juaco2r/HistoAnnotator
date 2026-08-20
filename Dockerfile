@@ -1,5 +1,7 @@
 FROM python:3.12-slim
 
+ENV TORCH_HOME=/opt/histoannotator/torch-cache
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
@@ -16,6 +18,9 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip \
     && pip install -r /app/requirements.txt
+
+RUN mkdir -p "$TORCH_HOME" \
+    && python -c "from torchvision.models import resnet18, ResNet18_Weights; resnet18(weights=ResNet18_Weights.DEFAULT); print('HistoAnnotator: ResNet18 ImageNet weights cached')"
 
 COPY app /app
 
