@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL7";
+  const VERSION = "1.4.0-dev-IL8.3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -18014,6 +18014,134 @@ let phaseIL6SourceStatus =
   new Map();
 
 
+// ========================================================================
+// Phase IL8.1 - persist similarity reports in training-set UI
+// ========================================================================
+
+let phaseIL8SourceReports =
+  new Map();
+
+
+function phaseIL8StoredReport(
+  imageId,
+  annotationFile,
+  targetClass
+) {
+  const key =
+    phaseIL6SourceKey(
+      imageId,
+      annotationFile
+    );
+
+  const report =
+    phaseIL8SourceReports.get(
+      key
+    );
+
+  if (!report) return null;
+
+  const currentTarget =
+    String(
+      targetClass || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const reportTarget =
+    String(
+      report.targetClass || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    currentTarget
+    && reportTarget
+    && currentTarget !== reportTarget
+  ) {
+    return null;
+  }
+
+  return report;
+}
+
+
+function phaseIL8FormatStoredSourceStatus(
+  report,
+  targetClass,
+  targetCount
+) {
+  const annotations =
+    Number(
+      report?.targetAnnotations
+      ?? targetCount
+      ?? 0
+    );
+
+  const similarity =
+    Number(
+      report?.appearanceSimilarity
+    );
+
+  const weight =
+    Number(
+      report?.effectiveWeight
+    );
+
+  const label =
+    String(
+      report?.similarityLabel
+      || "unknown"
+    );
+
+  const targetText =
+    annotations > 0
+      ? (
+          `${targetClass}: ${annotations} annotation`
+          + `${annotations === 1 ? "" : "s"}`
+        )
+      : (
+          `${targetClass}: 0`
+          + " · explicit negatives only"
+        );
+
+  const similarityText =
+    Number.isFinite(similarity)
+      ? (
+          `${label}`
+          + ` ${Math.round(similarity * 100)}%`
+        )
+      : label;
+
+  const weightText =
+    Number.isFinite(weight)
+      ? `weight ${weight.toFixed(2)}x`
+      : "";
+
+  const cap =
+    Number(
+      report?.targetAbsentWeightCap
+    );
+
+  const capText =
+    (
+      Number.isFinite(cap)
+      && annotations < 1
+    )
+      ? `negative-only cap ${cap.toFixed(2)}x`
+      : "";
+
+  return [
+    targetText,
+    similarityText,
+    weightText,
+    capText,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+
 function phaseIL6LoadTrainingSources() {
   try {
     const parsed =
@@ -18338,17 +18466,68 @@ async function phaseIL6RefreshSourceStatus(
         targetClass
       );
 
+    const storedReport =
+      phaseIL8StoredReport(
+        item.imageId,
+        item.annotationFile,
+        targetClass
+      );
+
+    const samePhysicalImage =
+      String(item.imageId)
+      === String(
+        currentImage?.id
+      );
+
+    let fallbackStatus;
+
+    if (samePhysicalImage) {
+      const fallbackWeight =
+        count > 0
+          ? 0.85
+          : 0.45;
+
+      fallbackStatus =
+        (
+          count > 0
+            ? (
+                `${targetClass}: ${count} annotation`
+                + `${count === 1 ? "" : "s"}`
+              )
+            : (
+                `${targetClass}: 0`
+                + " · explicit negatives only"
+              )
+        )
+        + " · same image 100%"
+        + ` · weight ${fallbackWeight.toFixed(2)}x`
+        + (
+            count > 0
+              ? ""
+              : " · negative-only cap 0.45x"
+          );
+    } else {
+      fallbackStatus =
+        count > 0
+          ? (
+              `${targetClass}: ${count} annotation`
+              + `${count === 1 ? "" : "s"}`
+            )
+          : (
+              `${targetClass}: 0`
+              + " · explicit negatives only"
+            );
+    }
+
     phaseIL6SourceStatus.set(
       key,
-      count > 0
-        ? (
-            `${targetClass}: ${count} annotation`
-            + `${count === 1 ? "" : "s"}`
+      storedReport
+        ? phaseIL8FormatStoredSourceStatus(
+            storedReport,
+            targetClass,
+            count
           )
-        : (
-            `${targetClass}: 0`
-            + " · reduced negative-only source"
-          )
+        : fallbackStatus
     );
   } catch (error) {
     phaseIL6SourceStatus.set(
@@ -18476,6 +18655,10 @@ function phaseIL6RenderTrainingSources() {
           key
         );
 
+        phaseIL8SourceReports.delete(
+          key
+        );
+
         phaseIL6SaveTrainingSources();
         phaseIL6RenderTrainingSources();
       }
@@ -18508,6 +18691,42 @@ async function phaseIL6RefreshAllSourceStatus() {
 
 
 async function phaseIL6OpenTrainingSet() {
+  // Phase IL8.2: an exact current image + current annotation-file pair
+  // is already included automatically. Remove stale copies from the
+  // auxiliary list, but keep same image + DIFFERENT annotation file.
+  const currentKey =
+    phaseIL6SourceKey(
+      currentImage?.id,
+      currentAnnotationFile
+    );
+
+  const beforeCleanup =
+    phaseIL6TrainingSources.length;
+
+  phaseIL6TrainingSources =
+    phaseIL6TrainingSources.filter(
+      (item) =>
+        phaseIL6SourceKey(
+          item.imageId,
+          item.annotationFile
+        ) !== currentKey
+    );
+
+  if (
+    phaseIL6TrainingSources.length
+    !== beforeCleanup
+  ) {
+    phaseIL6SourceStatus.delete(
+      currentKey
+    );
+
+    phaseIL8SourceReports.delete(
+      currentKey
+    );
+
+    phaseIL6SaveTrainingSources();
+  }
+
   const overlay =
     document.getElementById(
       "phaseIL6TrainingOverlay"
@@ -18777,10 +18996,9 @@ function phaseIL6EnsureTrainingSetUi() {
 
       <div class="phase-il6-priority-note">
         Current image = highest priority.
-        Auxiliary images with the target class add
-        positive + negative examples. If the target
-        class is absent, only a small negative sample
-        is used.
+        Auxiliary influence adapts to visual similarity.
+        Only explicitly annotated non-target classes
+        are used as auxiliary negatives.
       </div>
 
       <div id="phaseIL6TrainingList"
@@ -18888,6 +19106,7 @@ function phaseIL6BindSourceControls() {
       "change",
       () => {
         phaseIL6SourceStatus.clear();
+        phaseIL8SourceReports.clear();
       }
     );
 
@@ -19480,6 +19699,63 @@ function phaseIL7Initialize() {
     );
 
   phaseIL7RenderStatus();
+}
+
+
+
+// ========================================================================
+// Phase IL8 - compact similarity feedback for selected training sources
+// ========================================================================
+
+function phaseIL8ApplySourceReports(
+  model
+) {
+  const reports =
+    Array.isArray(
+      model?.trainingSources
+    )
+      ? model.trainingSources
+      : [];
+
+  if (!reports.length) {
+    return;
+  }
+
+  const targetClass =
+    String(
+      model?.targetClass
+      || phaseIL1State.targetClass
+      || ""
+    ).trim();
+
+  for (const report of reports) {
+    const key =
+      phaseIL6SourceKey(
+        report.imageId,
+        report.annotationFile
+      );
+
+    const storedReport = {
+      ...report,
+      targetClass,
+    };
+
+    phaseIL8SourceReports.set(
+      key,
+      storedReport
+    );
+
+    phaseIL6SourceStatus.set(
+      key,
+      phaseIL8FormatStoredSourceStatus(
+        storedReport,
+        targetClass,
+        report.targetAnnotations
+      )
+    );
+  }
+
+  phaseIL6RenderTrainingSources();
 }
 
 
@@ -20561,8 +20837,13 @@ async function phaseIL1Run() {
             maxSide:
               1600,
           }),
+          // Multi-image IL can legitimately spend longer loading
+          // thumbnails and building feature cubes. Keep a shorter timeout
+          // for current-image learning, but allow selected sets up to 3 min.
           timeoutMs:
-            60000,
+            trainingMode === "set"
+              ? 180000
+              : 90000,
         }
       );
 
@@ -20601,6 +20882,10 @@ async function phaseIL1Run() {
 
     const model =
       phaseIL1State.model;
+
+    phaseIL8ApplySourceReports(
+      model
+    );
 
     const suggestionCount =
       phaseIL1State

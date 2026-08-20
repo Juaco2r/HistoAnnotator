@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL7"}
+    return {"status": "ok", "version": "1.4.0-dev-IL8.3"}
 
 
 @app.get("/health")
@@ -5023,6 +5023,310 @@ def _il6_cap_sample_pool(
     return combined[indices]
 
 
+
+# ========================================================================
+# Phase IL8 - similarity-aware auxiliary training
+#
+# Auxiliary sources remain explicitly user-selected. Their influence is
+# reduced when tissue appearance differs from the current image.
+# ========================================================================
+
+_IL8_APPEARANCE_SCALE_FLOOR = np.asarray(
+    [
+        0.08,
+        0.08,
+        0.08,
+        0.12,
+        0.12,
+        0.12,
+        0.08,
+        0.08,
+        0.04,
+    ],
+    dtype=np.float32,
+)
+
+
+def _il8_appearance_descriptor(
+    feature_cube: np.ndarray,
+    valid_mask: np.ndarray,
+    maximum: int = 20000,
+) -> dict[str, Any] | None:
+    if (
+        not isinstance(feature_cube, np.ndarray)
+        or feature_cube.ndim != 3
+        or feature_cube.shape[2] < 9
+        or not isinstance(valid_mask, np.ndarray)
+        or valid_mask.shape != feature_cube.shape[:2]
+    ):
+        return None
+
+    mask = np.asarray(
+        valid_mask,
+        dtype=bool,
+    ).copy()
+
+    # Avoid white slide/background dominating similarity when no Tissue ROI
+    # exists. Saturation and darkness are feature channels 6 and 7.
+    tissue_like = (
+        mask
+        & (
+            (feature_cube[:, :, 6] >= 0.08)
+            | (feature_cube[:, :, 7] >= 0.05)
+        )
+    )
+
+    if int(np.count_nonzero(tissue_like)) >= 256:
+        mask = tissue_like
+
+    flat_indices = np.flatnonzero(
+        mask.reshape(-1)
+    )
+
+    if flat_indices.size == 0:
+        return None
+
+    if flat_indices.size > maximum:
+        selector = np.linspace(
+            0,
+            flat_indices.size - 1,
+            num=maximum,
+            dtype=np.int64,
+        )
+        flat_indices = flat_indices[selector]
+
+    flattened = feature_cube.reshape(
+        -1,
+        feature_cube.shape[2],
+    )
+    values = flattened[flat_indices].astype(
+        np.float32,
+        copy=False,
+    )
+
+    median = np.median(
+        values,
+        axis=0,
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+    q25 = np.percentile(
+        values,
+        25,
+        axis=0,
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+    q75 = np.percentile(
+        values,
+        75,
+        axis=0,
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+    iqr = np.maximum(
+        q75 - q25,
+        0.0,
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
+    return {
+        "median": median,
+        "iqr": iqr,
+        "samples": int(values.shape[0]),
+    }
+
+
+def _il8_appearance_similarity(
+    reference: dict[str, Any] | None,
+    source: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not reference or not source:
+        similarity = 0.50
+        return {
+            "similarity": similarity,
+            "distance": None,
+            "label": "unknown",
+            "weight": 0.20 + 0.65 * (similarity ** 1.35),
+        }
+
+    reference_median = np.asarray(
+        reference.get("median", []),
+        dtype=np.float32,
+    )
+    source_median = np.asarray(
+        source.get("median", []),
+        dtype=np.float32,
+    )
+    reference_iqr = np.asarray(
+        reference.get("iqr", []),
+        dtype=np.float32,
+    )
+    source_iqr = np.asarray(
+        source.get("iqr", []),
+        dtype=np.float32,
+    )
+
+    if (
+        reference_median.shape != (9,)
+        or source_median.shape != (9,)
+        or reference_iqr.shape != (9,)
+        or source_iqr.shape != (9,)
+    ):
+        similarity = 0.50
+        return {
+            "similarity": similarity,
+            "distance": None,
+            "label": "unknown",
+            "weight": 0.20 + 0.65 * (similarity ** 1.35),
+        }
+
+    pooled_scale = np.maximum(
+        0.5 * (
+            reference_iqr
+            + source_iqr
+        ),
+        _IL8_APPEARANCE_SCALE_FLOOR,
+    )
+
+    location_z = (
+        source_median
+        - reference_median
+    ) / pooled_scale
+
+    location_distance = float(
+        np.sqrt(
+            np.mean(
+                np.square(location_z)
+            )
+        )
+    )
+
+    reference_spread = np.maximum(
+        reference_iqr,
+        _IL8_APPEARANCE_SCALE_FLOOR,
+    )
+    source_spread = np.maximum(
+        source_iqr,
+        _IL8_APPEARANCE_SCALE_FLOOR,
+    )
+
+    spread_distance = float(
+        np.sqrt(
+            np.mean(
+                np.square(
+                    np.log(
+                        source_spread
+                        / reference_spread
+                    )
+                )
+            )
+        )
+    )
+
+    distance = (
+        0.80 * location_distance
+        + 0.20 * spread_distance
+    )
+
+    # IL8.2: stricter appearance tolerance.
+    #
+    # IL8 used exp(-0.50 * distance), which compressed clearly different
+    # slides into the 60-70% range. A steeper decay separates visually
+    # different staining/scanner appearances while preserving a continuous
+    # score instead of hard-rejecting user-selected sources.
+    similarity = float(
+        np.clip(
+            np.exp(-0.85 * distance),
+            0.0,
+            1.0,
+        )
+    )
+
+    if similarity >= 0.85:
+        label = "very similar"
+    elif similarity >= 0.65:
+        label = "similar"
+    elif similarity >= 0.50:
+        label = "moderate"
+    elif similarity >= 0.30:
+        label = "different"
+    else:
+        label = "very different"
+
+    # Non-linear influence makes medium/different sources contribute
+    # progressively less, while a near-identical auxiliary still reaches
+    # the intentional 0.85x ceiling.
+    weight = float(
+        np.clip(
+            0.20
+            + 0.65
+            * (
+                similarity ** 1.35
+            ),
+            0.20,
+            0.85,
+        )
+    )
+
+    return {
+        "similarity": similarity,
+        "distance": float(distance),
+        "label": label,
+        "weight": weight,
+    }
+
+
+def _il8_weight_sample_batch(
+    batch: np.ndarray,
+    weight: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if (
+        not isinstance(batch, np.ndarray)
+        or batch.ndim != 2
+        or batch.shape[0] == 0
+    ):
+        return batch
+
+    safe_weight = float(
+        np.clip(
+            weight,
+            0.0,
+            1.0,
+        )
+    )
+
+    keep = int(
+        round(
+            batch.shape[0]
+            * safe_weight
+        )
+    )
+    keep = max(
+        1,
+        min(
+            batch.shape[0],
+            keep,
+        ),
+    )
+
+    if keep >= batch.shape[0]:
+        return batch
+
+    indices = rng.choice(
+        batch.shape[0],
+        size=keep,
+        replace=False,
+    )
+    return batch[indices]
+
+
 def _il6_auxiliary_training_samples(
     image_id: str,
     annotation_file: str,
@@ -5092,8 +5396,15 @@ def _il6_auxiliary_training_samples(
         handle.slide.dimensions,
     )
 
+    # Phase IL8.3 - multisource performance and timeout
+    #
+    # Auxiliary images provide training examples and appearance descriptors;
+    # they are not the image being segmented. 768 px retains substantially
+    # more pixels than the 4k/source sampling budgets require while reducing
+    # feature-cube work by ~44% versus 1024 px. Current-image inference stays
+    # at the requested IL5.1 maxSide (normally 1600).
     training_side = min(
-        1024,
+        768,
         max(
             512,
             int(max_side),
@@ -5349,47 +5660,32 @@ def _il6_auxiliary_training_samples(
         and positive_pixels >= 12
     )
 
+    # Auxiliary annotation files may be partially labeled. Therefore
+    # unlabeled tissue is never silently interpreted as negative.
+    negative_mask = explicit_negative_mask
+
     if target_present:
-        explicit_pixels = int(
-            np.count_nonzero(
-                explicit_negative_mask
-            )
+        negative_source = (
+            "other explicitly annotated classes"
         )
-
-        minimum_explicit = max(
-            32,
-            int(
-                positive_pixels * 0.15
-            ),
-        )
-
-        if explicit_pixels >= minimum_explicit:
-            negative_mask = explicit_negative_mask
-            negative_source = "other annotated classes"
-        else:
-            negative_mask = (
-                valid_mask
-                & ~positive_mask
-                & ~all_annotation_mask
-            )
-            negative_source = "unlabeled valid tissue"
-
         positive_limit = 4000
         negative_limit = 4000
     else:
-        # Target-absent selected slides are weak negatives only.
-        negative_mask = (
-            valid_mask
-            & ~positive_mask
-        )
         negative_source = (
-            "target-absent reduced negatives"
+            "target-absent explicit annotated classes only"
         )
         positive_limit = 0
         negative_limit = 1000
 
     feature_cube = _il1_feature_cube(
         rgb
+    )
+
+    appearance_descriptor = (
+        _il8_appearance_descriptor(
+            feature_cube,
+            valid_mask,
+        )
     )
 
     positive_samples = (
@@ -5426,6 +5722,8 @@ def _il6_auxiliary_training_samples(
         "positiveSamples": positive_samples,
         "negativeSamples": negative_samples,
         "negativeSource": negative_source,
+        "appearanceDescriptor":
+            appearance_descriptor,
     }
 
 
@@ -5918,6 +6216,14 @@ def interactive_learning_suggest(
             negative_feedback_samples,
         ])
 
+    # IL8 reference appearance is always the currently viewed image.
+    current_appearance_descriptor = (
+        _il8_appearance_descriptor(
+            feature_cube,
+            valid_mask,
+        )
+    )
+
     # Phase IL6: selected image + annotation-file sources.
     training_source_reports: list[dict[str, Any]] = []
     auxiliary_positive_batches: list[np.ndarray] = []
@@ -5978,11 +6284,72 @@ def interactive_learning_suggest(
                 rng,
             )
 
+            same_physical_image = (
+                source_image_id == image_id
+            )
+
+            if same_physical_image:
+                # Same WSI pixels: annotation-file choice changes labels,
+                # not tissue appearance. This is the positive control for
+                # IL8 similarity and must be exactly 1.00.
+                similarity = {
+                    "similarity": 1.0,
+                    "distance": 0.0,
+                    "label": "same image",
+                    "weight": 0.85,
+                }
+            else:
+                similarity = (
+                    _il8_appearance_similarity(
+                        current_appearance_descriptor,
+                        source_result.get(
+                            "appearanceDescriptor"
+                        ),
+                    )
+                )
+
+            target_absent_weight_cap = None
+
+            if not bool(
+                source_result[
+                    "targetPresent"
+                ]
+            ):
+                # A target-absent source can only contribute explicit
+                # negatives, so it should never approach the influence of
+                # a source containing positive examples of the target.
+                target_absent_weight_cap = 0.45
+                similarity["weight"] = min(
+                    float(
+                        similarity["weight"]
+                    ),
+                    target_absent_weight_cap,
+                )
+
+            weighted_positive = (
+                _il8_weight_sample_batch(
+                    source_result[
+                        "positiveSamples"
+                    ],
+                    similarity["weight"],
+                    rng,
+                )
+            )
+            weighted_negative = (
+                _il8_weight_sample_batch(
+                    source_result[
+                        "negativeSamples"
+                    ],
+                    similarity["weight"],
+                    rng,
+                )
+            )
+
             auxiliary_positive_batches.append(
-                source_result["positiveSamples"]
+                weighted_positive
             )
             auxiliary_negative_batches.append(
-                source_result["negativeSamples"]
+                weighted_negative
             )
 
             training_source_reports.append({
@@ -5995,13 +6362,58 @@ def interactive_learning_suggest(
                 "targetAnnotations": int(
                     source_result["targetAnnotations"]
                 ),
-                "positiveSamples": int(
+                "negativeAnnotations": int(
+                    source_result["negativeAnnotations"]
+                ),
+                "positiveSamplesRaw": int(
                     source_result["positiveSamples"].shape[0]
                 ),
-                "negativeSamples": int(
+                "negativeSamplesRaw": int(
                     source_result["negativeSamples"].shape[0]
                 ),
+                "positiveSamples": int(
+                    weighted_positive.shape[0]
+                ),
+                "negativeSamples": int(
+                    weighted_negative.shape[0]
+                ),
                 "negativeSource": source_result["negativeSource"],
+                "appearanceSimilarity": float(
+                    similarity["similarity"]
+                ),
+                "appearanceDistance": (
+                    float(
+                        similarity["distance"]
+                    )
+                    if similarity["distance"] is not None
+                    else None
+                ),
+                "similarityLabel": similarity["label"],
+                "effectiveWeight": float(
+                    similarity["weight"]
+                ),
+                "samePhysicalImage": bool(
+                    same_physical_image
+                ),
+                "targetAbsentWeightCap": (
+                    float(
+                        target_absent_weight_cap
+                    )
+                    if target_absent_weight_cap
+                    is not None
+                    else None
+                ),
+                "descriptorSamples": int(
+                    (
+                        source_result.get(
+                            "appearanceDescriptor"
+                        )
+                        or {}
+                    ).get(
+                        "samples",
+                        0,
+                    )
+                ),
             })
 
         # Auxiliary budgets remain below the current image 40k/40k budget.
@@ -6257,8 +6669,59 @@ def interactive_learning_suggest(
         "auxiliaryPositiveMaximumTotal": 12000,
         "auxiliaryNegativeMaximumTotal": 12000,
         "targetAbsentAuxiliaryNegativeMaximumPerSource": 1000,
+        "auxiliaryUnlabeledTissueUsedAsNegative": False,
+        "auxiliarySimilarityWeightRange": [
+            0.20,
+            0.85,
+        ],
+        "targetAbsentAuxiliaryWeightMaximum": 0.45,
     }
     model_payload["trainingSources"] = training_source_reports
+
+    model_payload["auxiliaryWeighting"] = {
+        "strategy":
+            "robust-tissue-appearance-v1",
+        "features":
+            9,
+        "descriptor":
+            "median + IQR",
+        "currentImageWeight":
+            1.0,
+        "auxiliaryWeightMinimum":
+            0.20,
+        "auxiliaryWeightMaximum":
+            0.85,
+        "targetAbsentAuxiliaryWeightMaximum":
+            0.45,
+        "similarityDecay":
+            0.85,
+        "weightExponent":
+            1.35,
+        "samePhysicalImageSimilarity":
+            1.0,
+        "unlabeledAuxiliaryTissueAsNegative":
+            False,
+    }
+
+    if training_source_reports:
+        model_payload[
+            "meanAuxiliaryAppearanceSimilarity"
+        ] = float(
+            np.mean([
+                float(
+                    item.get(
+                        "appearanceSimilarity",
+                        0.5,
+                    )
+                )
+                for item in training_source_reports
+            ])
+        )
+    else:
+        model_payload[
+            "meanAuxiliaryAppearanceSimilarity"
+        ] = None
+
     model_payload["auxiliarySourcesUsed"] = len(
         training_source_reports
     )
