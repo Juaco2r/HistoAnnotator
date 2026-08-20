@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-IL10.2"}
+    return {"status": "ok", "version": "1.4.0-dev-IL10.3a"}
 
 
 @app.get("/health")
@@ -5801,6 +5801,8 @@ def interactive_learning_capabilities() -> dict[str, Any]:
     return {
         "devicePolicy": "auto",
         "deepRuntime": deep_runtime,
+        "embeddingCache":
+            _il10_b_embedding_cache_status(),
         "models": [
             {
                 "id": "A",
@@ -6021,6 +6023,623 @@ def _il10_b_embedding_grid(
         embeddings,
         analysis_height,
         analysis_width,
+    )
+
+
+
+# ============================================================================
+# Phase IL10.3 - persistent deep embedding cache
+#
+# Embeddings depend on the physical image, backbone and analysis resolution,
+# not on annotation file or target class. They are therefore reusable across
+# rounds, classes and annotation files. Cache invalidation is automatic
+# through the source image signature (relative path, size and mtime).
+# ============================================================================
+
+_IL10_B_EMBEDDING_CACHE_VERSION = (
+    "resnet18-layer2-imagenet1k-v1-cache1"
+)
+
+_IL10_B_EMBEDDING_CACHE_ROOT = (
+    TILE_CACHE_ROOT
+    / "interactive-learning"
+    / "deep-features"
+)
+
+_IL10_B_EMBEDDING_MEMORY_CACHE: dict[
+    str,
+    np.ndarray,
+] = {}
+
+_IL10_B_EMBEDDING_CACHE_LOCK = (
+    threading.RLock()
+)
+
+
+# Phase IL10.3a cache diagnostics
+_IL10_B_EMBEDDING_CACHE_DIAGNOSTICS: dict[str, Any] = {
+    "keyErrors": 0,
+    "readErrors": 0,
+    "writeErrors": 0,
+    "memoryHits": 0,
+    "diskHits": 0,
+    "computed": 0,
+    "writes": 0,
+    "lastError": None,
+}
+
+
+def _il10_b_cache_note(
+    key: str,
+    message: str | None = None,
+) -> None:
+    if key in {
+        "keyErrors",
+        "readErrors",
+        "writeErrors",
+        "memoryHits",
+        "diskHits",
+        "computed",
+        "writes",
+    }:
+        _IL10_B_EMBEDDING_CACHE_DIAGNOSTICS[key] = (
+            int(
+                _IL10_B_EMBEDDING_CACHE_DIAGNOSTICS.get(
+                    key,
+                    0,
+                )
+            )
+            + 1
+        )
+
+    if message is not None:
+        _IL10_B_EMBEDDING_CACHE_DIAGNOSTICS[
+            "lastError"
+        ] = message
+
+        print(
+            f"[HistoAnnotator IL10 cache] {message}",
+            flush=True,
+        )
+
+
+def _il10_b_embedding_cache_max_bytes() -> int:
+    try:
+        gigabytes = int(
+            os.getenv(
+                "IL_DEEP_CACHE_GB",
+                "12",
+            )
+            or "12"
+        )
+    except Exception:
+        gigabytes = 12
+
+    gigabytes = min(
+        200,
+        max(
+            1,
+            gigabytes,
+        ),
+    )
+
+    return (
+        gigabytes
+        * 1024
+        * 1024
+        * 1024
+    )
+
+
+def _il10_b_embedding_cache_status() -> dict[str, Any]:
+    root = _IL10_B_EMBEDDING_CACHE_ROOT
+
+    files = 0
+    bytes_used = 0
+
+    try:
+        if root.is_dir():
+            for path in root.glob(
+                "*.npy"
+            ):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+
+                files += 1
+                bytes_used += int(
+                    stat.st_size
+                )
+    except Exception:
+        pass
+
+    return {
+        "enabled":
+            True,
+        "persistent":
+            True,
+        "backend":
+            "tile-cache",
+        "version":
+            _IL10_B_EMBEDDING_CACHE_VERSION,
+        "entries":
+            int(files),
+        "bytes":
+            int(bytes_used),
+        "maxBytes":
+            int(
+                _il10_b_embedding_cache_max_bytes()
+            ),
+        "memoryEntries":
+            int(
+                len(
+                    _IL10_B_EMBEDDING_MEMORY_CACHE
+                )
+            ),
+        "root":
+            str(
+                _IL10_B_EMBEDDING_CACHE_ROOT
+            ),
+        "diagnostics":
+            dict(
+                _IL10_B_EMBEDDING_CACHE_DIAGNOSTICS
+            ),
+    }
+
+
+def _il10_b_embedding_cache_key(
+    image_id: str,
+    rgb: np.ndarray,
+    maximum_side: int,
+) -> tuple[str, Path]:
+    image_path, relative = safe_image_path(
+        image_id
+    )
+
+    signature = source_signature(
+        image_path,
+        relative,
+    )
+
+    height, width = map(
+        int,
+        rgb.shape[:2],
+    )
+
+    raw = "|".join([
+        _IL10_B_EMBEDDING_CACHE_VERSION,
+        str(
+            signature[
+                "relative"
+            ]
+        ),
+        str(
+            signature[
+                "size"
+            ]
+        ),
+        str(
+            signature[
+                "mtimeNs"
+            ]
+        ),
+        str(
+            int(maximum_side)
+        ),
+        str(
+            width
+        ),
+        str(
+            height
+        ),
+    ])
+
+    key = hashlib.sha256(
+        raw.encode(
+            "utf-8"
+        )
+    ).hexdigest()[:32]
+
+    return (
+        key,
+        _IL10_B_EMBEDDING_CACHE_ROOT
+        / f"{key}.npy",
+    )
+
+
+def _il10_b_embedding_memory_get(
+    key: str,
+) -> np.ndarray | None:
+    with _IL10_B_EMBEDDING_CACHE_LOCK:
+        embeddings = (
+            _IL10_B_EMBEDDING_MEMORY_CACHE
+            .get(key)
+        )
+
+        if embeddings is None:
+            return None
+
+        # Refresh insertion order without adding another dependency.
+        _IL10_B_EMBEDDING_MEMORY_CACHE.pop(
+            key,
+            None,
+        )
+
+        _IL10_B_EMBEDDING_MEMORY_CACHE[
+            key
+        ] = embeddings
+
+        return embeddings
+
+
+def _il10_b_embedding_memory_put(
+    key: str,
+    embeddings: np.ndarray,
+) -> None:
+    with _IL10_B_EMBEDDING_CACHE_LOCK:
+        _IL10_B_EMBEDDING_MEMORY_CACHE.pop(
+            key,
+            None,
+        )
+
+        _IL10_B_EMBEDDING_MEMORY_CACHE[
+            key
+        ] = embeddings
+
+        while (
+            len(
+                _IL10_B_EMBEDDING_MEMORY_CACHE
+            )
+            > 4
+        ):
+            oldest = next(
+                iter(
+                    _IL10_B_EMBEDDING_MEMORY_CACHE
+                )
+            )
+
+            _IL10_B_EMBEDDING_MEMORY_CACHE.pop(
+                oldest,
+                None,
+            )
+
+
+def _il10_b_embedding_cache_prune() -> None:
+    root = _IL10_B_EMBEDDING_CACHE_ROOT
+    maximum = (
+        _il10_b_embedding_cache_max_bytes()
+    )
+
+    try:
+        files: list[
+            tuple[float, int, Path]
+        ] = []
+
+        total = 0
+
+        for path in root.glob(
+            "*.npy"
+        ):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+
+            size = int(
+                stat.st_size
+            )
+
+            total += size
+
+            files.append(
+                (
+                    float(
+                        stat.st_mtime
+                    ),
+                    size,
+                    path,
+                )
+            )
+
+        if total <= maximum:
+            return
+
+        files.sort(
+            key=lambda item:
+                item[0]
+        )
+
+        target = int(
+            maximum * 0.90
+        )
+
+        for _, size, path in files:
+            if total <= target:
+                break
+
+            try:
+                path.unlink()
+            except OSError:
+                continue
+
+            total -= size
+
+    except Exception:
+        # Cache maintenance must never break Interactive Learning.
+        return
+
+
+def _il10_b_cached_embedding_grid(
+    rgb: np.ndarray,
+    torch_module: Any,
+    device: str,
+    maximum_side: int,
+    image_id: str,
+) -> tuple[
+    np.ndarray,
+    int,
+    int,
+    dict[str, Any],
+]:
+    height, width = map(
+        int,
+        rgb.shape[:2],
+    )
+
+    scale = min(
+        1.0,
+        float(maximum_side)
+        / float(
+            max(
+                height,
+                width,
+            )
+        ),
+    )
+
+    analysis_height = max(
+        32,
+        int(
+            round(
+                height * scale
+            )
+        ),
+    )
+
+    analysis_width = max(
+        32,
+        int(
+            round(
+                width * scale
+            )
+        ),
+    )
+
+    cache_key = None
+    cache_path = None
+
+    try:
+        (
+            cache_key,
+            cache_path,
+        ) = _il10_b_embedding_cache_key(
+            image_id,
+            rgb,
+            maximum_side,
+        )
+    except Exception as exc:
+        _il10_b_cache_note(
+            "keyErrors",
+            (
+                "key: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        )
+        cache_key = None
+        cache_path = None
+
+    if cache_key:
+        memory = (
+            _il10_b_embedding_memory_get(
+                cache_key
+            )
+        )
+
+        if memory is not None:
+            _il10_b_cache_note(
+                "memoryHits"
+            )
+
+            return (
+                memory,
+                analysis_height,
+                analysis_width,
+                {
+                    "hit":
+                        True,
+                    "source":
+                        "memory",
+                    "key":
+                        cache_key,
+                    "persistent":
+                        True,
+                },
+            )
+
+    if (
+        cache_key
+        and cache_path is not None
+        and cache_path.is_file()
+    ):
+        try:
+            loaded = np.load(
+                cache_path,
+                allow_pickle=False,
+            )
+
+            if (
+                isinstance(
+                    loaded,
+                    np.ndarray,
+                )
+                and loaded.ndim == 3
+                and loaded.shape[2] > 0
+            ):
+                embeddings = loaded.astype(
+                    np.float32,
+                    copy=False,
+                )
+
+                try:
+                    os.utime(
+                        cache_path,
+                        None,
+                    )
+                except OSError:
+                    pass
+
+                _il10_b_embedding_memory_put(
+                    cache_key,
+                    embeddings,
+                )
+
+                _il10_b_cache_note(
+                    "diskHits"
+                )
+
+                return (
+                    embeddings,
+                    analysis_height,
+                    analysis_width,
+                    {
+                        "hit":
+                            True,
+                        "source":
+                            "disk",
+                        "key":
+                            cache_key,
+                        "persistent":
+                            True,
+                    },
+                )
+
+        except Exception as exc:
+            _il10_b_cache_note(
+                "readErrors",
+                (
+                    "read: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+
+            try:
+                cache_path.unlink()
+            except OSError:
+                pass
+
+    (
+        embeddings,
+        analysis_height,
+        analysis_width,
+    ) = _il10_b_embedding_grid(
+        rgb,
+        torch_module,
+        device,
+        maximum_side,
+    )
+
+    embeddings = embeddings.astype(
+        np.float32,
+        copy=False,
+    )
+
+    _il10_b_cache_note(
+        "computed"
+    )
+
+    # RAM reuse is independent from disk persistence.
+    if cache_key:
+        _il10_b_embedding_memory_put(
+            cache_key,
+            embeddings,
+        )
+
+    if (
+        cache_key
+        and cache_path is not None
+    ):
+        try:
+            with _IL10_B_EMBEDDING_CACHE_LOCK:
+                cache_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                temp_path = (
+                    cache_path.parent
+                    / (
+                        f".{cache_path.name}."
+                        f"{uuid.uuid4().hex}.tmp"
+                    )
+                )
+
+                try:
+                    with temp_path.open(
+                        "wb"
+                    ) as stream:
+                        np.save(
+                            stream,
+                            embeddings,
+                            allow_pickle=False,
+                        )
+
+                    os.replace(
+                        temp_path,
+                        cache_path,
+                    )
+
+                finally:
+                    try:
+                        temp_path.unlink(
+                            missing_ok=True
+                        )
+                    except OSError:
+                        pass
+
+            _il10_b_cache_note(
+                "writes"
+            )
+
+            _il10_b_embedding_cache_prune()
+
+        except Exception as exc:
+            # Disk cache is an optimization only; keep B functional,
+            # but surface the failure for diagnosis.
+            _il10_b_cache_note(
+                "writeErrors",
+                (
+                    "write: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+
+    return (
+        embeddings,
+        analysis_height,
+        analysis_width,
+        {
+            "hit":
+                False,
+            "source":
+                "computed",
+            "key":
+                cache_key,
+            "persistent":
+                bool(
+                    cache_key
+                ),
+        },
     )
 
 
@@ -6372,11 +6991,17 @@ def _il10_b_auxiliary_source(
         else 704
     )
 
-    embeddings, _, _ = _il10_b_embedding_grid(
+    (
+        embeddings,
+        _,
+        _,
+        embedding_cache,
+    ) = _il10_b_cached_embedding_grid(
         rgb,
         torch_module,
         device,
         maximum_side,
+        source_image_id,
     )
 
     grid_height, grid_width = map(
@@ -6539,6 +7164,20 @@ def _il10_b_auxiliary_source(
             ),
         "similarityBasis":
             "deep-resnet18-cosine",
+        "embeddingCacheHit":
+            bool(
+                embedding_cache[
+                    "hit"
+                ]
+            ),
+        "embeddingCacheSource":
+            embedding_cache[
+                "source"
+            ],
+        "embeddingCacheKey":
+            embedding_cache[
+                "key"
+            ],
     }
 
 
@@ -6615,11 +7254,13 @@ def _il10_b_deep_feature_probability_map(
             embeddings,
             analysis_height,
             analysis_width,
-        ) = _il10_b_embedding_grid(
+            current_embedding_cache,
+        ) = _il10_b_cached_embedding_grid(
             rgb,
             torch,
             requested_device,
             maximum_side,
+            image_id,
         )
     except Exception as exc:
         if requested_device == "cpu":
@@ -6650,11 +7291,13 @@ def _il10_b_deep_feature_probability_map(
             embeddings,
             analysis_height,
             analysis_width,
-        ) = _il10_b_embedding_grid(
+            current_embedding_cache,
+        ) = _il10_b_cached_embedding_grid(
             rgb,
             torch,
             "cpu",
             896,
+            image_id,
         )
 
     grid_height, grid_width = map(
@@ -6963,6 +7606,20 @@ def _il10_b_deep_feature_probability_map(
                 "similarityBasis":
                     deep_source[
                         "similarityBasis"
+                    ],
+                "embeddingCacheHit":
+                    bool(
+                        deep_source[
+                            "embeddingCacheHit"
+                        ]
+                    ),
+                "embeddingCacheSource":
+                    deep_source[
+                        "embeddingCacheSource"
+                    ],
+                "embeddingCacheKey":
+                    deep_source[
+                        "embeddingCacheKey"
                     ],
             })
 
@@ -7331,6 +7988,50 @@ def _il10_b_deep_feature_probability_map(
                 12000,
             "targetAbsentAuxiliaryWeightCap":
                 0.45,
+            "embeddingCacheVersion":
+                _IL10_B_EMBEDDING_CACHE_VERSION,
+            "embeddingCachePersistent":
+                True,
+            "currentEmbeddingCacheHit":
+                bool(
+                    current_embedding_cache[
+                        "hit"
+                    ]
+                ),
+            "currentEmbeddingCacheSource":
+                current_embedding_cache[
+                    "source"
+                ],
+            "currentEmbeddingCacheKey":
+                current_embedding_cache[
+                    "key"
+                ],
+            "auxiliaryEmbeddingCacheHits":
+                int(
+                    sum(
+                        1
+                        for report
+                        in training_source_reports
+                        if bool(
+                            report.get(
+                                "embeddingCacheHit"
+                            )
+                        )
+                    )
+                ),
+            "auxiliaryEmbeddingCacheMisses":
+                int(
+                    sum(
+                        1
+                        for report
+                        in training_source_reports
+                        if not bool(
+                            report.get(
+                                "embeddingCacheHit"
+                            )
+                        )
+                    )
+                ),
         },
     }
 
