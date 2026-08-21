@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL11.2";
+  const VERSION = "1.4.0-dev-IL11.3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -19439,7 +19439,7 @@ function phaseIL6BindSourceControls() {
 // ========================================================================
 
 const PHASE_IL7_HISTORY_PREFIX =
-  "histoannotator.il7.learningHistory.v1::";
+  "histoannotator.il7.learningHistory.v2::";
 
 
 function phaseIL7SourceSignature(
@@ -19472,6 +19472,7 @@ function phaseIL7HistoryKey({
   targetClass,
   trainingMode,
   trainingSources,
+  learningModel,
 }) {
   if (!currentImage?.id) {
     return null;
@@ -19487,6 +19488,9 @@ function phaseIL7HistoryKey({
           String(
             targetClass || ""
           ).toLowerCase(),
+          phaseIL92NormalizeLearningModel(
+            learningModel
+          ),
           phaseIL7SourceSignature(
             trainingMode,
             trainingSources
@@ -19978,11 +19982,15 @@ function phaseIL7RenderStatus(
     const trainingSources =
       phaseIL6TrainingPayload();
 
+    const learningModel =
+      phaseIL92SelectedLearningModel();
+
     const key =
       phaseIL7HistoryKey({
         targetClass,
         trainingMode,
         trainingSources,
+        learningModel,
       });
 
     const history =
@@ -20096,6 +20104,7 @@ function phaseIL7RecordRound({
   targetClass,
   trainingMode,
   trainingSources,
+  learningModel,
   suggestions,
   feedbackSummary,
 }) {
@@ -20104,6 +20113,7 @@ function phaseIL7RecordRound({
       targetClass,
       trainingMode,
       trainingSources,
+      learningModel,
     });
 
   if (!key) return null;
@@ -20159,6 +20169,14 @@ function phaseIL7RecordRound({
       ),
     createdAt:
       new Date().toISOString(),
+    learningModel:
+      phaseIL92NormalizeLearningModel(
+        learningModel
+      ),
+    learningModelLabel:
+      phaseIL92LearningModelLabel(
+        learningModel
+      ),
     state:
       status.state,
     label:
@@ -20249,6 +20267,23 @@ function phaseIL7Initialize() {
       () =>
         phaseIL7RenderStatus()
     );
+
+  const modelSelect =
+    phaseIL92LearningModelSelect();
+
+  if (
+    modelSelect
+    && !modelSelect.dataset.il7Bound
+  ) {
+    modelSelect.dataset.il7Bound =
+      "true";
+
+    modelSelect.addEventListener(
+      "change",
+      () =>
+        phaseIL7RenderStatus()
+    );
+  }
 
   phaseIL7RenderStatus();
   phaseIL9Initialize();
@@ -23192,7 +23227,8 @@ async function phaseIL1Run() {
 
     const feedbackSummary =
       phaseIL2FeedbackSummary(
-        targetClass
+        targetClass,
+        learningModel
       );
 
     const phaseIL9StabilityEntry =
@@ -23200,6 +23236,7 @@ async function phaseIL1Run() {
         targetClass,
         trainingMode,
         trainingSources,
+        learningModel,
         suggestions:
           phaseIL1State.suggestions,
         feedbackSummary,
@@ -23549,6 +23586,9 @@ function phaseIL1StoreRejection(
     items = [];
   }
 
+  const provenance =
+    phaseIL93FeedbackProvenance();
+
   items.unshift({
     imageId:
       currentImage.id,
@@ -23558,6 +23598,16 @@ function phaseIL1StoreRejection(
       phaseIL1State.targetClass,
     rejectedAt:
       new Date().toISOString(),
+    learningModel:
+      provenance.learningModel,
+    learningModelLabel:
+      provenance.learningModelLabel,
+    modelType:
+      provenance.modelType,
+    sessionId:
+      provenance.sessionId,
+    roundId:
+      provenance.roundId,
     model:
       phaseIL1State.model?.type
       || "appearance-centroid-v1",
@@ -23634,6 +23684,9 @@ function phaseIL1AcceptedFeature(
   const metadata =
     phaseCCreateMetadata();
 
+  const provenance =
+    phaseIL93FeedbackProvenance();
+
   metadata.interactiveLearning = {
     source:
       "IL2",
@@ -23641,6 +23694,16 @@ function phaseIL1AcceptedFeature(
       "accepted",
     originalTargetClass:
       targetClass,
+    learningModel:
+      provenance.learningModel,
+    learningModelLabel:
+      provenance.learningModelLabel,
+    modelType:
+      provenance.modelType,
+    sessionId:
+      provenance.sessionId,
+    roundId:
+      provenance.roundId,
     model:
       phaseIL1State.model?.type
       || "appearance-centroid-v1",
@@ -24439,9 +24502,126 @@ function phaseIL2WriteArray(
 }
 
 
+function phaseIL93LearningModelFromType(
+  modelType
+) {
+  const value =
+    String(modelType || "")
+      .trim()
+      .toLowerCase();
+
+  if (value.includes("deep-spatial")) {
+    return "C";
+  }
+
+  if (value.includes("deep-features")) {
+    return "B";
+  }
+
+  if (
+    value.includes("extra-trees")
+    || value.includes("appearance-centroid")
+  ) {
+    return "A";
+  }
+
+  return null;
+}
+
+
+function phaseIL93ActiveLearningModel() {
+  const explicit =
+    String(
+      phaseIL1State.model
+        ?.learningModel
+      || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  if (["A", "B", "C"].includes(explicit)) {
+    return explicit;
+  }
+
+  const inferred =
+    phaseIL93LearningModelFromType(
+      phaseIL1State.model?.type
+    );
+
+  if (inferred) {
+    return inferred;
+  }
+
+  return phaseIL92NormalizeLearningModel(
+    phaseIL92LearningModelSelect()
+      ?.value
+    || "A"
+  );
+}
+
+
+function phaseIL93FeedbackProvenance() {
+  const learningModel =
+    phaseIL93ActiveLearningModel();
+
+  return {
+    learningModel,
+    learningModelLabel:
+      phaseIL92LearningModelLabel(
+        learningModel
+      ),
+    modelType:
+      String(
+        phaseIL1State.model?.type
+        || ""
+      ),
+    sessionId:
+      phaseIL9ActiveContext
+        ?.sessionId
+      || null,
+    roundId:
+      phaseIL9ActiveContext
+        ?.roundId
+      || null,
+  };
+}
+
+
+function phaseIL93MatchesLearningModel(
+  record,
+  learningModel
+) {
+  if (!learningModel) {
+    return true;
+  }
+
+  const stored =
+    String(
+      record?.learningModel
+      || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  if (!["A", "B", "C"].includes(stored)) {
+    // Legacy feedback remains usable for training, but is not
+    // attributed to a specific strategy for IL7 stability.
+    return false;
+  }
+
+  return (
+    stored
+    === phaseIL92NormalizeLearningModel(
+      learningModel
+    )
+  );
+}
+
+
 function phaseIL2ContextMatch(
   item,
-  targetClass
+  targetClass,
+  learningModel = null
 ) {
   if (!item || !currentImage) {
     return false;
@@ -24456,12 +24636,17 @@ function phaseIL2ContextMatch(
       .toLowerCase()
       === String(targetClass || "")
         .toLowerCase()
+    && phaseIL93MatchesLearningModel(
+      item,
+      learningModel
+    )
   );
 }
 
 
 function phaseIL2RejectedFeedback(
-  targetClass
+  targetClass,
+  learningModel = null
 ) {
   return phaseIL2ReadArray(
     PHASE_IL1_REJECTION_KEY
@@ -24469,7 +24654,8 @@ function phaseIL2RejectedFeedback(
     (item) =>
       phaseIL2ContextMatch(
         item,
-        targetClass
+        targetClass,
+        learningModel
       )
       && item?.geometry
   );
@@ -24477,7 +24663,8 @@ function phaseIL2RejectedFeedback(
 
 
 function phaseIL2EditedFeedback(
-  targetClass
+  targetClass,
+  learningModel = null
 ) {
   const items =
     phaseIL2ReadArray(
@@ -24490,7 +24677,8 @@ function phaseIL2EditedFeedback(
     if (
       !phaseIL2ContextMatch(
         item,
-        targetClass
+        targetClass,
+        learningModel
       )
       || !item?.featureId
       || !item?.originalGeometry
@@ -24582,7 +24770,8 @@ function phaseIL2FeedbackPayload(
 
 
 function phaseIL2FeedbackSummary(
-  targetClass
+  targetClass,
+  learningModel = null
 ) {
   const target =
     String(targetClass || "")
@@ -24609,6 +24798,15 @@ function phaseIL2FeedbackSummary(
         ?.interactiveLearning;
 
     if (!il) continue;
+
+    if (
+      !phaseIL93MatchesLearningModel(
+        il,
+        learningModel
+      )
+    ) {
+      continue;
+    }
 
     const source =
       String(il.source || "")
@@ -24647,11 +24845,13 @@ function phaseIL2FeedbackSummary(
     accepted,
     rejected:
       phaseIL2RejectedFeedback(
-        targetClass
+        targetClass,
+        learningModel
       ).length,
     edited:
       phaseIL2EditedFeedback(
-        targetClass
+        targetClass,
+        learningModel
       ).length,
     reclassified,
   };
@@ -24678,6 +24878,15 @@ function phaseIL2StoreEditOrigin(
   const featureId =
     String(feature.id);
 
+  const il =
+    feature?.properties
+      ?.histoannotator
+      ?.interactiveLearning
+    || {};
+
+  const fallbackProvenance =
+    phaseIL93FeedbackProvenance();
+
   const filtered =
     items.filter(
       (item) =>
@@ -24702,6 +24911,31 @@ function phaseIL2StoreEditOrigin(
       currentAnnotationFile,
     targetClass:
       phaseIL1State.targetClass,
+    learningModel:
+      String(
+        il.learningModel
+        || fallbackProvenance.learningModel
+      ),
+    learningModelLabel:
+      String(
+        il.learningModelLabel
+        || fallbackProvenance.learningModelLabel
+      ),
+    modelType:
+      String(
+        il.modelType
+        || il.model
+        || fallbackProvenance.modelType
+        || ""
+      ),
+    sessionId:
+      il.sessionId
+      || fallbackProvenance.sessionId
+      || null,
+    roundId:
+      il.roundId
+      || fallbackProvenance.roundId
+      || null,
     featureId,
     originalGeometry:
       deepClone(
