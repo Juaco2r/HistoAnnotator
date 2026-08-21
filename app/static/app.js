@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL11.0";
+  const VERSION = "1.4.0-dev-IL11.1c";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -18307,7 +18307,8 @@ function phaseIL8FormatStoredSourceStatus(
 
   const similarity =
     Number(
-      report?.appearanceSimilarity
+      report?.deepSimilarity
+      ?? report?.appearanceSimilarity
     );
 
   const weight =
@@ -18315,11 +18316,34 @@ function phaseIL8FormatStoredSourceStatus(
       report?.effectiveWeight
     );
 
-  const label =
+  const learningModel =
+    String(
+      report?.learningModel
+      || ""
+    ).toUpperCase();
+
+  const samePhysicalImage =
+    Boolean(
+      report?.samePhysicalImage
+    );
+
+  let label =
     String(
       report?.similarityLabel
-      || "unknown"
-    );
+      || ""
+    ).trim();
+
+  if (!label) {
+    if (samePhysicalImage) {
+      label = "same image";
+    } else if (learningModel === "C") {
+      label = "deep spatial";
+    } else if (learningModel === "B") {
+      label = "deep";
+    } else {
+      label = "similarity";
+    }
+  }
 
   const targetText =
     annotations > 0
@@ -18338,7 +18362,7 @@ function phaseIL8FormatStoredSourceStatus(
           `${label}`
           + ` ${Math.round(similarity * 100)}%`
         )
-      : label;
+      : "";
 
   const weightText =
     Number.isFinite(weight)
@@ -18348,6 +18372,11 @@ function phaseIL8FormatStoredSourceStatus(
   const cap =
     Number(
       report?.targetAbsentWeightCap
+      ?? (
+        annotations < 1
+          ? 0.45
+          : NaN
+      )
     );
 
   const capText =
@@ -18358,11 +18387,51 @@ function phaseIL8FormatStoredSourceStatus(
       ? `negative-only cap ${cap.toFixed(2)}x`
       : "";
 
+  const positiveGridCells =
+    Number(
+      report?.positiveGridCells
+    );
+
+  const negativeGridCells =
+    Number(
+      report?.negativeGridCells
+    );
+
+  const spatialCellsText =
+    (
+      learningModel === "C"
+      && (
+        Number.isFinite(positiveGridCells)
+        || Number.isFinite(negativeGridCells)
+      )
+    )
+      ? (
+          `grid +${Math.max(0, Number(positiveGridCells) || 0)}`
+          + ` / -${Math.max(0, Number(negativeGridCells) || 0)}`
+        )
+      : "";
+
+  const cacheSource =
+    String(
+      report?.embeddingCacheSource
+      || ""
+    ).trim();
+
+  const cacheText =
+    (
+      learningModel === "C"
+      && cacheSource
+    )
+      ? `cache ${cacheSource}`
+      : "";
+
   return [
     targetText,
     similarityText,
     weightText,
     capText,
+    spatialCellsText,
+    cacheText,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -18843,11 +18912,35 @@ function phaseIL6RenderTrainingSources() {
         item.annotationFile
       );
 
+    const currentTargetClass =
+      String(
+        phaseIL1Refs()
+          .classSelect
+          ?.value
+        || phaseIL1State.targetClass
+        || ""
+      ).trim();
+
+    const storedReport =
+      phaseIL8StoredReport(
+        item.imageId,
+        item.annotationFile,
+        currentTargetClass
+      );
+
     status.textContent =
-      phaseIL6SourceStatus.get(
-        key
-      )
-      || "Target status not checked yet";
+      storedReport
+        ? phaseIL8FormatStoredSourceStatus(
+            storedReport,
+            currentTargetClass,
+            storedReport.targetAnnotations
+          )
+        : (
+            phaseIL6SourceStatus.get(
+              key
+            )
+            || "Target status not checked yet"
+          );
 
     text.append(
       title,
@@ -20188,6 +20281,12 @@ function phaseIL8ApplySourceReports(
       || ""
     ).trim();
 
+  const learningModel =
+    String(
+      model?.learningModel
+      || ""
+    ).toUpperCase();
+
   for (const report of reports) {
     const key =
       phaseIL6SourceKey(
@@ -20198,6 +20297,7 @@ function phaseIL8ApplySourceReports(
     const storedReport = {
       ...report,
       targetClass,
+      learningModel,
     };
 
     phaseIL8SourceReports.set(
@@ -20217,7 +20317,6 @@ function phaseIL8ApplySourceReports(
 
   phaseIL6RenderTrainingSources();
 }
-
 
 
 // ========================================================================
@@ -23000,7 +23099,42 @@ async function phaseIL1Run() {
             + `${suggestionCount === 1 ? "" : "s"}`
           )
         : (
-            "Interactive Learning found no suggestions at these settings"
+            "Interactive Learning found no suggestions"
+            + (
+                phaseIL1State.summary
+                  ? (
+                      ` · predicted ${
+                        Number(
+                          phaseIL1State.summary
+                            ?.predictedPixelsThumbnail
+                          || 0
+                        )
+                      } px`
+                      + ` · candidate ${
+                        Number(
+                          phaseIL1State.summary
+                            ?.candidatePixelsThumbnail
+                          || 0
+                        )
+                      } px`
+                      + (
+                          Number.isFinite(
+                            Number(
+                              model?.threshold
+                            )
+                          )
+                            ? (
+                                ` · threshold ${
+                                  Number(
+                                    model.threshold
+                                  ).toFixed(3)
+                                }`
+                              )
+                            : ""
+                        )
+                    )
+                  : ""
+              )
           ),
       suggestionCount
         ? "saved"
