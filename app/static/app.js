@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-IL11.1c";
+  const VERSION = "1.4.0-dev-IL11.2";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -20324,14 +20324,118 @@ function phaseIL8ApplySourceReports(
 //
 // Local-only evaluation metadata. No geometry, model weights or images are
 // copied into this history. A configuration is:
-// image + annotation file + target class + source mode + selected sources.
+// image + annotation file + target class + learning model + source mode + selected sources.
 // ========================================================================
 
 const PHASE_IL9_HISTORY_PREFIX =
-  "histoannotator.il9.evaluation.v1::";
+  "histoannotator.il9.evaluation.v2::";
 
 let phaseIL9ActiveContext =
   null;
+
+
+function phaseIL92NormalizeLearningModel(
+  value
+) {
+  const normalized =
+    String(value || "")
+      .trim()
+      .toUpperCase();
+
+  return ["A", "B", "C"]
+    .includes(normalized)
+      ? normalized
+      : "A";
+}
+
+
+function phaseIL92LearningModelLabel(
+  value
+) {
+  const learningModel =
+    phaseIL92NormalizeLearningModel(
+      value
+    );
+
+  if (learningModel === "B") {
+    return "Deep Features";
+  }
+
+  if (learningModel === "C") {
+    return "Deep Spatial";
+  }
+
+  return "Classical";
+}
+
+
+function phaseIL92LearningModelSelect() {
+  for (
+    const id
+    of [
+      "phaseIL1ModelSelect",
+      "phaseIL10ModelSelect",
+      "phaseIL1LearningModelSelect",
+    ]
+  ) {
+    const candidate =
+      document.getElementById(id);
+
+    if (
+      candidate?.tagName
+      === "SELECT"
+    ) {
+      return candidate;
+    }
+  }
+
+  const overlay =
+    document.getElementById(
+      "phaseIL1Overlay"
+    );
+
+  for (
+    const select
+    of overlay
+      ?.querySelectorAll("select")
+      || []
+  ) {
+    const values =
+      new Set(
+        Array.from(
+          select.options || []
+        ).map(
+          (option) =>
+            String(
+              option.value || ""
+            )
+              .trim()
+              .toUpperCase()
+        )
+      );
+
+    if (
+      values.has("A")
+      && values.has("B")
+      && values.has("C")
+    ) {
+      return select;
+    }
+  }
+
+  return null;
+}
+
+
+function phaseIL92SelectedLearningModel() {
+  return phaseIL92NormalizeLearningModel(
+    phaseIL92LearningModelSelect()
+      ?.value
+    || phaseIL1State.model
+      ?.learningModel
+    || "A"
+  );
+}
 
 
 function phaseIL9Uid(prefix = "il9") {
@@ -20367,6 +20471,14 @@ function phaseIL9CurrentConfig() {
   const trainingSources =
     phaseIL6TrainingPayload();
 
+  const learningModel =
+    phaseIL92SelectedLearningModel();
+
+  const learningModelLabel =
+    phaseIL92LearningModelLabel(
+      learningModel
+    );
+
   return {
     imageId:
       String(
@@ -20382,6 +20494,8 @@ function phaseIL9CurrentConfig() {
         || "Default"
       ),
     targetClass,
+    learningModel,
+    learningModelLabel,
     trainingMode,
     trainingSources:
       trainingSources.map(
@@ -20416,6 +20530,11 @@ function phaseIL9StorageKey(
     return null;
   }
 
+  const learningModel =
+    phaseIL92NormalizeLearningModel(
+      config.learningModel
+    );
+
   return (
     PHASE_IL9_HISTORY_PREFIX
     + encodeURIComponent(
@@ -20424,6 +20543,7 @@ function phaseIL9StorageKey(
           config.annotationFile,
           config.targetClass
             .toLowerCase(),
+          learningModel,
           config.sourceSignature,
         ].join("||")
       )
@@ -20432,8 +20552,13 @@ function phaseIL9StorageKey(
 
 
 function phaseIL9EmptyStore(config) {
+  const learningModel =
+    phaseIL92NormalizeLearningModel(
+      config?.learningModel
+    );
+
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     configuration: {
       imageId:
         config.imageId,
@@ -20443,6 +20568,14 @@ function phaseIL9EmptyStore(config) {
         config.annotationFile,
       targetClass:
         config.targetClass,
+      learningModel,
+      learningModelLabel:
+        String(
+          config.learningModelLabel
+          || phaseIL92LearningModelLabel(
+            learningModel
+          )
+        ),
       trainingMode:
         config.trainingMode,
       sourceSignature:
@@ -21032,6 +21165,27 @@ function phaseIL9StartRound({
   minAreaPercent,
   excludeAnnotated,
 }) {
+  const learningModel =
+    phaseIL92NormalizeLearningModel(
+      model?.learningModel
+      || config?.learningModel
+    );
+
+  const learningModelLabel =
+    String(
+      model?.learningModelLabel
+      || config?.learningModelLabel
+      || phaseIL92LearningModelLabel(
+        learningModel
+      )
+    );
+
+  config = {
+    ...config,
+    learningModel,
+    learningModelLabel,
+  };
+
   const key =
     phaseIL9StorageKey(
       config
@@ -21054,6 +21208,8 @@ function phaseIL9StartRound({
       config.annotationFile,
     targetClass:
       config.targetClass,
+    learningModel,
+    learningModelLabel,
     trainingMode:
       config.trainingMode,
     sourceSignature:
@@ -21128,6 +21284,8 @@ function phaseIL9StartRound({
       Boolean(
         excludeAnnotated
       ),
+    learningModel,
+    learningModelLabel,
     modelType:
       String(
         model?.type || ""
@@ -21502,6 +21660,8 @@ function phaseIL9ExportReport() {
     "StabilityRecentReviewed",
     "StabilityRecentAcceptanceRate_pct",
     "StabilityRecentCorrectionRate_pct",
+    "LearningModel",
+    "LearningModelLabel",
     "Model",
     "PositiveTrainingPixels",
     "NegativeTrainingPixels",
@@ -21603,6 +21763,14 @@ function phaseIL9ExportReport() {
         phaseIL9FormatRate(
           round.stabilityRecentCorrectionRate
         ),
+        round.learningModel
+          || store.configuration
+            ?.learningModel
+          || "",
+        round.learningModelLabel
+          || store.configuration
+            ?.learningModelLabel
+          || "",
         round.modelType || "",
         round.positiveTrainingPixels ?? "",
         round.negativeTrainingPixels ?? "",
@@ -21674,8 +21842,14 @@ function phaseIL9ExportReport() {
         "_"
       );
 
+  const modelPart =
+    phaseIL92NormalizeLearningModel(
+      configuration.learningModel
+      || "A"
+    );
+
   phaseEDownloadText(
-    `${imagePart}_${classPart}_learning_report.csv`,
+    `${imagePart}_${classPart}_${modelPart}_learning_report.csv`,
     csv
   );
 
@@ -21777,6 +21951,13 @@ function phaseIL9StartNewSession() {
 
 
 function phaseIL9Initialize() {
+  phaseIL92LearningModelSelect()
+    ?.addEventListener(
+      "change",
+      () =>
+        phaseIL9RenderProgress()
+    );
+
   const refs =
     phaseIL9UiRefs();
 
