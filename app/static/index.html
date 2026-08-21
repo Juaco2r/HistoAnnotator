@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-IL11.3">
+  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-F1.11">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-IL11.3</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F1.11</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -85,6 +85,7 @@
         <button id="phaseBFocusMenuButton" class="menu-item" type="button">Focus Mode</button>
         <button id="phaseBShortcutsMenuButton" class="menu-item" type="button">Keyboard shortcuts</button>
         <button id="phaseDTissueRoiMenuButton" class="menu-item" type="button">Tissue ROI…</button>
+        <button id="phaseF1AnthracosisButton" class="menu-item" type="button">Detect anthracosis</button>
 <div class="phase-d7-1-v2-settings-separator">
 </div>
 <button id="fillAnnotationsButton" class="menu-item" type="button">✓ Fill annotations</button>
@@ -204,6 +205,19 @@
                 hidden>Edit parameters</button>
         <button id="phaseDRoiDoneButton"
                 type="button">Done</button>
+      </div>
+
+      <div id="phaseF1PreviewAction"
+           class="context-actions phase-f1-preview-action"
+           hidden>
+        <strong>Anthracosis preview</strong>
+        <span id="phaseF1PreviewActionSummary">—</span>
+        <button id="phaseF1ChangeParametersButton"
+                type="button">Change parameters</button>
+        <button id="phaseF1PreviewAcceptButton"
+                type="button">Accept</button>
+        <button id="phaseF1PreviewCancelButton"
+                type="button">Cancel</button>
       </div>
 
       <div id="phaseCWorkflowAction" class="context-actions phase-c-workflow-action" hidden>
@@ -483,6 +497,72 @@
       <button id="closeInfoButton" type="button">Close</button>
     </section>
   </div>
+  <div id="phaseF1AnthracosisOverlay"
+       class="modal-overlay" hidden>
+    <section class="modal-card"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="phaseF1AnthracosisTitle">
+      <h2 id="phaseF1AnthracosisTitle">
+        Auto Anthracosis
+      </h2>
+
+      <p class="modal-note">
+        Native tiled seed-and-grow detector. Black seed sensitivity
+        now selects only very dark / near-black cores. Boundary expansion is
+        tone-aware: it can grow from those cores into connected lighter or
+        brownish edge pixels, up to the selected radius. Strong blue
+        hematoxylin remains excluded. Analysis runs at native level 0.
+      </p>
+
+      <label class="phase-d-roi-setting">
+        <span>
+          Black seed sensitivity
+          <output id="phaseF1AnthracosisSensitivityValue">50</output>
+        </span>
+        <input id="phaseF1AnthracosisSensitivity"
+               type="range"
+               min="0" max="100" step="5" value="50">
+      </label>
+
+      <label class="phase-d-roi-setting">
+        <span>
+          Boundary expansion
+          <output id="phaseF1AnthracosisGrowthValue">8</output> px
+        </span>
+        <input id="phaseF1AnthracosisGrowth"
+               type="range"
+               min="0" max="20" step="1" value="8">
+      </label>
+
+      <label class="phase-d-roi-setting">
+        <span>
+          Final mask dilate
+          <output id="phaseF1AnthracosisFinalDilateValue">0</output> px
+        </span>
+        <input id="phaseF1AnthracosisFinalDilate"
+               type="range"
+               min="0" max="6" step="1" value="0">
+      </label>
+
+      <p id="phaseF1AnthracosisSummary"
+         class="modal-note">
+        Requires a Tissue ROI. Preview does not modify annotations.
+      </p>
+
+      <div class="modal-actions">
+        <button id="phaseF1AnthracosisCloseButton"
+                type="button">
+          Cancel
+        </button>
+        <button id="phaseF1AnthracosisDetectButton"
+                type="button">
+          Preview detection
+        </button>
+      </div>
+    </section>
+  </div>
+
   <div id="phaseDTissueRoiOverlay" class="modal-overlay" hidden>
     <section class="modal-card phase-d-roi-card"
              role="dialog"
@@ -699,6 +779,6 @@
 
 
 
-  <script src="./static/app.js?v=1.4.0-dev-IL11.3"></script>
+  <script src="./static/app.js?v=1.4.0-dev-F1.11"></script>
 </body>
 </html>
