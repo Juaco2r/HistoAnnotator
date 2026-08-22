@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-F2.4.1">
+  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-F2.5.4.4">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F2.4.1</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F2.5.4.4</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -643,6 +643,11 @@
       </div>
 
       <div class="modal-actions">
+        <button id="phaseF25OpenBatchButton"
+                type="button"
+                disabled>
+          Batch analysis
+        </button>
         <button id="phaseF24ExportButton"
                 type="button"
                 disabled>
@@ -674,6 +679,160 @@
         be detected, the external-border setting, Anthracosis parameters,
         H-DAB parameters and algorithm identities. Physical H-DAB filters
         require compatible image calibration.
+      </p>
+    </section>
+  </div>
+
+  <div id="phaseF25BatchModal"
+       class="modal-overlay"
+       hidden>
+    <section class="modal-card stats-card"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="phaseF25BatchTitle">
+      <h2 id="phaseF25BatchTitle">
+        Batch analysis
+      </h2>
+
+      <p class="modal-note">
+        Run the selected reproducible protocol sequentially across multiple
+        server-backed H-DAB images. Each image is saved before the next image
+        starts.
+      </p>
+
+      <div id="phaseF25BatchProtocolSummary"
+           class="stats-summary">
+        <span>No protocol selected.</span>
+      </div>
+
+      <div id="phaseF252BaseConfigSummary"
+           class="stats-summary">
+        <strong>Base image configuration</strong>
+        <span>No base image available.</span>
+      </div>
+
+      <label class="phase-d-roi-checkbox">
+        <input id="phaseF252UseBaseImageType"
+               type="checkbox"
+               checked>
+        <span>
+          Set non-H-DAB batch images to H-DAB for this protocol
+        </span>
+      </label>
+
+      <label class="phase-d-roi-checkbox">
+        <input id="phaseF252UseBaseCalibration"
+               type="checkbox"
+               checked>
+        <span>
+          Fill missing physical calibration fields from the base image (MPP and/or objective)
+        </span>
+      </label>
+
+      <p class="modal-note">
+        Existing native/embedded MPP and objective values are never overwritten.
+        Only missing fields are inherited. Image dimensions, pyramid levels and
+        tile geometry always remain those of each original image.
+      </p>
+
+      <label class="phase-d-roi-setting">
+        <span>Source annotations</span>
+        <input id="phaseF25SourceAnnotationFile"
+               type="text"
+               maxlength="80"
+               value="Default">
+        <small>
+          Biological annotations and Artifact are copied from this annotation
+          file before the automated protocol runs.
+        </small>
+      </label>
+
+      <label class="phase-d-roi-setting">
+        <span>Batch result annotation file</span>
+        <input id="phaseF25TargetAnnotationFile"
+               type="text"
+               maxlength="80"
+               placeholder="Batch - protocol v1">
+        <small>
+          A separate annotation file is created for every image. If it already
+          exists, the batch starts again from a fresh copy of Source
+          annotations before rerunning ROI, Anthracosis and H-DAB.
+        </small>
+      </label>
+
+      <div class="modal-actions">
+        <button id="phaseF25SelectAllButton"
+                type="button">
+          Select all
+        </button>
+        <button id="phaseF25SelectNoneButton"
+                type="button">
+          Select none
+        </button>
+      </div>
+
+      <div id="phaseF25ImageList"
+           class="stats-table-wrap"
+           style="max-height: 240px; overflow: auto;">
+        <p class="modal-note">
+          No server-backed images available.
+        </p>
+      </div>
+
+      <label class="phase-d-roi-checkbox">
+        <input id="phaseF25ContinueOnError"
+               type="checkbox"
+               checked>
+        <span>
+          Continue with next image if one image fails
+        </span>
+      </label>
+
+      <div id="phaseF25BatchProgress"
+           class="stats-summary"
+           hidden>
+        <strong>Batch progress</strong>
+        <span id="phaseF25BatchProgressMessage">Ready.</span>
+      </div>
+
+      <div id="phaseF25BatchResults"
+           class="stats-table-wrap"
+           hidden>
+      </div>
+
+      <div class="modal-actions">
+        <button id="phaseF25RunBatchButton"
+                type="button">
+          Run batch
+        </button>
+        <button id="phaseF25CancelBatchButton"
+                type="button"
+                disabled>
+          Cancel after current image
+        </button>
+        <button id="phaseF25ExportBatchCsvButton"
+                type="button"
+                disabled>
+          Export batch CSV
+        </button>
+        <button id="phaseF25BackButton"
+                type="button">
+          Back
+        </button>
+        <button id="phaseF25CloseButton"
+                type="button">
+          Close
+        </button>
+      </div>
+
+      <p class="stats-note">
+        The batch never modifies Source annotations. Artifact and biological
+        classes are copied into the separate result file. Tissue ROI and
+        Anthracosis are regenerated by the protocol. Previous automatic H-DAB
+        Positive in the copied source is replaced by the existing H-DAB
+        acceptance logic; manually created Positive annotations remain
+        preserved. Processing is sequential to avoid loading multiple WSI
+        analyses into memory at the same time.
       </p>
     </section>
   </div>
@@ -1148,6 +1307,6 @@
 
 
 
-  <script src="./static/app.js?v=1.4.0-dev-F2.4.1"></script>
+  <script src="./static/app.js?v=1.4.0-dev-F2.5.4.4"></script>
 </body>
 </html>

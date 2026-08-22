@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import base64
 import errno
@@ -1091,7 +1092,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-F2.4.1"}
+    return {"status": "ok", "version": "1.4.0-dev-F2.5.4.4"}
 
 
 @app.get("/health")
@@ -2082,6 +2083,79 @@ def _image_calibration_info(path: Path, properties: Any) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Phase F2.5.2 — persistent physical-calibration overrides used by batch
+# only when an image has no valid native calibration.
+# ---------------------------------------------------------------------------
+
+def _calibration_overrides_path() -> Path:
+    return IMAGE_TYPES_PATH.with_name("image_calibration_overrides.json")
+
+
+def _read_calibration_overrides() -> dict[str, dict[str, Any]]:
+    path = _calibration_overrides_path()
+    with CONFIG_LOCK:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    for key, value in payload.items():
+        if isinstance(key, str) and isinstance(value, dict):
+            result[key] = value
+    return result
+
+
+def _write_calibration_overrides(
+    payload: dict[str, dict[str, Any]],
+) -> None:
+    path = _calibration_overrides_path()
+    with CONFIG_LOCK:
+        atomic_write_json(path, payload)
+
+
+def _positive_float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not __import__("math").isfinite(parsed) or parsed <= 0:
+        return None
+    return parsed
+
+
+def _calibration_override_for_relative(
+    relative: str,
+) -> dict[str, Any] | None:
+    value = _read_calibration_overrides().get(relative)
+    if not isinstance(value, dict):
+        return None
+
+    mpp_x = _positive_float_or_none(value.get("mppX"))
+    mpp_y = _positive_float_or_none(value.get("mppY"))
+    objective_power = _positive_float_or_none(
+        value.get("objectivePower")
+    )
+
+    # Overrides may be partial. A valid native field always wins.
+    if (
+        not (mpp_x is not None and mpp_y is not None)
+        and objective_power is None
+    ):
+        return None
+
+    return {
+        **value,
+        "mppX": mpp_x,
+        "mppY": mpp_y,
+        "objectivePower": objective_power,
+    }
+
+
 @app.get("/api/images/{image_id}/info")
 def image_info(image_id: str) -> dict[str, Any]:
     path, relative = safe_image_path(image_id)
@@ -2092,7 +2166,64 @@ def image_info(image_id: str) -> dict[str, Any]:
     width, height = handle.dimensions
     properties = handle.slide.properties
     multichannel = scientific_multichannel_info(path)
-    calibration = _image_calibration_info(path, properties)
+    native_calibration = _image_calibration_info(path, properties)
+    calibration = dict(native_calibration)
+    calibration_override = _calibration_override_for_relative(relative)
+
+    calibration_mpp_override_applied = False
+    calibration_objective_override_applied = False
+
+    # Native/embedded values are authoritative field-by-field.
+    # Only missing MPP or missing objective can be inherited.
+    if calibration_override is not None:
+        native_has_mpp = bool(
+            native_calibration.get("calibrationAvailable")
+        )
+        override_has_mpp = bool(
+            calibration_override.get("mppX") is not None
+            and calibration_override.get("mppY") is not None
+        )
+
+        if not native_has_mpp and override_has_mpp:
+            calibration["mppX"] = calibration_override["mppX"]
+            calibration["mppY"] = calibration_override["mppY"]
+            calibration["calibrationAvailable"] = True
+            calibration_mpp_override_applied = True
+
+        native_objective = _positive_float_or_none(
+            native_calibration.get("objectivePower")
+        )
+        override_objective = _positive_float_or_none(
+            calibration_override.get("objectivePower")
+        )
+
+        if native_objective is None and override_objective is not None:
+            calibration["objectivePower"] = override_objective
+            calibration_objective_override_applied = True
+
+        if (
+            calibration_mpp_override_applied
+            or calibration_objective_override_applied
+        ):
+            native_source = str(
+                native_calibration.get("calibrationSource") or ""
+            ).strip()
+            override_source = str(
+                calibration_override.get("source")
+                or "HistoAnnotator calibration override"
+            ).strip()
+            calibration["calibrationSource"] = "; ".join(
+                dict.fromkeys(
+                    value
+                    for value in (native_source, override_source)
+                    if value
+                )
+            )
+
+    calibration_override_applied = bool(
+        calibration_mpp_override_applied
+        or calibration_objective_override_applied
+    )
 
     def float_property(key: str) -> float | None:
         value = properties.get(key)
@@ -2118,6 +2249,31 @@ def image_info(image_id: str) -> dict[str, Any]:
         "objectivePower": calibration["objectivePower"],
         "calibrationAvailable": calibration["calibrationAvailable"],
         "calibrationSource": calibration["calibrationSource"],
+        "calibrationNativeAvailable": bool(
+            native_calibration.get("calibrationAvailable")
+        ),
+        "calibrationNativeObjectiveAvailable": bool(
+            _positive_float_or_none(
+                native_calibration.get("objectivePower")
+            ) is not None
+        ),
+        "calibrationOverrideApplied": bool(calibration_override_applied),
+        "calibrationMppOverrideApplied": bool(
+            calibration_mpp_override_applied
+        ),
+        "calibrationObjectiveOverrideApplied": bool(
+            calibration_objective_override_applied
+        ),
+        "calibrationOverrideSourceImageId": (
+            calibration_override.get("sourceImageId")
+            if calibration_override_applied and calibration_override
+            else None
+        ),
+        "calibrationOverrideSourceImage": (
+            calibration_override.get("sourceImage")
+            if calibration_override_applied and calibration_override
+            else None
+        ),
         "multichannel": multichannel,
     }
 
@@ -2129,6 +2285,161 @@ def _read_image_types() -> dict[str, str]:
             return payload if isinstance(payload, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
+
+@app.put("/api/images/{image_id}/calibration-override")
+def put_image_calibration_override(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    path, relative = safe_image_path(image_id)
+    render_path = resolve_render_path(path, relative)
+    handle = get_slide(render_path)
+    native_calibration = _image_calibration_info(
+        path,
+        handle.slide.properties,
+    )
+
+    native_mpp_x = _positive_float_or_none(
+        native_calibration.get("mppX")
+    )
+    native_mpp_y = _positive_float_or_none(
+        native_calibration.get("mppY")
+    )
+    native_has_mpp = bool(
+        native_mpp_x is not None
+        and native_mpp_y is not None
+    )
+    native_objective = _positive_float_or_none(
+        native_calibration.get("objectivePower")
+    )
+
+    requested_mpp_x = _positive_float_or_none(payload.get("mppX"))
+    requested_mpp_y = _positive_float_or_none(payload.get("mppY"))
+    requested_objective = _positive_float_or_none(
+        payload.get("objectivePower")
+    )
+
+    if (requested_mpp_x is None) != (requested_mpp_y is None):
+        raise HTTPException(
+            status_code=422,
+            detail="mppX and mppY must be supplied together",
+        )
+
+    requested_has_mpp = bool(
+        requested_mpp_x is not None
+        and requested_mpp_y is not None
+    )
+
+    if requested_has_mpp and (
+        requested_mpp_x > 100.0
+        or requested_mpp_y > 100.0
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="MPP values above 100 µm/px are not accepted",
+        )
+
+    if requested_objective is not None and requested_objective > 200.0:
+        raise HTTPException(
+            status_code=422,
+            detail="Objective power above 200x is not accepted",
+        )
+
+    if not requested_has_mpp and requested_objective is None:
+        raise HTTPException(
+            status_code=422,
+            detail="No calibration value was supplied",
+        )
+
+    overrides = _read_calibration_overrides()
+    previous = (
+        overrides.get(relative)
+        if isinstance(overrides.get(relative), dict)
+        else {}
+    )
+
+    record_mpp_x = _positive_float_or_none(previous.get("mppX"))
+    record_mpp_y = _positive_float_or_none(previous.get("mppY"))
+    record_objective = _positive_float_or_none(
+        previous.get("objectivePower")
+    )
+
+    mpp_applied = False
+    objective_applied = False
+
+    if not native_has_mpp and requested_has_mpp:
+        record_mpp_x = requested_mpp_x
+        record_mpp_y = requested_mpp_y
+        mpp_applied = True
+
+    if native_objective is None and requested_objective is not None:
+        record_objective = requested_objective
+        objective_applied = True
+
+    if not mpp_applied and not objective_applied:
+        return {
+            "applied": False,
+            "reason": "native-values-present",
+            "mppApplied": False,
+            "objectiveApplied": False,
+            "mppX": native_mpp_x,
+            "mppY": native_mpp_y,
+            "objectivePower": native_objective,
+            "calibrationSource": native_calibration.get(
+                "calibrationSource"
+            ),
+        }
+
+    source_image_id = str(payload.get("sourceImageId") or "").strip()
+    source_image = str(payload.get("sourceImage") or "").strip()
+
+    record = {
+        "mppX": record_mpp_x,
+        "mppY": record_mpp_y,
+        "objectivePower": record_objective,
+        "source": (
+            f"Batch base image: {source_image}"
+            if source_image
+            else "Batch base image"
+        ),
+        "sourceImageId": source_image_id or None,
+        "sourceImage": source_image or None,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "method": "batch-base-image-partial-inheritance-v1",
+    }
+
+    overrides[relative] = record
+    _write_calibration_overrides(overrides)
+
+    effective_mpp_x = native_mpp_x if native_has_mpp else record_mpp_x
+    effective_mpp_y = native_mpp_y if native_has_mpp else record_mpp_y
+    effective_objective = (
+        native_objective
+        if native_objective is not None
+        else record_objective
+    )
+
+    return {
+        "applied": True,
+        "mppApplied": bool(mpp_applied),
+        "objectiveApplied": bool(objective_applied),
+        "mppX": effective_mpp_x,
+        "mppY": effective_mpp_y,
+        "objectivePower": effective_objective,
+        "source": record["source"],
+        "calibrationAvailable": bool(
+            effective_mpp_x is not None
+            and effective_mpp_y is not None
+        ),
+        "calibrationNativeAvailable": bool(native_has_mpp),
+        "calibrationNativeObjectiveAvailable": bool(
+            native_objective is not None
+        ),
+        "calibrationOverrideApplied": True,
+        "calibrationMppOverrideApplied": bool(mpp_applied),
+        "calibrationObjectiveOverrideApplied": bool(objective_applied),
+    }
+
 
 @app.get("/api/images/{image_id}/display-config")
 def get_image_display_config(image_id: str) -> dict[str, Any]:
@@ -4920,6 +5231,9 @@ def _il1_mask_to_geometry(
     mask: np.ndarray,
     scale_x: float,
     scale_y: float,
+    *,
+    max_contours: int | None = 20_000,
+    fragmentation_detail: str | None = None,
 ) -> Any:
     """
     IL5.1: convert the thumbnail mask directly to vector contours instead
@@ -4941,12 +5255,18 @@ def _il1_mask_to_geometry(
     if hierarchy is None or not contours:
         return GeometryCollection()
 
-    if len(contours) > 20000:
+    if (
+        max_contours is not None
+        and len(contours) > int(max_contours)
+    ):
         raise HTTPException(
             status_code=422,
             detail=(
-                "Suggestions are too fragmented at this sensitivity. "
-                "Increase smoothing or lower sensitivity."
+                fragmentation_detail
+                or (
+                    "Suggestions are too fragmented at this sensitivity. "
+                    "Increase smoothing or lower sensitivity."
+                )
             ),
         )
 
@@ -15852,6 +16172,14 @@ def analyze_hdab_v2_preview(
                 positive_mask,
                 1.0,
                 1.0,
+                max_contours=250_000,
+                fragmentation_detail=(
+                    "H-DAB Positive mask is too fragmented to vectorize "
+                    "safely at native resolution. The mask exceeded "
+                    "250,000 contours in one tile. Increase Gaussian "
+                    "smoothing or enable a minimum Positive-object area "
+                    "filter."
+                ),
             )
 
             if (
@@ -16170,7 +16498,11 @@ def analyze_hdab_v2_preview(
             "vectorizedTiles":
                 int(vectorized_tiles),
             "vectorization":
-                "native-mask-contours-spatial-pack-v2",
+                "native-mask-contours-spatial-pack-v3",
+            "maximumContoursPerTile":
+                250_000,
+            "interactiveLearningContourLimitApplied":
+                False,
         },
         "detections": detections,
         "stains": {
@@ -16499,6 +16831,13 @@ def analyze_hdab_live_preview(
             positive_mask,
             1.0,
             1.0,
+            max_contours=250_000,
+            fragmentation_detail=(
+                "H-DAB live-preview mask is too fragmented to vectorize "
+                "safely. The preview exceeded 250,000 contours. Increase "
+                "Gaussian smoothing or enable a minimum Positive-object "
+                "area filter."
+            ),
         )
         if final_positive_pixels > 0
         else GeometryCollection()

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-F2.4.1";
+  const VERSION = "1.4.0-dev-F2.5.4.4";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -216,6 +216,26 @@
     phaseF241CancelRunButton: document.getElementById("phaseF241CancelRunButton"),
     phaseF241ProtocolRunStatus: document.getElementById("phaseF241ProtocolRunStatus"),
     phaseF241ProtocolRunMessage: document.getElementById("phaseF241ProtocolRunMessage"),
+    phaseF25OpenBatchButton: document.getElementById("phaseF25OpenBatchButton"),
+    phaseF25BatchModal: document.getElementById("phaseF25BatchModal"),
+    phaseF25BatchProtocolSummary: document.getElementById("phaseF25BatchProtocolSummary"),
+    phaseF252BaseConfigSummary: document.getElementById("phaseF252BaseConfigSummary"),
+    phaseF252UseBaseImageType: document.getElementById("phaseF252UseBaseImageType"),
+    phaseF252UseBaseCalibration: document.getElementById("phaseF252UseBaseCalibration"),
+    phaseF25SourceAnnotationFile: document.getElementById("phaseF25SourceAnnotationFile"),
+    phaseF25TargetAnnotationFile: document.getElementById("phaseF25TargetAnnotationFile"),
+    phaseF25SelectAllButton: document.getElementById("phaseF25SelectAllButton"),
+    phaseF25SelectNoneButton: document.getElementById("phaseF25SelectNoneButton"),
+    phaseF25ImageList: document.getElementById("phaseF25ImageList"),
+    phaseF25ContinueOnError: document.getElementById("phaseF25ContinueOnError"),
+    phaseF25BatchProgress: document.getElementById("phaseF25BatchProgress"),
+    phaseF25BatchProgressMessage: document.getElementById("phaseF25BatchProgressMessage"),
+    phaseF25BatchResults: document.getElementById("phaseF25BatchResults"),
+    phaseF25RunBatchButton: document.getElementById("phaseF25RunBatchButton"),
+    phaseF25CancelBatchButton: document.getElementById("phaseF25CancelBatchButton"),
+    phaseF25ExportBatchCsvButton: document.getElementById("phaseF25ExportBatchCsvButton"),
+    phaseF25BackButton: document.getElementById("phaseF25BackButton"),
+    phaseF25CloseButton: document.getElementById("phaseF25CloseButton"),
     phaseF24ExportButton: document.getElementById("phaseF24ExportButton"),
     phaseF24ImportButton: document.getElementById("phaseF24ImportButton"),
     phaseF24ImportInput: document.getElementById("phaseF24ImportInput"),
@@ -4302,7 +4322,7 @@
 
           // F1.10: packed Anthracosis may contain thousands of polygon rings.
           // Local-first persistence already happened before this queued sync.
-          timeoutMs: 120000,
+          timeoutMs: 5 * 60 * 1000,
         }
       );
       const result = await response.json();
@@ -17677,6 +17697,7 @@ if (!geometry) {
         els.phaseF24SaveVersionButton,
         els.phaseF24ApplyButton,
         els.phaseF241RunProtocolButton,
+        els.phaseF25OpenBatchButton,
         els.phaseF24ExportButton,
         els.phaseF24DeleteButton,
       ]
@@ -18869,6 +18890,2624 @@ if (!geometry) {
     phaseF241SetRunMessage(
       "Cancellation requested · the current detector will finish, then the protocol will stop.",
       "local"
+    );
+  }
+
+  // ========================================================================
+  // Phase F2.5 — Batch Analysis
+  // ========================================================================
+
+  let phaseF25BatchBusy =
+    false;
+
+  let phaseF25CancelAfterCurrent =
+    false;
+
+  let phaseF25BatchResults =
+    [];
+
+  let phaseF25BatchProtocol =
+    null;
+
+  // Phase F2.5.2 — configuration captured from the image that was open when
+  // Batch analysis was launched.
+  let phaseF252BaseImageConfiguration =
+    null;
+
+  function phaseF252PositiveNumber(
+    value
+  ) {
+    const number =
+      Number(
+        value
+      );
+
+    return (
+      Number.isFinite(number)
+      && number > 0
+    )
+      ? number
+      : null;
+  }
+
+  // Phase F2.5.4 — Batch uses the same effective calibration as
+  // the viewer and statistics. Manual calibration lives in localStorage,
+  // so reading currentInfo alone is insufficient.
+  function phaseF254CurrentEffectiveCalibrationFields() {
+    const manual =
+      typeof readManualCalibration === "function"
+        ? readManualCalibration()
+        : null;
+
+    const manualMpp =
+      phaseF252PositiveNumber(
+        manual?.mpp
+      );
+
+    const manualObjective =
+      phaseF252PositiveNumber(
+        manual?.objective
+      );
+
+    const metadataMppX =
+      phaseF252PositiveNumber(
+        currentInfo?.mppX
+      );
+
+    const metadataMppY =
+      phaseF252PositiveNumber(
+        currentInfo?.mppY
+      );
+
+    const metadataObjective =
+      phaseF252PositiveNumber(
+        currentInfo?.objectivePower
+      );
+
+    let mppX =
+      metadataMppX;
+
+    let mppY =
+      metadataMppY;
+
+    if (manualMpp) {
+      mppX =
+        manualMpp;
+
+      mppY =
+        manualMpp;
+    } else if (
+      mppX
+      && !mppY
+    ) {
+      mppY =
+        mppX;
+    } else if (
+      mppY
+      && !mppX
+    ) {
+      mppX =
+        mppY;
+    }
+
+    const objectivePower =
+      manualObjective
+      || metadataObjective
+      || null;
+
+    const hasMpp =
+      Boolean(
+        mppX
+        && mppY
+      );
+
+    const hasObjective =
+      Boolean(
+        objectivePower
+      );
+
+    const manualMppActive =
+      Boolean(
+        manualMpp
+      );
+
+    const manualObjectiveActive =
+      Boolean(
+        manualObjective
+      );
+
+    const metadataSource =
+      String(
+        currentInfo?.calibrationSource
+        || ""
+      );
+
+    const mppSource =
+      manualMppActive
+        ? "Manual override"
+        : (
+            hasMpp
+              ? (
+                  metadataSource
+                  || "Image metadata"
+                )
+              : ""
+          );
+
+    const objectiveSource =
+      manualObjectiveActive
+        ? "Manual override"
+        : (
+            metadataObjective
+              ? (
+                  metadataSource
+                  || "Image metadata"
+                )
+              : ""
+          );
+
+    const sourceParts =
+      Array.from(
+        new Set(
+          [
+            mppSource,
+            objectiveSource,
+          ].filter(Boolean)
+        )
+      );
+
+    return {
+      mppX,
+      mppY,
+      objectivePower,
+      hasMpp,
+      hasObjective,
+      hasAnyCalibrationValue:
+        Boolean(
+          hasMpp
+          || hasObjective
+        ),
+      calibrationAvailable:
+        hasMpp,
+      manualActive:
+        Boolean(
+          manualMppActive
+          || manualObjectiveActive
+        ),
+      manualMppActive,
+      manualObjectiveActive,
+      calibrationSource:
+        sourceParts.join("; "),
+      mppSource,
+      objectiveSource,
+    };
+  }
+
+  function phaseF252CaptureBaseImageConfiguration() {
+    if (
+      !currentImage
+      || !currentInfo
+    ) {
+      return null;
+    }
+
+    const effective =
+      phaseF254CurrentEffectiveCalibrationFields();
+
+    return {
+      imageId:
+        String(
+          currentImage.id
+          || ""
+        ),
+      imageName:
+        String(
+          currentImage.relativePath
+          || currentImage.name
+          || currentImage.id
+          || ""
+        ),
+      imageType:
+        String(
+          imageType
+          || ""
+        ).toLowerCase(),
+      mppX:
+        effective.mppX,
+      mppY:
+        effective.mppY,
+      objectivePower:
+        effective.objectivePower,
+      calibrationAvailable:
+        effective.calibrationAvailable,
+      hasMpp:
+        effective.hasMpp,
+      hasObjective:
+        effective.hasObjective,
+      hasAnyCalibrationValue:
+        effective.hasAnyCalibrationValue,
+      manualActive:
+        effective.manualActive,
+      manualMppActive:
+        effective.manualMppActive,
+      manualObjectiveActive:
+        effective.manualObjectiveActive,
+      calibrationSource:
+        effective.calibrationSource,
+      mppSource:
+        effective.mppSource,
+      objectiveSource:
+        effective.objectiveSource,
+      calibrationNativeAvailable:
+        currentInfo.calibrationNativeAvailable
+        !== undefined
+          ? Boolean(
+              currentInfo.calibrationNativeAvailable
+            )
+          : Boolean(
+              currentInfo.calibrationAvailable
+            ),
+    };
+  }
+
+  function phaseF252RenderBaseConfiguration() {
+    if (!els.phaseF252BaseConfigSummary) {
+      return;
+    }
+
+    const base =
+      phaseF252BaseImageConfiguration;
+
+    if (!base) {
+      els.phaseF252BaseConfigSummary.innerHTML = `
+        <strong>Base image configuration</strong>
+        <span>No image was open when Batch analysis started.</span>
+      `;
+
+      if (els.phaseF252UseBaseImageType) {
+        els.phaseF252UseBaseImageType.checked =
+          false;
+
+        els.phaseF252UseBaseImageType.disabled =
+          true;
+      }
+
+      if (els.phaseF252UseBaseCalibration) {
+        els.phaseF252UseBaseCalibration.checked =
+          false;
+
+        els.phaseF252UseBaseCalibration.disabled =
+          true;
+      }
+
+      return;
+    }
+
+    const mppText =
+      base.hasMpp
+        ? (
+            `${formatStatNumber(base.mppX, 4)} × `
+            + `${formatStatNumber(base.mppY, 4)} µm/px`
+          )
+        : "MPP missing";
+
+    const objectiveText =
+      base.hasObjective
+        ? `${formatStatNumber(base.objectivePower, 2)}x`
+        : "objective missing";
+
+    const sourceText =
+      base.calibrationSource
+        ? ` · ${base.calibrationSource}`
+        : "";
+
+    els.phaseF252BaseConfigSummary.innerHTML = `
+      <strong>Base image configuration</strong>
+      <span>${escapeHtml(base.imageName)}</span>
+      <span>
+        Type:
+        <strong>${escapeHtml(String(base.imageType || "unknown").toUpperCase())}</strong>
+        · ${escapeHtml(mppText)}
+        · ${escapeHtml(objectiveText)}
+        ${escapeHtml(sourceText)}
+      </span>
+    `;
+
+    if (els.phaseF252UseBaseImageType) {
+      els.phaseF252UseBaseImageType.disabled =
+        !base.imageType;
+
+      els.phaseF252UseBaseImageType.checked =
+        Boolean(
+          base.imageType
+        );
+    }
+
+    if (els.phaseF252UseBaseCalibration) {
+      els.phaseF252UseBaseCalibration.disabled =
+        !base.hasAnyCalibrationValue;
+
+      els.phaseF252UseBaseCalibration.checked =
+        Boolean(
+          base.hasAnyCalibrationValue
+        );
+    }
+  }
+
+  async function phaseF252PersistImageType(
+    nextType
+  ) {
+    const normalized =
+      String(
+        nextType
+        || ""
+      ).toLowerCase();
+
+    if (
+      !["he", "hdab", "fluorescence", "rgb"]
+        .includes(
+          normalized
+        )
+    ) {
+      throw new Error(
+        `Unsupported base image type "${nextType}"`
+      );
+    }
+
+    const response =
+      await apiFetch(
+        `${API}/images/${currentImage.id}/display-config`,
+        {
+          method:
+            "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body:
+            JSON.stringify({
+              imageType:
+                normalized,
+            }),
+          timeoutMs:
+            30000,
+        }
+      );
+
+    if (!response.ok) {
+      let detail =
+        `HTTP ${response.status}`;
+
+      try {
+        const payload =
+          await response.json();
+
+        detail =
+          payload.detail
+          || detail;
+      } catch (_) {
+        // Keep status text.
+      }
+
+      throw new Error(
+        `Could not persist image type: ${detail}`
+      );
+    }
+
+    // Phase F2.5.4.3: verify the persisted server value before
+    // starting the H-DAB protocol.
+    const verifyResponse =
+      await apiFetch(
+        `${API}/images/${currentImage.id}/display-config`,
+        {
+          timeoutMs:
+            30000,
+        }
+      );
+
+    let verifyPayload =
+      null;
+
+    try {
+      verifyPayload =
+        await verifyResponse.json();
+    } catch (_) {
+      verifyPayload =
+        null;
+    }
+
+    const persistedType =
+      String(
+        verifyPayload?.imageType
+        || ""
+      ).trim().toLowerCase();
+
+    if (
+      !verifyResponse.ok
+      || persistedType !== normalized
+    ) {
+      throw new Error(
+        (
+          `Image type persistence verification failed: `
+          + `requested "${normalized}", server returned `
+          + `"${persistedType || "unknown"}"`
+        )
+      );
+    }
+
+    imageType =
+      normalized;
+
+    if (els.imageTypeSelect) {
+      els.imageTypeSelect.value =
+        normalized;
+    }
+
+    renderChannelControls();
+    saveDisplaySettings();
+
+    const cached =
+      await getMeta(
+        `image:${currentImage.id}`
+      );
+
+    if (
+      cached
+      && typeof cached === "object"
+    ) {
+      cached.imageType =
+        normalized;
+
+      await putMeta(
+        `image:${currentImage.id}`,
+        cached
+      );
+    }
+  }
+
+  async function phaseF252PersistCalibrationFromBase(
+    base,
+    {
+      inheritMpp = false,
+      inheritObjective = false,
+    } = {}
+  ) {
+    const requestPayload = {
+      sourceImageId:
+        base.imageId,
+      sourceImage:
+        base.imageName,
+    };
+
+    if (inheritMpp) {
+      requestPayload.mppX =
+        base.mppX;
+      requestPayload.mppY =
+        base.mppY;
+    }
+
+    if (inheritObjective) {
+      requestPayload.objectivePower =
+        base.objectivePower;
+    }
+
+    const response =
+      await apiFetch(
+        `${API}/images/${currentImage.id}/calibration-override`,
+        {
+          method:
+            "PUT",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body:
+            JSON.stringify(
+              requestPayload
+            ),
+          timeoutMs:
+            30000,
+        }
+      );
+
+    let payload = {};
+
+    try {
+      payload =
+        await response.json();
+    } catch (_) {
+      payload = {};
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Could not inherit base calibration: ${payload.detail || `HTTP ${response.status}`}`
+      );
+    }
+
+    if (payload.applied === false) {
+      return {
+        applied:
+          false,
+        mppApplied:
+          false,
+        objectiveApplied:
+          false,
+      };
+    }
+
+    const effectiveMppX =
+      phaseF252PositiveNumber(
+        payload.mppX
+      )
+      ?? phaseF252PositiveNumber(
+        currentInfo?.mppX
+      );
+
+    const effectiveMppY =
+      phaseF252PositiveNumber(
+        payload.mppY
+      )
+      ?? phaseF252PositiveNumber(
+        currentInfo?.mppY
+      );
+
+    const effectiveObjective =
+      phaseF252PositiveNumber(
+        payload.objectivePower
+      )
+      ?? phaseF252PositiveNumber(
+        currentInfo?.objectivePower
+      );
+
+    currentInfo = {
+      ...currentInfo,
+      mppX:
+        effectiveMppX,
+      mppY:
+        effectiveMppY,
+      objectivePower:
+        effectiveObjective,
+      calibrationAvailable:
+        Boolean(
+          effectiveMppX
+          && effectiveMppY
+        ),
+      calibrationNativeAvailable:
+        payload.calibrationNativeAvailable
+        ?? currentInfo.calibrationNativeAvailable
+        ?? false,
+      calibrationNativeObjectiveAvailable:
+        payload.calibrationNativeObjectiveAvailable
+        ?? currentInfo.calibrationNativeObjectiveAvailable
+        ?? false,
+      calibrationOverrideApplied:
+        true,
+      calibrationMppOverrideApplied:
+        Boolean(
+          payload.mppApplied
+        ),
+      calibrationObjectiveOverrideApplied:
+        Boolean(
+          payload.objectiveApplied
+        ),
+      calibrationOverrideSourceImageId:
+        base.imageId,
+      calibrationOverrideSourceImage:
+        base.imageName,
+      calibrationSource:
+        String(
+          payload.source
+          || currentInfo.calibrationSource
+          || `Batch base image: ${base.imageName}`
+        ),
+    };
+
+    const cached =
+      await getMeta(
+        `image:${currentImage.id}`
+      );
+
+    if (
+      cached
+      && typeof cached === "object"
+    ) {
+      cached.info =
+        deepClone(
+          currentInfo
+        );
+
+      await putMeta(
+        `image:${currentImage.id}`,
+        cached
+      );
+    }
+
+    if (
+      typeof updateImageInfoDisplay
+      === "function"
+    ) {
+      updateImageInfoDisplay();
+    }
+
+    return {
+      applied:
+        true,
+      mppApplied:
+        Boolean(
+          payload.mppApplied
+        ),
+      objectiveApplied:
+        Boolean(
+          payload.objectiveApplied
+        ),
+    };
+  }
+
+  async function phaseF252ApplyBaseConfigurationToCurrentImage() {
+    const base =
+      phaseF252BaseImageConfiguration;
+
+    const effectiveBefore =
+      phaseF254CurrentEffectiveCalibrationFields();
+
+    const before = {
+      imageType:
+        String(
+          imageType
+          || ""
+        ).toLowerCase(),
+      calibrationAvailable:
+        effectiveBefore.calibrationAvailable,
+      calibrationNativeAvailable:
+        currentInfo?.calibrationNativeAvailable
+        !== undefined
+          ? Boolean(
+              currentInfo.calibrationNativeAvailable
+            )
+          : Boolean(
+              currentInfo?.calibrationAvailable
+            ),
+      mppX:
+        effectiveBefore.mppX,
+      mppY:
+        effectiveBefore.mppY,
+      objectivePower:
+        effectiveBefore.objectivePower,
+      calibrationSource:
+        effectiveBefore.calibrationSource,
+      mppSource:
+        effectiveBefore.mppSource,
+      objectiveSource:
+        effectiveBefore.objectiveSource,
+      manualMppActive:
+        effectiveBefore.manualMppActive,
+      manualObjectiveActive:
+        effectiveBefore.manualObjectiveActive,
+    };
+
+    let imageTypeInherited =
+      false;
+
+    let calibrationInherited =
+      false;
+
+    const protocolRequiredImageType =
+      "hdab";
+
+    if (
+      base
+      && els.phaseF252UseBaseImageType
+        ?.checked
+      && before.imageType
+        !== protocolRequiredImageType
+    ) {
+      await phaseF252PersistImageType(
+        protocolRequiredImageType
+      );
+
+      imageTypeInherited =
+        true;
+    }
+
+    if (
+      els.phaseF252UseBaseImageType
+        ?.checked
+      && String(
+        imageType
+        || ""
+      ).toLowerCase()
+        !== protocolRequiredImageType
+    ) {
+      throw new Error(
+        (
+          `Batch H-DAB preflight failed: image type is `
+          + `"${String(imageType || "unknown")}" after persistence; `
+          + `expected "hdab"`
+        )
+      );
+    }
+
+    const shouldInheritMpp =
+      Boolean(
+        base
+        && els.phaseF252UseBaseCalibration
+          ?.checked
+        && base.hasMpp
+        && !effectiveBefore.hasMpp
+      );
+
+    const shouldInheritObjective =
+      Boolean(
+        base
+        && els.phaseF252UseBaseCalibration
+          ?.checked
+        && base.hasObjective
+        && !effectiveBefore.hasObjective
+      );
+
+    let mppInherited =
+      false;
+
+    let objectiveInherited =
+      false;
+
+    if (
+      shouldInheritMpp
+      || shouldInheritObjective
+    ) {
+      const inherited =
+        await phaseF252PersistCalibrationFromBase(
+          base,
+          {
+            inheritMpp:
+              shouldInheritMpp,
+            inheritObjective:
+              shouldInheritObjective,
+          }
+        );
+
+      mppInherited =
+        Boolean(
+          inherited?.mppApplied
+        );
+
+      objectiveInherited =
+        Boolean(
+          inherited?.objectiveApplied
+        );
+
+      calibrationInherited =
+        Boolean(
+          mppInherited
+          || objectiveInherited
+        );
+    }
+
+    const effectiveAfter =
+      phaseF254CurrentEffectiveCalibrationFields();
+
+    const after = {
+      imageType:
+        String(
+          imageType
+          || ""
+        ).toLowerCase(),
+      calibrationAvailable:
+        effectiveAfter.calibrationAvailable,
+      calibrationNativeAvailable:
+        currentInfo?.calibrationNativeAvailable
+        !== undefined
+          ? Boolean(
+              currentInfo.calibrationNativeAvailable
+            )
+          : Boolean(
+              currentInfo?.calibrationAvailable
+            ),
+      mppX:
+        effectiveAfter.mppX,
+      mppY:
+        effectiveAfter.mppY,
+      objectivePower:
+        effectiveAfter.objectivePower,
+      calibrationSource:
+        effectiveAfter.calibrationSource,
+      mppSource:
+        effectiveAfter.mppSource,
+      objectiveSource:
+        effectiveAfter.objectiveSource,
+      manualMppActive:
+        effectiveAfter.manualMppActive,
+      manualObjectiveActive:
+        effectiveAfter.manualObjectiveActive,
+    };
+
+    return {
+      method:
+        "batch-base-image-effective-calibration-v2",
+      baseImageId:
+        String(
+          base?.imageId
+          || ""
+        ),
+      baseImage:
+        String(
+          base?.imageName
+          || ""
+        ),
+      baseImageType:
+        String(
+          base?.imageType
+          || ""
+        ),
+      baseMppX:
+        base?.mppX
+        ?? null,
+      baseMppY:
+        base?.mppY
+        ?? null,
+      baseObjectivePower:
+        base?.objectivePower
+        ?? null,
+      baseCalibrationSource:
+        String(
+          base?.calibrationSource
+          || ""
+        ),
+      baseManualMpp:
+        Boolean(
+          base?.manualMppActive
+        ),
+      baseManualObjective:
+        Boolean(
+          base?.manualObjectiveActive
+        ),
+      imageTypeBefore:
+        before.imageType,
+      imageTypeUsed:
+        after.imageType,
+      // Legacy field retained for compatibility.
+      // F2.5.4.3 applies the type required by the H-DAB protocol,
+      // independently of the base image type.
+      imageTypeInheritedFromBase:
+        false,
+      imageTypeAppliedForProtocol:
+        imageTypeInherited,
+      imageTypeRequiredByProtocol:
+        protocolRequiredImageType,
+      calibrationAvailableOriginal:
+        before.calibrationAvailable,
+      calibrationNativeAvailableOriginal:
+        before.calibrationNativeAvailable,
+      mppXOriginal:
+        before.mppX,
+      mppYOriginal:
+        before.mppY,
+      objectivePowerOriginal:
+        before.objectivePower,
+      calibrationSourceOriginal:
+        before.calibrationSource,
+      mppSourceOriginal:
+        before.mppSource,
+      objectiveSourceOriginal:
+        before.objectiveSource,
+      manualMppOriginal:
+        before.manualMppActive,
+      manualObjectiveOriginal:
+        before.manualObjectiveActive,
+      mppXUsed:
+        after.mppX,
+      mppYUsed:
+        after.mppY,
+      objectivePowerUsed:
+        after.objectivePower,
+      calibrationSourceUsed:
+        after.calibrationSource,
+      mppSourceUsed:
+        after.mppSource,
+      objectiveSourceUsed:
+        after.objectiveSource,
+      calibrationInheritedFromBase:
+        calibrationInherited,
+      mppInheritedFromBase:
+        mppInherited,
+      objectiveInheritedFromBase:
+        objectiveInherited,
+    };
+  }
+
+  function phaseF252AttachBatchConfiguration(
+    configuration
+  ) {
+    if (
+      !configuration
+      || !featureCollection?.features
+    ) {
+      return;
+    }
+
+    let changed =
+      false;
+
+    for (
+      const feature
+      of featureCollection.features
+    ) {
+      const histo =
+        feature?.properties
+          ?.histoannotator;
+
+      if (
+        !histo
+        || !histo.analysisProtocol
+      ) {
+        continue;
+      }
+
+      histo.batchConfiguration =
+        deepClone(
+          configuration
+        );
+
+      changed =
+        true;
+    }
+
+    if (changed) {
+      markChanged();
+    }
+  }
+
+  function phaseF25SafeAnnotationName(
+    value
+  ) {
+    const normalized =
+      String(
+        value
+        || ""
+      )
+        .normalize(
+          "NFKD"
+        )
+        .replace(
+          /[\u0300-\u036f]/g,
+          ""
+        )
+        .replace(
+          /[^A-Za-z0-9 _.-]+/g,
+          "_"
+        )
+        .replace(
+          /\s+/g,
+          " "
+        )
+        .trim()
+        .slice(
+          0,
+          80
+        );
+
+    return (
+      normalized
+      || "Batch"
+    );
+  }
+
+  function phaseF25DefaultTargetName(
+    protocol
+  ) {
+    const name =
+      phaseF25SafeAnnotationName(
+        protocol?.name
+        || "Protocol"
+      );
+
+    const protocolVersion =
+      Math.max(
+        1,
+        Number(
+          protocol?.version
+          || 1
+        )
+      );
+
+    return phaseF25SafeAnnotationName(
+      `Batch - ${name} v${protocolVersion}`
+    );
+  }
+
+  function phaseF25ServerImages() {
+    return (
+      images
+      || []
+    ).filter(
+      (image) =>
+        image
+        && image.id
+        && !image.localNative
+    );
+  }
+
+  function phaseF25SelectedImageIds() {
+    return Array.from(
+      els.phaseF25ImageList
+        ?.querySelectorAll(
+          'input[data-phase-f25-image-id]:checked'
+        )
+      || []
+    ).map(
+      (input) =>
+        String(
+          input.dataset.phaseF25ImageId
+          || ""
+        )
+    ).filter(Boolean);
+  }
+
+  function phaseF25RenderImageList() {
+    if (!els.phaseF25ImageList) {
+      return;
+    }
+
+    const candidates =
+      phaseF25ServerImages();
+
+    if (!candidates.length) {
+      els.phaseF25ImageList.innerHTML =
+        '<p class="modal-note">No server-backed images available.</p>';
+      return;
+    }
+
+    const currentId =
+      String(
+        currentImage?.id
+        || ""
+      );
+
+    els.phaseF25ImageList.innerHTML =
+      candidates
+        .map(
+          (image) => {
+            const imageId =
+              String(
+                image.id
+              );
+
+            const label =
+              String(
+                image.relativePath
+                || image.name
+                || imageId
+              );
+
+            const checked =
+              imageId === currentId
+                ? " checked"
+                : "";
+
+            return `
+              <label class="phase-d-roi-checkbox">
+                <input
+                  type="checkbox"
+                  data-phase-f25-image-id="${escapeHtml(imageId)}"
+                  ${checked}
+                >
+                <span>${escapeHtml(label)}</span>
+              </label>
+            `;
+          }
+        )
+        .join("");
+  }
+
+  function phaseF25SetAllImages(
+    checked
+  ) {
+    for (
+      const input
+      of els.phaseF25ImageList
+        ?.querySelectorAll(
+          'input[data-phase-f25-image-id]'
+        )
+      || []
+    ) {
+      input.checked =
+        Boolean(
+          checked
+        );
+    }
+  }
+
+  function phaseF25SetProgress(
+    message
+  ) {
+    if (els.phaseF25BatchProgress) {
+      els.phaseF25BatchProgress.hidden =
+        false;
+    }
+
+    if (els.phaseF25BatchProgressMessage) {
+      els.phaseF25BatchProgressMessage.textContent =
+        String(
+          message
+          || ""
+        );
+    }
+  }
+
+  function phaseF25SetBusy(
+    busy
+  ) {
+    phaseF25BatchBusy =
+      Boolean(
+        busy
+      );
+
+    if (els.phaseF25RunBatchButton) {
+      els.phaseF25RunBatchButton.disabled =
+        phaseF25BatchBusy;
+
+      els.phaseF25RunBatchButton.textContent =
+        phaseF25BatchBusy
+          ? "Running batch…"
+          : "Run batch";
+    }
+
+    if (els.phaseF25CancelBatchButton) {
+      els.phaseF25CancelBatchButton.disabled =
+        !phaseF25BatchBusy;
+    }
+
+    for (
+      const element
+      of [
+        els.phaseF25SourceAnnotationFile,
+        els.phaseF25TargetAnnotationFile,
+        els.phaseF25SelectAllButton,
+        els.phaseF25SelectNoneButton,
+        els.phaseF25ContinueOnError,
+        els.phaseF252UseBaseImageType,
+        els.phaseF252UseBaseCalibration,
+        els.phaseF25BackButton,
+      ]
+    ) {
+      if (element) {
+        element.disabled =
+          phaseF25BatchBusy;
+      }
+    }
+
+    for (
+      const input
+      of els.phaseF25ImageList
+        ?.querySelectorAll(
+          'input[data-phase-f25-image-id]'
+        )
+      || []
+    ) {
+      input.disabled =
+        phaseF25BatchBusy;
+    }
+  }
+
+  function phaseF25OpenBatch() {
+    const protocol =
+      phaseF24SelectedProtocol();
+
+    if (!protocol) {
+      setStatus(
+        "Select an analysis protocol first",
+        "error"
+      );
+      return;
+    }
+
+    phaseF25BatchProtocol =
+      deepClone(
+        protocol
+      );
+
+    phaseF252BaseImageConfiguration =
+      phaseF252CaptureBaseImageConfiguration();
+
+    phaseF252RenderBaseConfiguration();
+
+    phaseF25BatchResults =
+      [];
+
+    phaseF25CancelAfterCurrent =
+      false;
+
+    if (els.phaseF25BatchProtocolSummary) {
+      els.phaseF25BatchProtocolSummary.innerHTML = `
+        <span>
+          Protocol:
+          <strong>${escapeHtml(protocol.name || "")} v${Number(protocol.version || 1)}</strong>
+        </span>
+        <span>
+          ${escapeHtml(protocol.hash || "")}
+        </span>
+      `;
+    }
+
+    if (els.phaseF25SourceAnnotationFile) {
+      els.phaseF25SourceAnnotationFile.value =
+        "Default";
+    }
+
+    if (els.phaseF25TargetAnnotationFile) {
+      els.phaseF25TargetAnnotationFile.value =
+        phaseF25DefaultTargetName(
+          protocol
+        );
+    }
+
+    if (els.phaseF25ContinueOnError) {
+      els.phaseF25ContinueOnError.checked =
+        true;
+    }
+
+    if (els.phaseF25BatchProgress) {
+      els.phaseF25BatchProgress.hidden =
+        true;
+    }
+
+    if (els.phaseF25BatchResults) {
+      els.phaseF25BatchResults.hidden =
+        true;
+
+      els.phaseF25BatchResults.innerHTML =
+        "";
+    }
+
+    if (els.phaseF25ExportBatchCsvButton) {
+      els.phaseF25ExportBatchCsvButton.disabled =
+        true;
+    }
+
+    phaseF25RenderImageList();
+
+    if (els.phaseF24AnalysisProtocolsModal) {
+      els.phaseF24AnalysisProtocolsModal.hidden =
+        true;
+    }
+
+    if (els.phaseF25BatchModal) {
+      els.phaseF25BatchModal.hidden =
+        false;
+    }
+  }
+
+  function phaseF25BackToProtocols() {
+    if (phaseF25BatchBusy) {
+      setStatus(
+        "Wait for the current batch image to finish",
+        "error"
+      );
+      return;
+    }
+
+    if (els.phaseF25BatchModal) {
+      els.phaseF25BatchModal.hidden =
+        true;
+    }
+
+    if (els.phaseF24AnalysisProtocolsModal) {
+      els.phaseF24AnalysisProtocolsModal.hidden =
+        false;
+    }
+  }
+
+  function phaseF25CloseBatch() {
+    if (phaseF25BatchBusy) {
+      setStatus(
+        "Use Cancel after current image before closing the batch",
+        "error"
+      );
+      return;
+    }
+
+    if (els.phaseF25BatchModal) {
+      els.phaseF25BatchModal.hidden =
+        true;
+    }
+  }
+
+  async function phaseF25WaitForImageReady(
+    imageId,
+    timeoutMs = 60000
+  ) {
+    const expectedId =
+      String(
+        imageId
+      );
+
+    const started =
+      Date.now();
+
+    while (
+      Date.now()
+      - started
+      < timeoutMs
+    ) {
+      if (
+        currentImage
+        && String(currentImage.id)
+          === expectedId
+        && currentInfo
+      ) {
+        const count =
+          Number(
+            viewer?.world
+              ?.getItemCount
+              ?.()
+            || 0
+          );
+
+        if (count > 0) {
+          return;
+        }
+      }
+
+      await phaseF241Sleep(
+        100
+      );
+    }
+
+    throw new Error(
+      "Timed out waiting for the image viewer to become ready"
+    );
+  }
+
+  function phaseF25SourceCloneForBatch(
+    sourceCollection
+  ) {
+    const source =
+      normalizeFeatureCollectionClient(
+        sourceCollection
+      );
+
+    const kept =
+      [];
+
+    let removedRoi =
+      0;
+
+    let removedAnthracosis =
+      0;
+
+    let removedAutoPositive =
+      0;
+
+    for (
+      const feature
+      of source.features || []
+    ) {
+      const props =
+        feature?.properties
+        || {};
+
+      const histo =
+        props.histoannotator
+        || {};
+
+      const classification =
+        String(
+          props.classification?.name
+          || ""
+        )
+          .trim()
+          .toLowerCase();
+
+      const role =
+        String(
+          histo.role
+          || props.role
+          || ""
+        )
+          .trim()
+          .toLowerCase();
+
+      const autoDetection =
+        histo.autoDetection
+        || props.autoDetection
+        || {};
+
+      const autoType =
+        String(
+          autoDetection.type
+          || ""
+        )
+          .trim()
+          .toLowerCase();
+
+      const autoMethod =
+        String(
+          autoDetection.method
+          || ""
+        )
+          .trim()
+          .toLowerCase();
+
+      const isRoi =
+        role === "roi"
+        || role === "tissue-roi"
+        || role === "tissue_roi"
+        || Boolean(
+          histo.roi
+        );
+
+      if (isRoi) {
+        removedRoi += 1;
+        continue;
+      }
+
+      if (
+        classification
+        === "anthracosis"
+      ) {
+        removedAnthracosis += 1;
+        continue;
+      }
+
+      const isAutomaticHdabPositive =
+        classification === "positive"
+        && (
+          autoType === "hdab-positive"
+          || autoMethod.startsWith(
+            "quantitative-hdab-native-v"
+          )
+        );
+
+      if (
+        isAutomaticHdabPositive
+      ) {
+        removedAutoPositive += 1;
+        continue;
+      }
+
+      kept.push(
+        deepClone(
+          feature
+        )
+      );
+    }
+
+    return {
+      collection: {
+        type:
+          "FeatureCollection",
+        features:
+          kept,
+      },
+      removed: {
+        tissueRoi:
+          removedRoi,
+        anthracosis:
+          removedAnthracosis,
+        automaticPositive:
+          removedAutoPositive,
+      },
+    };
+  }
+
+  async function phaseF25PrepareResultFile(
+    sourceName,
+    targetName
+  ) {
+    const actualSource =
+      annotationFiles.find(
+        (name) =>
+          String(name)
+            .toLowerCase()
+          === String(sourceName)
+            .toLowerCase()
+      );
+
+    if (!actualSource) {
+      throw new Error(
+        `Source annotation file "${sourceName}" does not exist for this image`
+      );
+    }
+
+    await loadSelectedAnnotationFile(
+      actualSource
+    );
+
+    const prepared =
+      phaseF25SourceCloneForBatch(
+        featureCollection
+      );
+
+    if (
+      !annotationFiles.includes(
+        targetName
+      )
+    ) {
+      annotationFiles.push(
+        targetName
+      );
+    }
+
+    await putMeta(
+      `files:${currentImage.id}`,
+      annotationFiles
+    );
+
+    await loadSelectedAnnotationFile(
+      targetName
+    );
+
+    featureCollection =
+      normalizeFeatureCollectionClient(
+        prepared.collection
+      );
+
+    featureCollection.features
+      .forEach(
+        featureId
+      );
+
+    clearSelectedFeatures(
+      false
+    );
+
+    undoStack =
+      [];
+
+    redoStack =
+      [];
+
+    pathologistDraft =
+      null;
+
+    activeDraft =
+      null;
+
+    pointerState =
+      null;
+
+    markChanged();
+
+    drawAnnotations();
+    updateControls();
+    updateDiagnostics();
+
+    await phaseF25SaveCurrentStrict();
+
+    return prepared.removed;
+  }
+
+  async function phaseF25SaveCurrentStrict() {
+    if (!currentImage) {
+      throw new Error(
+        "No active image to save"
+      );
+    }
+
+    const imageId =
+      String(
+        currentImage.id
+      );
+
+    const annotationFile =
+      String(
+        currentAnnotationFile
+      );
+
+    if (dirty) {
+      await saveAnnotations(
+        false
+      );
+    }
+
+    let record =
+      await getLocalDraft(
+        imageId,
+        annotationFile
+      );
+
+    if (
+      record?.pending
+    ) {
+      await syncAllPendingDrafts(
+        false
+      );
+
+      record =
+        await getLocalDraft(
+          imageId,
+          annotationFile
+        );
+    }
+
+    if (
+      record?.pending
+    ) {
+      throw new Error(
+        `Annotation file "${annotationFile}" remains pending and was not confirmed on the server`
+      );
+    }
+  }
+
+  async function phaseF25RunProtocolOnCurrentImage(
+    protocol
+  ) {
+    if (
+      !phaseF241ProtocolCanRun(
+        protocol
+      )
+    ) {
+      throw new Error(
+        "Current image is not compatible with the selected H-DAB protocol"
+      );
+    }
+
+    if (els.phaseF24ProtocolSelect) {
+      els.phaseF24ProtocolSelect.value =
+        String(
+          protocol.id
+          || ""
+        );
+    }
+
+    phaseF24SetActiveProtocolId(
+      protocol.id
+    );
+
+    phaseF241CancelRequested =
+      false;
+
+    phaseF24ApplyProtocol();
+
+    await phaseF241RunTissueRoiStage();
+
+    await phaseF241RunAnthracosisStage();
+
+    await phaseF241RunHdabStage();
+  }
+
+  async function phaseF25CollectCurrentStatistics() {
+    const response =
+      await apiFetch(
+        `${API}/geojson/statistics`,
+        {
+          method:
+            "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body:
+            JSON.stringify({
+              featureCollection,
+              imageWidth:
+                Number(
+                  currentInfo?.width
+                  || 0
+                ),
+              imageHeight:
+                Number(
+                  currentInfo?.height
+                  || 0
+                ),
+            }),
+          timeoutMs:
+            5 * 60 * 1000,
+        }
+      );
+
+    const stats =
+      await response.json();
+
+    const calibration =
+      phaseEPhysicalPixelAreaMm2();
+
+    const positiveRow =
+      (
+        stats.rows
+        || []
+      ).find(
+        (row) =>
+          String(
+            row.className
+            || ""
+          )
+            .toLowerCase()
+          === "positive"
+      )
+      || null;
+
+    const validAreaPx2 =
+      Number(
+        stats.validAreaPx2
+        || stats.analysis?.validAreaPx2
+        || 0
+      );
+
+    const positiveAreaPx2 =
+      Number(
+        positiveRow?.areaPx2
+        || 0
+      );
+
+    const positivePercent =
+      Number(
+        positiveRow?.percentValid
+        || 0
+      );
+
+    const artifactAreaPx2 =
+      Number(
+        stats.analysis?.artifactAreaPx2
+        || 0
+      );
+
+    const positiveByClass =
+      Array.isArray(
+        stats.positiveByClass?.rows
+      )
+        ? stats.positiveByClass.rows
+        : [];
+
+    return {
+      validAreaPx2,
+      validAreaMm2:
+        phaseEAreaMm2(
+          validAreaPx2,
+          calibration
+        ),
+      positiveAreaPx2,
+      positiveAreaMm2:
+        phaseEAreaMm2(
+          positiveAreaPx2,
+          calibration
+        ),
+      positivePercent,
+      artifactAreaPx2,
+      artifactAreaMm2:
+        phaseEAreaMm2(
+          artifactAreaPx2,
+          calibration
+        ),
+      calibration:
+        calibration
+          ? deepClone(
+              calibration
+            )
+          : null,
+      positiveByClass:
+        deepClone(
+          positiveByClass
+        ),
+    };
+  }
+
+  function phaseF25FormatAreaMm2(
+    value
+  ) {
+    const number =
+      Number(
+        value
+      );
+
+    if (
+      !Number.isFinite(
+        number
+      )
+    ) {
+      return "—";
+    }
+
+    return number.toFixed(
+      4
+    );
+  }
+
+  function phaseF25RenderResults() {
+    if (!els.phaseF25BatchResults) {
+      return;
+    }
+
+    if (
+      !phaseF25BatchResults.length
+    ) {
+      els.phaseF25BatchResults.hidden =
+        true;
+
+      els.phaseF25BatchResults.innerHTML =
+        "";
+
+      return;
+    }
+
+    const rows =
+      phaseF25BatchResults
+        .map(
+          (result) => {
+            const status =
+              result.status
+              === "complete"
+                ? "Complete"
+                : (
+                    result.status
+                    === "cancelled"
+                      ? "Cancelled"
+                      : (
+                          result.status
+                          === "running"
+                            ? "Running"
+                            : "Error"
+                        )
+                  );
+
+            const classSummary =
+              result.statistics
+                ?.positiveByClass
+                ?.map(
+                  (row) =>
+                    `${escapeHtml(row.className || "")}: ${formatStatNumber(Number(row.positivePercentOfClass || 0), 2)}%`
+                )
+                .join(
+                  " · "
+                )
+              || "—";
+
+            return `
+              <tr>
+                <td>${escapeHtml(result.imageName || result.imageId || "")}</td>
+                <td>${escapeHtml(status)}</td>
+                <td>${phaseF25FormatAreaMm2(result.statistics?.validAreaMm2)}</td>
+                <td>${
+                  result.statistics
+                    ? `${formatStatNumber(Number(result.statistics.positivePercent || 0), 2)}%`
+                    : "—"
+                }</td>
+                <td>${classSummary}</td>
+                <td>${escapeHtml(result.error || "")}</td>
+              </tr>
+            `;
+          }
+        )
+        .join("");
+
+    els.phaseF25BatchResults.hidden =
+      false;
+
+    els.phaseF25BatchResults.innerHTML = `
+      <table class="stats-table">
+        <thead>
+          <tr>
+            <th>Image</th>
+            <th>Status</th>
+            <th>Valid tissue (mm²)</th>
+            <th>Positive</th>
+            <th>Positive by class</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+
+    if (els.phaseF25ExportBatchCsvButton) {
+      els.phaseF25ExportBatchCsvButton.disabled =
+        !phaseF25BatchResults.length;
+    }
+  }
+
+  function phaseF25BatchCsv() {
+    const classes =
+      Array.from(
+        new Set(
+          phaseF25BatchResults.flatMap(
+            (result) =>
+              (
+                result.statistics
+                  ?.positiveByClass
+                || []
+              ).map(
+                (row) =>
+                  String(
+                    row.className
+                    || ""
+                  )
+              )
+          )
+        )
+      )
+        .filter(Boolean)
+        .sort(
+          (left, right) =>
+            left.localeCompare(
+              right,
+              undefined,
+              {
+                sensitivity:
+                  "base",
+              }
+            )
+        );
+
+    const header = [
+      "Image",
+      "ImageId",
+      "Status",
+      "Error",
+      "SourceAnnotationFile",
+      "ResultAnnotationFile",
+      "ProtocolName",
+      "ProtocolVersion",
+      "ProtocolHash",
+      "BaseImage",
+      "BaseCalibrationSource",
+      "BaseManualMpp",
+      "BaseManualObjective",
+      "ImageTypeBefore",
+      "ImageTypeUsed",
+      "ImageTypeInheritedFromBase",
+      "CalibrationAvailableOriginal",
+      "CalibrationNativeAvailableOriginal",
+      "ManualMppOriginal",
+      "ManualObjectiveOriginal",
+      "MppSourceOriginal",
+      "ObjectiveSourceOriginal",
+      "MppXOriginal",
+      "MppYOriginal",
+      "ObjectivePowerOriginal",
+      "MppXUsed",
+      "MppYUsed",
+      "ObjectivePowerUsed",
+      "MppSourceUsed",
+      "ObjectiveSourceUsed",
+      "CalibrationInheritedFromBase",
+      "MppInheritedFromBase",
+      "ObjectiveInheritedFromBase",
+      "CalibrationSourceUsed",
+      "Calibration",
+      "ValidTissuePx2",
+      "ValidTissueMm2",
+      "PositiveAreaPx2",
+      "PositiveAreaMm2",
+      "PositivePercentValidTissue",
+      "ArtifactAreaPx2",
+      "ArtifactAreaMm2",
+    ];
+
+    for (
+      const className
+      of classes
+    ) {
+      header.push(
+        `${className}_EffectiveAreaPx2`,
+        `${className}_EffectiveAreaMm2`,
+        `${className}_PositiveAreaPx2`,
+        `${className}_PositiveAreaMm2`,
+        `${className}_PositivePercent`
+      );
+    }
+
+    const rows = [
+      header,
+    ];
+
+    for (
+      const result
+      of phaseF25BatchResults
+    ) {
+      const stats =
+        result.statistics
+        || {};
+
+      const calibration =
+        stats.calibration
+        || null;
+
+      const byClass =
+        new Map(
+          (
+            stats.positiveByClass
+            || []
+          ).map(
+            (row) => [
+              String(
+                row.className
+                || ""
+              ),
+              row,
+            ]
+          )
+        );
+
+      const row = [
+        result.imageName
+          || "",
+        result.imageId
+          || "",
+        result.status
+          || "",
+        result.error
+          || "",
+        result.sourceAnnotationFile
+          || "",
+        result.targetAnnotationFile
+          || "",
+        result.protocolName
+          || "",
+        result.protocolVersion
+          || "",
+        result.protocolHash
+          || "",
+        result.baseConfiguration?.baseImage
+          || "",
+        result.baseConfiguration?.baseCalibrationSource
+          || "",
+        result.baseConfiguration?.baseManualMpp
+          ?? "",
+        result.baseConfiguration?.baseManualObjective
+          ?? "",
+        result.baseConfiguration?.imageTypeBefore
+          || "",
+        result.baseConfiguration?.imageTypeUsed
+          || "",
+        result.baseConfiguration
+          ?.imageTypeInheritedFromBase
+          ?? "",
+        result.baseConfiguration
+          ?.calibrationAvailableOriginal
+          ?? "",
+        result.baseConfiguration
+          ?.calibrationNativeAvailableOriginal
+          ?? "",
+        result.baseConfiguration?.manualMppOriginal
+          ?? "",
+        result.baseConfiguration?.manualObjectiveOriginal
+          ?? "",
+        result.baseConfiguration?.mppSourceOriginal
+          || "",
+        result.baseConfiguration?.objectiveSourceOriginal
+          || "",
+        result.baseConfiguration?.mppXOriginal
+          ?? "",
+        result.baseConfiguration?.mppYOriginal
+          ?? "",
+        result.baseConfiguration?.objectivePowerOriginal
+          ?? "",
+        result.baseConfiguration?.mppXUsed
+          ?? "",
+        result.baseConfiguration?.mppYUsed
+          ?? "",
+        result.baseConfiguration?.objectivePowerUsed
+          ?? "",
+        result.baseConfiguration?.mppSourceUsed
+          || "",
+        result.baseConfiguration?.objectiveSourceUsed
+          || "",
+        result.baseConfiguration
+          ?.calibrationInheritedFromBase
+          ?? "",
+        result.baseConfiguration
+          ?.mppInheritedFromBase
+          ?? "",
+        result.baseConfiguration
+          ?.objectiveInheritedFromBase
+          ?? "",
+        result.baseConfiguration?.calibrationSourceUsed
+          || "",
+        calibration?.label
+          || "",
+        stats.validAreaPx2
+          ?? "",
+        stats.validAreaMm2
+          ?? "",
+        stats.positiveAreaPx2
+          ?? "",
+        stats.positiveAreaMm2
+          ?? "",
+        stats.positivePercent
+          ?? "",
+        stats.artifactAreaPx2
+          ?? "",
+        stats.artifactAreaMm2
+          ?? "",
+      ];
+
+      for (
+        const className
+        of classes
+      ) {
+        const classRow =
+          byClass.get(
+            className
+          );
+
+        const classAreaPx2 =
+          Number(
+            classRow?.classAreaPx2
+            || 0
+          );
+
+        const positiveAreaPx2 =
+          Number(
+            classRow?.positiveAreaPx2
+            || 0
+          );
+
+        row.push(
+          classRow
+            ? classAreaPx2
+            : "",
+          classRow
+            ? phaseEAreaMm2(
+                classAreaPx2,
+                calibration
+              )
+              ?? ""
+            : "",
+          classRow
+            ? positiveAreaPx2
+            : "",
+          classRow
+            ? phaseEAreaMm2(
+                positiveAreaPx2,
+                calibration
+              )
+              ?? ""
+            : "",
+          classRow
+            ? Number(
+                classRow.positivePercentOfClass
+                || 0
+              )
+            : ""
+        );
+      }
+
+      rows.push(
+        row
+      );
+    }
+
+    return (
+      rows
+        .map(
+          (row) =>
+            row
+              .map(
+                phaseECsvCell
+              )
+              .join(
+                ","
+              )
+        )
+        .join(
+          "\r\n"
+        )
+      + "\r\n"
+    );
+  }
+
+  function phaseF25ExportBatchCsv() {
+    if (
+      !phaseF25BatchResults.length
+    ) {
+      setStatus(
+        "No batch results to export",
+        "error"
+      );
+
+      return;
+    }
+
+    const protocol =
+      phaseF25BatchProtocol
+      || {};
+
+    const safe =
+      phaseF25SafeAnnotationName(
+        protocol.name
+        || "protocol"
+      )
+        .replace(
+          /\s+/g,
+          "_"
+        );
+
+    phaseEDownloadText(
+      `HistoAnnotator_batch_${safe}_v${Number(protocol.version || 1)}.csv`,
+      phaseF25BatchCsv()
+    );
+
+    setStatus(
+      "Batch CSV exported",
+      "saved"
+    );
+  }
+
+  async function phaseF25RunBatch() {
+    if (
+      phaseF25BatchBusy
+    ) {
+      return;
+    }
+
+    const protocol =
+      phaseF25BatchProtocol
+      || phaseF24SelectedProtocol();
+
+    if (!protocol) {
+      setStatus(
+        "Select an analysis protocol first",
+        "error"
+      );
+
+      return;
+    }
+
+    const imageIds =
+      phaseF25SelectedImageIds();
+
+    if (!imageIds.length) {
+      setStatus(
+        "Select at least one image for batch analysis",
+        "error"
+      );
+
+      return;
+    }
+
+    const sourceName =
+      String(
+        els.phaseF25SourceAnnotationFile
+          ?.value
+        || "Default"
+      ).trim();
+
+    const targetName =
+      String(
+        els.phaseF25TargetAnnotationFile
+          ?.value
+        || ""
+      ).trim();
+
+    if (
+      !/^[A-Za-z0-9 _.-]{1,80}$/.test(
+        sourceName
+      )
+      || sourceName === "."
+      || sourceName === ".."
+    ) {
+      setStatus(
+        "Invalid Source annotation file name",
+        "error"
+      );
+
+      return;
+    }
+
+    if (
+      !/^[A-Za-z0-9 _.-]{1,80}$/.test(
+        targetName
+      )
+      || targetName === "."
+      || targetName === ".."
+    ) {
+      setStatus(
+        "Invalid Batch result annotation file name",
+        "error"
+      );
+
+      return;
+    }
+
+    if (
+      sourceName.toLowerCase()
+      === targetName.toLowerCase()
+    ) {
+      setStatus(
+        "Source and Batch result annotation files must be different",
+        "error"
+      );
+
+      return;
+    }
+
+    if (
+      !API
+    ) {
+      setStatus(
+        "Batch analysis requires a configured HistoAnnotator server",
+        "error"
+      );
+
+      return;
+    }
+
+    const confirmed =
+      window.confirm(
+        `Run batch analysis on ${imageIds.length} image${imageIds.length === 1 ? "" : "s"}?\n\n`
+        + `Protocol: ${protocol.name || "Protocol"} v${Number(protocol.version || 1)}\n`
+        + `Source: ${sourceName}\n`
+        + `Results: ${targetName}\n`
+        + `Base image: ${phaseF252BaseImageConfiguration?.imageName || "none"}\n`
+        + `Use base image type: ${els.phaseF252UseBaseImageType?.checked ? "yes" : "no"}\n`
+        + `Fill missing MPP/objective from base: ${els.phaseF252UseBaseCalibration?.checked ? "yes" : "no"}\n\n`
+        + "Source annotations will not be modified. Existing result files with "
+        + "the same name will be replaced from a fresh source copy before the "
+        + "protocol is rerun."
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const continueOnError =
+      Boolean(
+        els.phaseF25ContinueOnError
+          ?.checked
+      );
+
+    phaseF25BatchResults =
+      [];
+
+    phaseF25CancelAfterCurrent =
+      false;
+
+    phaseF25SetBusy(
+      true
+    );
+
+    const total =
+      imageIds.length;
+
+    try {
+      for (
+        let index = 0;
+        index < imageIds.length;
+        index += 1
+      ) {
+        const imageId =
+          imageIds[index];
+
+        const catalogImage =
+          images.find(
+            (image) =>
+              String(image.id)
+              === String(imageId)
+          );
+
+        const imageName =
+          String(
+            catalogImage?.relativePath
+            || catalogImage?.name
+            || imageId
+          );
+
+        const result = {
+          imageId:
+            String(
+              imageId
+            ),
+          imageName,
+          status:
+            "running",
+          error:
+            "",
+          sourceAnnotationFile:
+            sourceName,
+          targetAnnotationFile:
+            targetName,
+          protocolName:
+            String(
+              protocol.name
+              || ""
+            ),
+          protocolVersion:
+            Number(
+              protocol.version
+              || 1
+            ),
+          protocolHash:
+            String(
+              protocol.hash
+              || ""
+            ),
+          baseConfiguration:
+            null,
+          statistics:
+            null,
+        };
+
+        phaseF25BatchResults.push(
+          result
+        );
+
+        phaseF25RenderResults();
+
+        phaseF25SetProgress(
+          `Image ${index + 1}/${total} · Opening ${imageName}…`
+        );
+
+        try {
+          await openImage(
+            imageId
+          );
+
+          await phaseF25WaitForImageReady(
+            imageId
+          );
+
+          phaseF25SetProgress(
+            `Image ${index + 1}/${total} · Checking image type and physical calibration…`
+          );
+
+          result.baseConfiguration =
+            await phaseF252ApplyBaseConfigurationToCurrentImage();
+
+          if (
+            imageType
+            !== "hdab"
+          ) {
+            throw new Error(
+              `Image type is "${imageType || "unknown"}", not H-DAB`
+            );
+          }
+
+          await loadAnnotationFiles(
+            imageId,
+            true
+          );
+
+          phaseF25SetProgress(
+            `Image ${index + 1}/${total} · Creating "${targetName}" from "${sourceName}"…`
+          );
+
+          result.preparedSource =
+            await phaseF25PrepareResultFile(
+              sourceName,
+              targetName
+            );
+
+          phaseF25SetProgress(
+            `Image ${index + 1}/${total} · Tissue ROI → Anthracosis → H-DAB Positive…`
+          );
+
+          await phaseF25RunProtocolOnCurrentImage(
+            protocol
+          );
+
+          phaseF252AttachBatchConfiguration(
+            result.baseConfiguration
+          );
+
+          phaseF25SetProgress(
+            `Image ${index + 1}/${total} · Saving ${targetName}…`
+          );
+
+          await phaseF25SaveCurrentStrict();
+
+          phaseF25SetProgress(
+            `Image ${index + 1}/${total} · Calculating statistics…`
+          );
+
+          result.statistics =
+            await phaseF25CollectCurrentStatistics();
+
+          result.status =
+            "complete";
+
+          result.error =
+            "";
+        } catch (error) {
+          result.status =
+            "error";
+
+          result.error =
+            String(
+              error?.message
+              || error
+            );
+
+          try {
+            if (
+              currentImage
+              && String(currentImage.id)
+                === String(imageId)
+              && String(currentAnnotationFile)
+                === targetName
+              && dirty
+            ) {
+              await phaseF25SaveCurrentStrict();
+            }
+          } catch (saveError) {
+            result.error +=
+              ` · partial result save failed: ${saveError.message || String(saveError)}`;
+          }
+
+          if (
+            !continueOnError
+          ) {
+            phaseF25RenderResults();
+            break;
+          }
+        }
+
+        phaseF25RenderResults();
+
+        if (
+          phaseF25CancelAfterCurrent
+        ) {
+          phaseF25SetProgress(
+            `Batch stopped after ${index + 1}/${total} image${index === 0 ? "" : "s"}.`
+          );
+
+          break;
+        }
+      }
+
+      const complete =
+        phaseF25BatchResults
+          .filter(
+            (result) =>
+              result.status
+              === "complete"
+          )
+          .length;
+
+      const failed =
+        phaseF25BatchResults
+          .filter(
+            (result) =>
+              result.status
+              === "error"
+          )
+          .length;
+
+      if (
+        phaseF25CancelAfterCurrent
+      ) {
+        phaseF25SetProgress(
+          `Batch cancelled after current image · ${complete} complete · ${failed} error${failed === 1 ? "" : "s"}.`
+        );
+      } else {
+        phaseF25SetProgress(
+          `Batch finished · ${complete} complete · ${failed} error${failed === 1 ? "" : "s"}.`
+        );
+      }
+
+      setStatus(
+        `Batch finished · ${complete} complete · ${failed} error${failed === 1 ? "" : "s"}`,
+        failed
+          ? "local"
+          : "saved"
+      );
+    } finally {
+      phaseF25CancelAfterCurrent =
+        false;
+
+      phaseF241CancelRequested =
+        false;
+
+      phaseF25SetBusy(
+        false
+      );
+
+      phaseF25RenderResults();
+    }
+  }
+
+  function phaseF25CancelBatch() {
+    if (
+      !phaseF25BatchBusy
+    ) {
+      return;
+    }
+
+    phaseF25CancelAfterCurrent =
+      true;
+
+    phaseF25SetProgress(
+      "Cancellation requested · the current image will finish and be saved; no additional images will start."
     );
   }
 
@@ -31141,6 +33780,64 @@ function phaseIL1Initialize() {
     els.phaseF241CancelRunButton?.addEventListener(
       "click",
       phaseF241CancelProtocolRun
+    );
+
+    els.phaseF25OpenBatchButton?.addEventListener(
+      "click",
+      phaseF25OpenBatch
+    );
+
+    els.phaseF25SelectAllButton?.addEventListener(
+      "click",
+      () => {
+        phaseF25SetAllImages(true);
+      }
+    );
+
+    els.phaseF25SelectNoneButton?.addEventListener(
+      "click",
+      () => {
+        phaseF25SetAllImages(false);
+      }
+    );
+
+    els.phaseF25RunBatchButton?.addEventListener(
+      "click",
+      () => {
+        void phaseF25RunBatch();
+      }
+    );
+
+    els.phaseF25CancelBatchButton?.addEventListener(
+      "click",
+      phaseF25CancelBatch
+    );
+
+    els.phaseF25ExportBatchCsvButton?.addEventListener(
+      "click",
+      phaseF25ExportBatchCsv
+    );
+
+    els.phaseF25BackButton?.addEventListener(
+      "click",
+      phaseF25BackToProtocols
+    );
+
+    els.phaseF25CloseButton?.addEventListener(
+      "click",
+      phaseF25CloseBatch
+    );
+
+    els.phaseF25BatchModal?.addEventListener(
+      "click",
+      (event) => {
+        if (
+          event.target
+          === els.phaseF25BatchModal
+        ) {
+          phaseF25CloseBatch();
+        }
+      }
     );
 
     els.phaseF24ExportButton?.addEventListener(
