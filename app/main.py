@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-F1.12"}
+    return {"status": "ok", "version": "1.4.0-dev-F2.2.1"}
 
 
 @app.get("/health")
@@ -12941,3 +12941,3572 @@ def service_worker() -> FileResponse:
 @app.get("/", response_class=HTMLResponse)
 def index() -> FileResponse:
     return FileResponse(Path(__file__).parent / "static" / "index.html", headers={"Cache-Control": "no-store"})
+
+# ======================================================================
+# Phase F2.0 — Quantitative H-DAB analysis
+#
+# Non-destructive native-resolution pixel quantification:
+# Tissue ROI -> external border exclusion -> Artifact exclusion ->
+# Anthracosis exclusion -> H/DAB optical-density deconvolution.
+#
+# No Positive/Negative GeoJSON is generated in F2.0.
+# ======================================================================
+
+def _f20_hdab_valid_geometry(
+    collection: dict[str, Any],
+    *,
+    full_width: int,
+    full_height: int,
+) -> tuple[Any, dict[str, Any]]:
+    image_bounds = box(
+        0.0,
+        0.0,
+        float(full_width),
+        float(full_height),
+    )
+
+    tissue_geometries: list[Any] = []
+    artifact_geometries: list[Any] = []
+
+    artifact_count = 0
+    anthracosis_count = 0
+
+    border_enabled = False
+    border_percent = 0.0
+
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+
+        properties = feature.get("properties", {})
+        histo = properties.get("histoannotator", {})
+
+        role = str(
+            histo.get("role", "annotation")
+        ).strip().lower()
+
+        class_name = str(
+            properties
+            .get("classification", {})
+            .get("name")
+            or "Unclassified"
+        ).strip()
+
+        class_cf = class_name.casefold()
+
+        geometry_payload = feature.get("geometry")
+        if not isinstance(geometry_payload, dict):
+            continue
+
+        try:
+            geometry = _polygonal_geometry(
+                geometry_payload
+            )
+        except HTTPException:
+            continue
+
+        if geometry.is_empty:
+            continue
+
+        roi_meta = histo.get("roi", {})
+        roi_kind = (
+            str(
+                roi_meta.get("kind", "tissue")
+            ).strip().lower()
+            if isinstance(roi_meta, dict)
+            else "tissue"
+        )
+
+        if role == "roi" and roi_kind == "tissue":
+            tissue_geometries.append(geometry)
+
+            if isinstance(roi_meta, dict):
+                border_meta = roi_meta.get(
+                    "externalBorderExclusion"
+                )
+                if isinstance(border_meta, dict):
+                    border_enabled = bool(
+                        border_meta.get(
+                            "enabled",
+                            False,
+                        )
+                    )
+                    try:
+                        border_percent = max(
+                            0.0,
+                            min(
+                                50.0,
+                                float(
+                                    border_meta.get(
+                                        "percent",
+                                        0,
+                                    )
+                                    or 0
+                                ),
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        border_percent = 0.0
+
+            continue
+
+        if (
+            role == "artifact"
+            or class_cf == "artifact"
+        ):
+            artifact_count += 1
+            artifact_geometries.append(
+                geometry
+            )
+            continue
+
+        if (
+            role == "annotation"
+            and class_cf == "anthracosis"
+        ):
+            anthracosis_count += 1
+
+    if not tissue_geometries:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Quantitative H-DAB analysis requires "
+                "a Tissue ROI"
+            ),
+        )
+
+    tissue_roi = unary_union(
+        tissue_geometries
+    )
+
+    if (
+        not tissue_roi.is_empty
+        and not tissue_roi.is_valid
+    ):
+        tissue_roi = make_valid(
+            tissue_roi
+        )
+
+    tissue_roi = (
+        _polygonal_only(
+            tissue_roi.intersection(
+                image_bounds
+            )
+        )
+        or GeometryCollection()
+    )
+
+    if tissue_roi.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail="Tissue ROI is empty inside the image",
+        )
+
+    base_area = float(
+        tissue_roi.area
+    )
+
+    requested_border = (
+        border_percent
+        if border_enabled
+        else 0.0
+    )
+
+    (
+        post_border_region,
+        actual_border_percent,
+        border_width_px,
+    ) = _stats_exclude_external_border(
+        tissue_roi,
+        requested_border,
+    )
+
+    post_border_region = (
+        _polygonal_only(
+            post_border_region
+        )
+        or GeometryCollection()
+    )
+
+    if post_border_region.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "External border exclusion removed "
+                "the complete Tissue ROI"
+            ),
+        )
+
+    post_border_area = float(
+        post_border_region.area
+    )
+
+    if artifact_geometries:
+        artifact_union = unary_union(
+            artifact_geometries
+        )
+
+        if (
+            not artifact_union.is_empty
+            and not artifact_union.is_valid
+        ):
+            artifact_union = make_valid(
+                artifact_union
+            )
+
+        artifact_union = (
+            _polygonal_only(
+                artifact_union.intersection(
+                    post_border_region
+                )
+            )
+            or GeometryCollection()
+        )
+    else:
+        artifact_union = GeometryCollection()
+
+    artifact_area = (
+        float(artifact_union.area)
+        if not artifact_union.is_empty
+        else 0.0
+    )
+
+    clean_after_artifact = (
+        post_border_region.difference(
+            artifact_union
+        )
+        if not artifact_union.is_empty
+        else post_border_region
+    )
+
+    clean_after_artifact = (
+        _polygonal_only(
+            clean_after_artifact
+        )
+        or GeometryCollection()
+    )
+
+    if clean_after_artifact.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Artifact exclusion removed the complete "
+                "H-DAB analysis region"
+            ),
+        )
+
+    anthracosis_union = (
+        _f1_annotation_class_union(
+            collection,
+            "anthracosis",
+        )
+    )
+
+    if not anthracosis_union.is_empty:
+        anthracosis_union = (
+            _polygonal_only(
+                anthracosis_union.intersection(
+                    clean_after_artifact
+                )
+            )
+            or GeometryCollection()
+        )
+
+    anthracosis_area = (
+        float(anthracosis_union.area)
+        if not anthracosis_union.is_empty
+        else 0.0
+    )
+
+    valid_geometry = (
+        clean_after_artifact.difference(
+            anthracosis_union
+        )
+        if not anthracosis_union.is_empty
+        else clean_after_artifact
+    )
+
+    if (
+        not valid_geometry.is_empty
+        and not valid_geometry.is_valid
+    ):
+        valid_geometry = make_valid(
+            valid_geometry
+        )
+
+    valid_geometry = (
+        _polygonal_only(
+            valid_geometry
+        )
+        or GeometryCollection()
+    )
+
+    if valid_geometry.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Anthracosis exclusion removed the complete "
+                "H-DAB analysis region"
+            ),
+        )
+
+    return valid_geometry, {
+        "baseAreaPx2":
+            float(base_area),
+        "postBorderAreaPx2":
+            float(post_border_area),
+        "externalBorderEnabled":
+            bool(border_enabled),
+        "externalBorderRequestedPct":
+            float(requested_border),
+        "externalBorderActualPct":
+            float(actual_border_percent),
+        "externalBorderWidthPx":
+            float(border_width_px),
+        "artifactCount":
+            int(artifact_count),
+        "artifactAreaPx2":
+            float(artifact_area),
+        "anthracosisCount":
+            int(anthracosis_count),
+        "anthracosisAreaPx2":
+            float(anthracosis_area),
+        "validGeometryAreaPx2":
+            float(valid_geometry.area),
+    }
+
+
+def _f20_otsu_threshold_from_histogram(
+    histogram: np.ndarray,
+    *,
+    maximum_od: float,
+) -> float:
+    counts = np.asarray(
+        histogram,
+        dtype=np.float64,
+    )
+
+    if counts.ndim != 1 or counts.size < 2:
+        return 0.0
+
+    total = float(
+        np.sum(counts)
+    )
+
+    if total <= 0:
+        return 0.0
+
+    centers = (
+        (
+            np.arange(
+                counts.size,
+                dtype=np.float64,
+            )
+            + 0.5
+        )
+        * (
+            float(maximum_od)
+            / float(counts.size)
+        )
+    )
+
+    cumulative_weight = np.cumsum(
+        counts
+    )
+    cumulative_sum = np.cumsum(
+        counts * centers
+    )
+
+    total_sum = float(
+        cumulative_sum[-1]
+    )
+
+    foreground_weight = (
+        total
+        - cumulative_weight
+    )
+
+    valid = (
+        (cumulative_weight > 0)
+        & (foreground_weight > 0)
+    )
+
+    if not np.any(valid):
+        return float(
+            centers[
+                int(
+                    np.argmax(counts)
+                )
+            ]
+        )
+
+    background_mean = np.zeros_like(
+        centers
+    )
+    foreground_mean = np.zeros_like(
+        centers
+    )
+
+    background_mean[valid] = (
+        cumulative_sum[valid]
+        / cumulative_weight[valid]
+    )
+
+    foreground_mean[valid] = (
+        (
+            total_sum
+            - cumulative_sum[valid]
+        )
+        / foreground_weight[valid]
+    )
+
+    between_variance = np.zeros_like(
+        centers
+    )
+
+    between_variance[valid] = (
+        cumulative_weight[valid]
+        * foreground_weight[valid]
+        * (
+            background_mean[valid]
+            - foreground_mean[valid]
+        )
+        ** 2
+    )
+
+    best_index = int(
+        np.argmax(
+            between_variance
+        )
+    )
+
+    return float(
+        centers[best_index]
+    )
+
+
+@app.post(
+    "/api/images/{image_id}/analyze-hdab"
+)
+def analyze_hdab_quantitative(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    from math import ceil, floor
+
+    collection_payload = payload.get(
+        "featureCollection"
+    )
+
+    if not isinstance(
+        collection_payload,
+        dict,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="featureCollection is required",
+        )
+
+    collection, _report = (
+        sanitize_qupath_feature_collection(
+            collection_payload
+        )
+    )
+
+    threshold_mode = str(
+        payload.get(
+            "thresholdMode",
+            "auto",
+        )
+        or "auto"
+    ).strip().lower()
+
+    if threshold_mode not in {
+        "auto",
+        "manual",
+    }:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "thresholdMode must be auto or manual"
+            ),
+        )
+
+    try:
+        requested_threshold_od = float(
+            payload.get(
+                "thresholdOd",
+                0.30,
+            )
+            or 0.30
+        )
+    except (TypeError, ValueError):
+        requested_threshold_od = 0.30
+
+    requested_threshold_od = max(
+        0.0,
+        min(
+            6.0,
+            requested_threshold_od,
+        ),
+    )
+
+    tile_size = min(
+        2048,
+        max(
+            512,
+            int(
+                payload.get(
+                    "tileSize",
+                    1024,
+                )
+                or 1024
+            ),
+        ),
+    )
+
+    histogram_bins = 4096
+    maximum_od = 6.0
+
+    path, relative = safe_image_path(
+        image_id
+    )
+
+    image_types = _read_image_types()
+    image_type = str(
+        image_types.get(
+            relative,
+            "he",
+        )
+        or "he"
+    ).strip().lower()
+
+    if image_type != "hdab":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Quantitative H-DAB analysis is only "
+                "available when Image type is Brightfield H-DAB"
+            ),
+        )
+
+    if (
+        preparation_required(path)
+        and not read_ready_manifest(
+            path,
+            relative,
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Image is not ready yet",
+        )
+
+    render_path = resolve_render_path(
+        path,
+        relative,
+    )
+
+    handle = get_slide(
+        render_path
+    )
+    slide = handle.slide
+
+    if not hasattr(
+        slide,
+        "read_region",
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Quantitative H-DAB analysis requires "
+                "native read_region support"
+            ),
+        )
+
+    full_width, full_height = map(
+        int,
+        slide.dimensions,
+    )
+
+    (
+        valid_geometry,
+        geometry_report,
+    ) = _f20_hdab_valid_geometry(
+        collection,
+        full_width=full_width,
+        full_height=full_height,
+    )
+
+    matrix, names = _stain_matrix(
+        "hdab"
+    )
+    inverse = np.linalg.inv(
+        matrix
+    )
+    dab_index = int(
+        names["dab"]
+    )
+
+    histogram = np.zeros(
+        histogram_bins,
+        dtype=np.int64,
+    )
+
+    valid_pixel_count = 0
+    dab_sum = 0.0
+
+    min_x, min_y, max_x, max_y = (
+        valid_geometry.bounds
+    )
+
+    start_x = max(
+        0,
+        int(
+            floor(
+                min_x
+                / tile_size
+            )
+            * tile_size
+        ),
+    )
+    start_y = max(
+        0,
+        int(
+            floor(
+                min_y
+                / tile_size
+            )
+            * tile_size
+        ),
+    )
+    stop_x = min(
+        full_width,
+        int(
+            ceil(
+                max_x
+                / tile_size
+            )
+            * tile_size
+        ),
+    )
+    stop_y = min(
+        full_height,
+        int(
+            ceil(
+                max_y
+                / tile_size
+            )
+            * tile_size
+        ),
+    )
+
+    tiles_planned = 0
+    tiles_processed = 0
+    tiles_skipped = 0
+
+    for tile_y in range(
+        start_y,
+        stop_y,
+        tile_size,
+    ):
+        tile_height = min(
+            tile_size,
+            full_height - tile_y,
+        )
+
+        if tile_height <= 0:
+            continue
+
+        for tile_x in range(
+            start_x,
+            stop_x,
+            tile_size,
+        ):
+            tile_width = min(
+                tile_size,
+                full_width - tile_x,
+            )
+
+            if tile_width <= 0:
+                continue
+
+            tiles_planned += 1
+
+            tile_box = box(
+                float(tile_x),
+                float(tile_y),
+                float(tile_x + tile_width),
+                float(tile_y + tile_height),
+            )
+
+            if not valid_geometry.intersects(
+                tile_box
+            ):
+                tiles_skipped += 1
+                continue
+
+            tile_geometry = (
+                _polygonal_only(
+                    valid_geometry.intersection(
+                        tile_box
+                    )
+                )
+                or GeometryCollection()
+            )
+
+            if tile_geometry.is_empty:
+                tiles_skipped += 1
+                continue
+
+            tile_image = slide.read_region(
+                (
+                    int(tile_x),
+                    int(tile_y),
+                ),
+                0,
+                (
+                    int(tile_width),
+                    int(tile_height),
+                ),
+            ).convert("RGB")
+
+            rgb = np.asarray(
+                tile_image,
+                dtype=np.float32,
+            )
+
+            valid_mask = (
+                _f11_geometry_mask_window(
+                    tile_geometry,
+                    origin_x=tile_x,
+                    origin_y=tile_y,
+                    width=tile_width,
+                    height=tile_height,
+                )
+            )
+
+            if not np.any(
+                valid_mask
+            ):
+                tiles_skipped += 1
+                continue
+
+            optical_density = -np.log(
+                np.clip(
+                    (rgb + 1.0)
+                    / 256.0,
+                    1e-6,
+                    1.0,
+                )
+            )
+
+            concentrations = (
+                optical_density
+                @ inverse
+            )
+
+            dab_concentration = np.clip(
+                concentrations[
+                    ...,
+                    dab_index,
+                ],
+                0.0,
+                maximum_od,
+            )
+
+            values = dab_concentration[
+                valid_mask
+            ]
+
+            if values.size == 0:
+                tiles_skipped += 1
+                continue
+
+            local_histogram, _edges = (
+                np.histogram(
+                    values,
+                    bins=histogram_bins,
+                    range=(
+                        0.0,
+                        maximum_od,
+                    ),
+                )
+            )
+
+            histogram += (
+                local_histogram.astype(
+                    np.int64,
+                    copy=False,
+                )
+            )
+
+            valid_pixel_count += int(
+                values.size
+            )
+
+            dab_sum += float(
+                np.sum(
+                    values,
+                    dtype=np.float64,
+                )
+            )
+
+            tiles_processed += 1
+
+    if valid_pixel_count < 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No valid H-DAB tissue pixels remained "
+                "after ROI/exclusion masks"
+            ),
+        )
+
+    if threshold_mode == "auto":
+        threshold_od = (
+            _f20_otsu_threshold_from_histogram(
+                histogram,
+                maximum_od=maximum_od,
+            )
+        )
+        threshold_method = (
+            "otsu-dab-optical-density-v1"
+        )
+    else:
+        threshold_od = float(
+            requested_threshold_od
+        )
+        threshold_method = (
+            "manual-dab-optical-density-v1"
+        )
+
+    bin_centers = (
+        (
+            np.arange(
+                histogram_bins,
+                dtype=np.float64,
+            )
+            + 0.5
+        )
+        * (
+            maximum_od
+            / histogram_bins
+        )
+    )
+
+    positive_pixel_count = int(
+        np.sum(
+            histogram[
+                bin_centers
+                >= threshold_od
+            ]
+        )
+    )
+
+    positive_pixel_count = max(
+        0,
+        min(
+            valid_pixel_count,
+            positive_pixel_count,
+        ),
+    )
+
+    negative_pixel_count = (
+        valid_pixel_count
+        - positive_pixel_count
+    )
+
+    positive_percent = (
+        100.0
+        * positive_pixel_count
+        / valid_pixel_count
+    )
+
+    negative_percent = (
+        100.0
+        - positive_percent
+    )
+
+    mean_dab_od = (
+        dab_sum
+        / valid_pixel_count
+    )
+
+    return {
+        "method":
+            "quantitative-hdab-native-v1",
+        "threshold": {
+            "mode":
+                threshold_mode,
+            "method":
+                threshold_method,
+            "dabOpticalDensity":
+                float(threshold_od),
+            "requestedDabOpticalDensity":
+                float(requested_threshold_od),
+            "histogramBins":
+                int(histogram_bins),
+            "maximumDabOpticalDensity":
+                float(maximum_od),
+        },
+        "analysis": {
+            "imageType":
+                image_type,
+            "analysisRegion":
+                (
+                    "Tissue ROI - External border "
+                    "- Artifact - Anthracosis"
+                ),
+            "analysisResolution":
+                "native-level-0",
+            "tileSize":
+                int(tile_size),
+            "imageWidth":
+                int(full_width),
+            "imageHeight":
+                int(full_height),
+            **geometry_report,
+        },
+        "results": {
+            "validPixels":
+                int(valid_pixel_count),
+            "validAreaPx2":
+                float(valid_pixel_count),
+            "positivePixels":
+                int(positive_pixel_count),
+            "positiveAreaPx2":
+                float(positive_pixel_count),
+            "negativePixels":
+                int(negative_pixel_count),
+            "negativeAreaPx2":
+                float(negative_pixel_count),
+            "positivePercent":
+                float(positive_percent),
+            "negativePercent":
+                float(negative_percent),
+            "meanDabOpticalDensity":
+                float(mean_dab_od),
+        },
+        "tiles": {
+            "planned":
+                int(tiles_planned),
+            "processed":
+                int(tiles_processed),
+            "skipped":
+                int(tiles_skipped),
+        },
+        "stains": {
+            "hematoxylin":
+                STAIN_HEMATOXYLIN.astype(
+                    float
+                ).tolist(),
+            "dab":
+                STAIN_DAB.astype(
+                    float
+                ).tolist(),
+        },
+    }
+
+# ======================================================================
+# Phase F2.1 — H-DAB Positive preview + Accept
+# ======================================================================
+
+@app.post("/api/classes/ensure-positive")
+def _f21_ensure_positive_class() -> dict[str, Any]:
+    positive_default = {
+        "name": "Positive",
+        "color": "#ff6b6b",
+    }
+
+    with CONFIG_LOCK:
+        try:
+            stored: Any = json.loads(
+                CLASSES_PATH.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            stored = [
+                dict(item)
+                for item in DEFAULT_CLASSES
+            ]
+
+        payload_kind = "list"
+
+        if isinstance(stored, list):
+            class_items = stored
+        elif isinstance(stored, dict):
+            candidate = stored.get("classes")
+            if isinstance(candidate, list):
+                class_items = candidate
+                payload_kind = "dict"
+            else:
+                class_items = [
+                    dict(item)
+                    for item in DEFAULT_CLASSES
+                ]
+                stored = {
+                    **stored,
+                    "classes": class_items,
+                }
+                payload_kind = "dict"
+        else:
+            class_items = [
+                dict(item)
+                for item in DEFAULT_CLASSES
+            ]
+            stored = class_items
+
+        existing = None
+
+        for item in class_items:
+            if (
+                isinstance(item, dict)
+                and str(
+                    item.get("name")
+                    or ""
+                ).strip().casefold()
+                == "positive"
+            ):
+                existing = item
+                break
+
+        created = False
+
+        if existing is None:
+            existing = dict(
+                positive_default
+            )
+            class_items.append(
+                existing
+            )
+            created = True
+
+            if payload_kind == "dict":
+                stored["classes"] = class_items
+            else:
+                stored = class_items
+
+            atomic_write_json(
+                CLASSES_PATH,
+                stored,
+            )
+
+        return {
+            "class": {
+                "name": str(
+                    existing.get(
+                        "name",
+                        "Positive",
+                    )
+                    or "Positive"
+                ),
+                "color": str(
+                    existing.get(
+                        "color",
+                        "#ff6b6b",
+                    )
+                    or "#ff6b6b"
+                ),
+            },
+            "created": bool(created),
+        }
+
+
+@app.post(
+    "/api/images/{image_id}/analyze-hdab-preview"
+)
+def analyze_hdab_positive_preview(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    from math import ceil, floor
+    from shapely.affinity import translate as shapely_translate
+
+    result = analyze_hdab_quantitative(
+        image_id,
+        payload,
+    )
+
+    collection_payload = payload.get(
+        "featureCollection"
+    )
+
+    if not isinstance(
+        collection_payload,
+        dict,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="featureCollection is required",
+        )
+
+    collection, _report = (
+        sanitize_qupath_feature_collection(
+            collection_payload
+        )
+    )
+
+    threshold_od = float(
+        result.get(
+            "threshold",
+            {},
+        ).get(
+            "dabOpticalDensity",
+            0.0,
+        )
+        or 0.0
+    )
+
+    tile_size = int(
+        result.get(
+            "analysis",
+            {},
+        ).get(
+            "tileSize",
+            1024,
+        )
+        or 1024
+    )
+
+    tile_size = min(
+        2048,
+        max(
+            512,
+            tile_size,
+        ),
+    )
+
+    path, relative = safe_image_path(
+        image_id
+    )
+
+    if (
+        preparation_required(path)
+        and not read_ready_manifest(
+            path,
+            relative,
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Image is not ready yet",
+        )
+
+    render_path = resolve_render_path(
+        path,
+        relative,
+    )
+
+    handle = get_slide(
+        render_path
+    )
+    slide = handle.slide
+
+    full_width, full_height = map(
+        int,
+        slide.dimensions,
+    )
+
+    valid_geometry, _geometry_report = (
+        _f20_hdab_valid_geometry(
+            collection,
+            full_width=full_width,
+            full_height=full_height,
+        )
+    )
+
+    matrix, names = _stain_matrix(
+        "hdab"
+    )
+
+    inverse = np.linalg.inv(
+        matrix
+    )
+
+    dab_index = int(
+        names["dab"]
+    )
+
+    maximum_od = float(
+        result.get(
+            "threshold",
+            {},
+        ).get(
+            "maximumDabOpticalDensity",
+            6.0,
+        )
+        or 6.0
+    )
+
+    min_x, min_y, max_x, max_y = (
+        valid_geometry.bounds
+    )
+
+    start_x = max(
+        0,
+        int(
+            floor(
+                min_x / tile_size
+            )
+            * tile_size
+        ),
+    )
+    start_y = max(
+        0,
+        int(
+            floor(
+                min_y / tile_size
+            )
+            * tile_size
+        ),
+    )
+    stop_x = min(
+        full_width,
+        int(
+            ceil(
+                max_x / tile_size
+            )
+            * tile_size
+        ),
+    )
+    stop_y = min(
+        full_height,
+        int(
+            ceil(
+                max_y / tile_size
+            )
+            * tile_size
+        ),
+    )
+
+    spatial_group_size_px = 2048
+    spatial_groups: dict[
+        tuple[int, int],
+        list[Any],
+    ] = {}
+
+    exact_positive_pixels = 0
+    preview_tiles_processed = 0
+    preview_tiles_skipped = 0
+    vectorized_tiles = 0
+
+    for tile_y in range(
+        start_y,
+        stop_y,
+        tile_size,
+    ):
+        tile_height = min(
+            tile_size,
+            full_height - tile_y,
+        )
+
+        if tile_height <= 0:
+            continue
+
+        for tile_x in range(
+            start_x,
+            stop_x,
+            tile_size,
+        ):
+            tile_width = min(
+                tile_size,
+                full_width - tile_x,
+            )
+
+            if tile_width <= 0:
+                continue
+
+            tile_box = box(
+                float(tile_x),
+                float(tile_y),
+                float(tile_x + tile_width),
+                float(tile_y + tile_height),
+            )
+
+            if not valid_geometry.intersects(
+                tile_box
+            ):
+                preview_tiles_skipped += 1
+                continue
+
+            tile_geometry = (
+                _polygonal_only(
+                    valid_geometry.intersection(
+                        tile_box
+                    )
+                )
+                or GeometryCollection()
+            )
+
+            if tile_geometry.is_empty:
+                preview_tiles_skipped += 1
+                continue
+
+            tile_image = slide.read_region(
+                (
+                    int(tile_x),
+                    int(tile_y),
+                ),
+                0,
+                (
+                    int(tile_width),
+                    int(tile_height),
+                ),
+            ).convert("RGB")
+
+            rgb = np.asarray(
+                tile_image,
+                dtype=np.float32,
+            )
+
+            valid_mask = (
+                _f11_geometry_mask_window(
+                    tile_geometry,
+                    origin_x=tile_x,
+                    origin_y=tile_y,
+                    width=tile_width,
+                    height=tile_height,
+                )
+            )
+
+            if not np.any(
+                valid_mask
+            ):
+                preview_tiles_skipped += 1
+                continue
+
+            optical_density = -np.log(
+                np.clip(
+                    (rgb + 1.0)
+                    / 256.0,
+                    1e-6,
+                    1.0,
+                )
+            )
+
+            concentrations = (
+                optical_density
+                @ inverse
+            )
+
+            dab_concentration = np.clip(
+                concentrations[
+                    ...,
+                    dab_index,
+                ],
+                0.0,
+                maximum_od,
+            )
+
+            positive_mask = (
+                valid_mask
+                & (
+                    dab_concentration
+                    >= threshold_od
+                )
+            )
+
+            local_positive_pixels = int(
+                np.count_nonzero(
+                    positive_mask
+                )
+            )
+
+            exact_positive_pixels += (
+                local_positive_pixels
+            )
+
+            preview_tiles_processed += 1
+
+            if local_positive_pixels < 1:
+                continue
+
+            local_geometry = (
+                _il1_mask_to_geometry(
+                    positive_mask,
+                    1.0,
+                    1.0,
+                )
+            )
+
+            if local_geometry.is_empty:
+                continue
+
+            global_geometry = (
+                shapely_translate(
+                    local_geometry,
+                    xoff=float(tile_x),
+                    yoff=float(tile_y),
+                )
+            )
+
+            # F2.1.1:
+            # positive_mask was already clipped to valid H-DAB tissue
+            # before contour vectorization. A second vector/vector
+            # intersection is redundant and can fail on sub-pixel contour
+            # topology. Repair the contour geometry itself instead.
+            if (
+                not global_geometry.is_empty
+                and not global_geometry.is_valid
+            ):
+                global_geometry = make_valid(
+                    global_geometry
+                )
+
+            global_geometry = (
+                _polygonal_only(
+                    global_geometry
+                )
+                or GeometryCollection()
+            )
+
+            if global_geometry.is_empty:
+                continue
+
+            group_key = (
+                int(
+                    tile_x
+                    // spatial_group_size_px
+                ),
+                int(
+                    tile_y
+                    // spatial_group_size_px
+                ),
+            )
+
+            spatial_groups.setdefault(
+                group_key,
+                [],
+            ).append(
+                global_geometry
+            )
+
+            vectorized_tiles += 1
+
+    detections: list[
+        dict[str, Any]
+    ] = []
+
+    for feature_index, group_key in enumerate(
+        sorted(
+            spatial_groups.keys(),
+            key=lambda item: (
+                item[1],
+                item[0],
+            ),
+        ),
+        start=1,
+    ):
+        items = spatial_groups[
+            group_key
+        ]
+
+        grouped_geometry = (
+            items[0]
+            if len(items) == 1
+            else unary_union(items)
+        )
+
+        if (
+            not grouped_geometry.is_empty
+            and not grouped_geometry.is_valid
+        ):
+            grouped_geometry = make_valid(
+                grouped_geometry
+            )
+
+        grouped_geometry = (
+            _polygonal_only(
+                grouped_geometry
+            )
+            or GeometryCollection()
+        )
+
+        if grouped_geometry.is_empty:
+            continue
+
+        detections.append(
+            {
+                "id":
+                    f"hdab-positive-group-{feature_index}",
+                "geometry":
+                    mapping(
+                        grouped_geometry
+                    ),
+                "areaPx2":
+                    float(
+                        grouped_geometry.area
+                    ),
+                "spatialGroup": {
+                    "column":
+                        int(group_key[0]),
+                    "row":
+                        int(group_key[1]),
+                    "sizePx":
+                        int(
+                            spatial_group_size_px
+                        ),
+                },
+            }
+        )
+
+    valid_pixels = int(
+        result.get(
+            "results",
+            {},
+        ).get(
+            "validPixels",
+            0,
+        )
+        or 0
+    )
+
+    exact_positive_pixels = max(
+        0,
+        min(
+            valid_pixels,
+            exact_positive_pixels,
+        ),
+    )
+
+    exact_negative_pixels = (
+        valid_pixels
+        - exact_positive_pixels
+    )
+
+    exact_positive_percent = (
+        100.0
+        * exact_positive_pixels
+        / valid_pixels
+        if valid_pixels > 0
+        else 0.0
+    )
+
+    exact_negative_percent = (
+        100.0
+        - exact_positive_percent
+    )
+
+    result["results"][
+        "positivePixels"
+    ] = int(
+        exact_positive_pixels
+    )
+    result["results"][
+        "positiveAreaPx2"
+    ] = float(
+        exact_positive_pixels
+    )
+    result["results"][
+        "negativePixels"
+    ] = int(
+        exact_negative_pixels
+    )
+    result["results"][
+        "negativeAreaPx2"
+    ] = float(
+        exact_negative_pixels
+    )
+    result["results"][
+        "positivePercent"
+    ] = float(
+        exact_positive_percent
+    )
+    result["results"][
+        "negativePercent"
+    ] = float(
+        exact_negative_percent
+    )
+
+    result["detections"] = (
+        detections
+    )
+
+    result["preview"] = {
+        "className":
+            "Positive",
+        "returnedFeatures":
+            int(
+                len(detections)
+            ),
+        "spatialGroupSizePx":
+            int(
+                spatial_group_size_px
+            ),
+        "tilesProcessed":
+            int(
+                preview_tiles_processed
+            ),
+        "tilesSkipped":
+            int(
+                preview_tiles_skipped
+            ),
+        "vectorizedTiles":
+            int(
+                vectorized_tiles
+            ),
+        "vectorization":
+            "native-mask-contours-spatial-pack-v1",
+        "geometryNote":
+            (
+                "Quantitative pixel counts are exact. "
+                "Preview/accepted geometry is contour-vectorized "
+                "for editable annotation display."
+            ),
+    }
+
+    return result
+
+# ======================================================================
+# Phase F2.2 — Advanced quantitative H-DAB
+#
+# Adds:
+# - Auto Otsu
+# - Auto weighted object variance (WOV; delta -1..1)
+# - Fixed/manual DAB optical-density threshold
+# - Optional Gaussian smoothing in DAB-OD space
+# - Optional minimum Positive object area
+# - Fast current-view live preview for parameter tuning
+#
+# Full-slide valid mask remains:
+# Tissue ROI - external border - Artifact - Anthracosis
+# ======================================================================
+
+
+def _f22_float(
+    value: Any,
+    default: float,
+    low: float,
+    high: float,
+) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float(default)
+
+    if not np.isfinite(number):
+        number = float(default)
+
+    return max(float(low), min(float(high), number))
+
+
+def _f22_parameters(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    threshold_mode = str(
+        payload.get("thresholdMode", "auto_otsu")
+        or "auto_otsu"
+    ).strip().lower()
+
+    aliases = {
+        "auto": "auto_otsu",
+        "otsu": "auto_otsu",
+        "wov": "auto_wov",
+        "fixed": "manual",
+    }
+    threshold_mode = aliases.get(
+        threshold_mode,
+        threshold_mode,
+    )
+
+    if threshold_mode not in {
+        "auto_otsu",
+        "auto_wov",
+        "manual",
+    }:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "thresholdMode must be auto_otsu, "
+                "auto_wov, or manual"
+            ),
+        )
+
+    threshold_od = _f22_float(
+        payload.get("thresholdOd", 0.30),
+        0.30,
+        0.0,
+        6.0,
+    )
+
+    wov_delta = _f22_float(
+        payload.get("wovDelta", 0.25),
+        0.25,
+        -1.0,
+        1.0,
+    )
+
+    smoothing_enabled = bool(
+        payload.get("smoothingEnabled", False)
+    )
+    smoothing_sigma = _f22_float(
+        payload.get("smoothingSigma", 1.0),
+        1.0,
+        0.0,
+        25.0,
+    )
+
+    small_filter_enabled = bool(
+        payload.get("smallObjectFilterEnabled", False)
+    )
+    minimum_object_area = _f22_float(
+        payload.get("minimumObjectArea", 25.0),
+        25.0,
+        0.0,
+        1_000_000.0,
+    )
+
+    mpp = _f22_float(
+        payload.get("mpp", 0.0),
+        0.0,
+        0.0,
+        1000.0,
+    )
+
+    tile_size = int(
+        _f22_float(
+            payload.get("tileSize", 1024),
+            1024,
+            512,
+            2048,
+        )
+    )
+
+    if mpp > 0:
+        smoothing_sigma_px = smoothing_sigma / mpp
+        minimum_object_area_px2 = (
+            minimum_object_area / (mpp * mpp)
+        )
+        smoothing_unit = "um"
+        area_unit = "um2"
+    else:
+        smoothing_sigma_px = smoothing_sigma
+        minimum_object_area_px2 = minimum_object_area
+        smoothing_unit = "px"
+        area_unit = "px2"
+
+    smoothing_sigma_px = max(
+        0.0,
+        min(64.0, float(smoothing_sigma_px)),
+    )
+
+    minimum_object_area_px2 = max(
+        0.0,
+        float(minimum_object_area_px2),
+    )
+
+    return {
+        "thresholdMode": threshold_mode,
+        "thresholdOd": float(threshold_od),
+        "wovDelta": float(wov_delta),
+        "smoothingEnabled": bool(smoothing_enabled),
+        "smoothingSigma": float(smoothing_sigma),
+        "smoothingSigmaPx": float(
+            smoothing_sigma_px
+            if smoothing_enabled
+            else 0.0
+        ),
+        "smoothingUnit": smoothing_unit,
+        "smallObjectFilterEnabled": bool(
+            small_filter_enabled
+        ),
+        "minimumObjectArea": float(
+            minimum_object_area
+        ),
+        "minimumObjectAreaPx2": float(
+            minimum_object_area_px2
+            if small_filter_enabled
+            else 0.0
+        ),
+        "minimumObjectAreaUnit": area_unit,
+        "mpp": float(mpp),
+        "tileSize": int(tile_size),
+        "maximumOd": 6.0,
+        "histogramBins": 4096,
+    }
+
+
+def _f22_weighted_object_variance_threshold(
+    histogram: np.ndarray,
+    *,
+    maximum_od: float,
+    delta: float,
+) -> float:
+    # Weighted object variance in DAB optical-density space.
+    #
+    # High OD = Positive/object class.
+    # Low OD = background/negative class.
+    #
+    # score(t) =
+    #   P_object * mu_object^2
+    #   + P_background^(1 + delta) * mu_background^2
+    #
+    # delta = 0 is equivalent to the Otsu objective up to the
+    # threshold-independent global-mean term. Positive delta gives
+    # greater relative weight to a sparse high-OD object class.
+    counts = np.asarray(
+        histogram,
+        dtype=np.float64,
+    )
+
+    if counts.ndim != 1 or counts.size < 2:
+        return 0.0
+
+    total = float(np.sum(counts))
+    if total <= 0:
+        return 0.0
+
+    centers = (
+        (
+            np.arange(
+                counts.size,
+                dtype=np.float64,
+            )
+            + 0.5
+        )
+        * (
+            float(maximum_od)
+            / float(counts.size)
+        )
+    )
+
+    background_count = np.cumsum(counts)
+    background_sum = np.cumsum(
+        counts * centers
+    )
+
+    total_sum = float(background_sum[-1])
+    object_count = total - background_count
+    object_sum = total_sum - background_sum
+
+    valid = (
+        (background_count > 0)
+        & (object_count > 0)
+    )
+
+    if not np.any(valid):
+        return _f20_otsu_threshold_from_histogram(
+            counts,
+            maximum_od=maximum_od,
+        )
+
+    p_background = np.zeros_like(centers)
+    p_object = np.zeros_like(centers)
+    mu_background = np.zeros_like(centers)
+    mu_object = np.zeros_like(centers)
+
+    p_background[valid] = (
+        background_count[valid] / total
+    )
+    p_object[valid] = (
+        object_count[valid] / total
+    )
+
+    mu_background[valid] = (
+        background_sum[valid]
+        / background_count[valid]
+    )
+    mu_object[valid] = (
+        object_sum[valid]
+        / object_count[valid]
+    )
+
+    score = np.full_like(
+        centers,
+        -np.inf,
+    )
+
+    score[valid] = (
+        p_object[valid]
+        * np.square(mu_object[valid])
+        + np.power(
+            p_background[valid],
+            1.0 + float(delta),
+        )
+        * np.square(mu_background[valid])
+    )
+
+    best_index = int(np.argmax(score))
+    return float(centers[best_index])
+
+
+def _f22_threshold_from_histogram(
+    histogram: np.ndarray,
+    params: dict[str, Any],
+) -> tuple[float, str]:
+    mode = str(params["thresholdMode"])
+
+    if mode == "auto_otsu":
+        return (
+            float(
+                _f20_otsu_threshold_from_histogram(
+                    histogram,
+                    maximum_od=float(
+                        params["maximumOd"]
+                    ),
+                )
+            ),
+            "otsu-dab-optical-density-v1",
+        )
+
+    if mode == "auto_wov":
+        return (
+            float(
+                _f22_weighted_object_variance_threshold(
+                    histogram,
+                    maximum_od=float(
+                        params["maximumOd"]
+                    ),
+                    delta=float(
+                        params["wovDelta"]
+                    ),
+                )
+            ),
+            "weighted-object-variance-dab-optical-density-v1",
+        )
+
+    return (
+        float(params["thresholdOd"]),
+        "manual-dab-optical-density-v1",
+    )
+
+
+def _f22_dab_concentration(
+    rgb: np.ndarray,
+    *,
+    inverse: np.ndarray,
+    dab_index: int,
+    maximum_od: float,
+    sigma_px: float,
+) -> np.ndarray:
+    optical_density = -np.log(
+        np.clip(
+            (
+                np.asarray(
+                    rgb,
+                    dtype=np.float32,
+                )
+                + 1.0
+            )
+            / 256.0,
+            1e-6,
+            1.0,
+        )
+    )
+
+    concentrations = optical_density @ inverse
+
+    dab = np.clip(
+        concentrations[..., int(dab_index)],
+        0.0,
+        float(maximum_od),
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
+    if sigma_px > 0:
+        try:
+            import cv2
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Gaussian H-DAB smoothing requires "
+                    "opencv-python-headless"
+                ),
+            ) from exc
+
+        dab = cv2.GaussianBlur(
+            dab,
+            (0, 0),
+            sigmaX=float(sigma_px),
+            sigmaY=float(sigma_px),
+            borderType=cv2.BORDER_REPLICATE,
+        )
+
+    return dab
+
+
+def _f22_read_dab_tile(
+    slide: Any,
+    *,
+    tile_x: int,
+    tile_y: int,
+    tile_width: int,
+    tile_height: int,
+    full_width: int,
+    full_height: int,
+    inverse: np.ndarray,
+    dab_index: int,
+    maximum_od: float,
+    sigma_px: float,
+) -> np.ndarray:
+    if sigma_px <= 0:
+        image = slide.read_region(
+            (int(tile_x), int(tile_y)),
+            0,
+            (int(tile_width), int(tile_height)),
+        ).convert("RGB")
+
+        return _f22_dab_concentration(
+            np.asarray(
+                image,
+                dtype=np.float32,
+            ),
+            inverse=inverse,
+            dab_index=dab_index,
+            maximum_od=maximum_od,
+            sigma_px=0.0,
+        )
+
+    pad = int(
+        min(
+            192,
+            max(
+                1,
+                np.ceil(
+                    3.0 * float(sigma_px)
+                ),
+            ),
+        )
+    )
+
+    read_x = max(0, int(tile_x) - pad)
+    read_y = max(0, int(tile_y) - pad)
+
+    read_x2 = min(
+        int(full_width),
+        int(tile_x) + int(tile_width) + pad,
+    )
+    read_y2 = min(
+        int(full_height),
+        int(tile_y) + int(tile_height) + pad,
+    )
+
+    read_width = max(1, read_x2 - read_x)
+    read_height = max(1, read_y2 - read_y)
+
+    image = slide.read_region(
+        (int(read_x), int(read_y)),
+        0,
+        (int(read_width), int(read_height)),
+    ).convert("RGB")
+
+    dab = _f22_dab_concentration(
+        np.asarray(
+            image,
+            dtype=np.float32,
+        ),
+        inverse=inverse,
+        dab_index=dab_index,
+        maximum_od=maximum_od,
+        sigma_px=float(sigma_px),
+    )
+
+    offset_x = int(tile_x - read_x)
+    offset_y = int(tile_y - read_y)
+
+    return dab[
+        offset_y:offset_y + int(tile_height),
+        offset_x:offset_x + int(tile_width),
+    ]
+
+
+def _f22_prepare_slide(
+    image_id: str,
+) -> tuple[
+    Any,
+    str,
+    str,
+    int,
+    int,
+    np.ndarray,
+    int,
+]:
+    path, relative = safe_image_path(image_id)
+
+    image_types = _read_image_types()
+    image_type = str(
+        image_types.get(relative, "he")
+        or "he"
+    ).strip().lower()
+
+    if image_type != "hdab":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Quantitative H-DAB analysis is only "
+                "available when Image type is Brightfield H-DAB"
+            ),
+        )
+
+    if (
+        preparation_required(path)
+        and not read_ready_manifest(
+            path,
+            relative,
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Image is not ready yet",
+        )
+
+    render_path = resolve_render_path(
+        path,
+        relative,
+    )
+
+    handle = get_slide(render_path)
+    slide = handle.slide
+
+    if not hasattr(slide, "read_region"):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Quantitative H-DAB analysis requires "
+                "native read_region support"
+            ),
+        )
+
+    full_width, full_height = map(
+        int,
+        slide.dimensions,
+    )
+
+    matrix, names = _stain_matrix("hdab")
+    inverse = np.linalg.inv(matrix)
+    dab_index = int(names["dab"])
+
+    return (
+        slide,
+        relative,
+        image_type,
+        full_width,
+        full_height,
+        inverse,
+        dab_index,
+    )
+
+
+def _f22_collection(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    collection_payload = payload.get(
+        "featureCollection"
+    )
+
+    if not isinstance(
+        collection_payload,
+        dict,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="featureCollection is required",
+        )
+
+    collection, _report = (
+        sanitize_qupath_feature_collection(
+            collection_payload
+        )
+    )
+    return collection
+
+
+def _f22_tile_bounds(
+    valid_geometry: Any,
+    *,
+    tile_size: int,
+    full_width: int,
+    full_height: int,
+) -> tuple[int, int, int, int]:
+    from math import ceil, floor
+
+    min_x, min_y, max_x, max_y = (
+        valid_geometry.bounds
+    )
+
+    start_x = max(
+        0,
+        int(
+            floor(min_x / tile_size)
+            * tile_size
+        ),
+    )
+    start_y = max(
+        0,
+        int(
+            floor(min_y / tile_size)
+            * tile_size
+        ),
+    )
+    stop_x = min(
+        int(full_width),
+        int(
+            ceil(max_x / tile_size)
+            * tile_size
+        ),
+    )
+    stop_y = min(
+        int(full_height),
+        int(
+            ceil(max_y / tile_size)
+            * tile_size
+        ),
+    )
+
+    return start_x, start_y, stop_x, stop_y
+
+
+def _f22_safe_tile_geometry(
+    valid_geometry: Any,
+    tile_box: Any,
+) -> Any:
+    try:
+        return (
+            _polygonal_only(
+                valid_geometry.intersection(
+                    tile_box
+                )
+            )
+            or GeometryCollection()
+        )
+    except Exception:
+        repaired = make_valid(valid_geometry)
+        return (
+            _polygonal_only(
+                repaired.intersection(
+                    tile_box
+                )
+            )
+            or GeometryCollection()
+        )
+
+
+def _f22_histogram_pass(
+    slide: Any,
+    valid_geometry: Any,
+    *,
+    full_width: int,
+    full_height: int,
+    inverse: np.ndarray,
+    dab_index: int,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    tile_size = int(params["tileSize"])
+    histogram_bins = int(
+        params["histogramBins"]
+    )
+    maximum_od = float(params["maximumOd"])
+    sigma_px = float(
+        params["smoothingSigmaPx"]
+    )
+
+    histogram = np.zeros(
+        histogram_bins,
+        dtype=np.int64,
+    )
+
+    valid_pixel_count = 0
+    dab_sum = 0.0
+    tiles_planned = 0
+    tiles_processed = 0
+    tiles_skipped = 0
+
+    (
+        start_x,
+        start_y,
+        stop_x,
+        stop_y,
+    ) = _f22_tile_bounds(
+        valid_geometry,
+        tile_size=tile_size,
+        full_width=full_width,
+        full_height=full_height,
+    )
+
+    for tile_y in range(
+        start_y,
+        stop_y,
+        tile_size,
+    ):
+        tile_height = min(
+            tile_size,
+            full_height - tile_y,
+        )
+        if tile_height <= 0:
+            continue
+
+        for tile_x in range(
+            start_x,
+            stop_x,
+            tile_size,
+        ):
+            tile_width = min(
+                tile_size,
+                full_width - tile_x,
+            )
+            if tile_width <= 0:
+                continue
+
+            tiles_planned += 1
+
+            tile_box = box(
+                float(tile_x),
+                float(tile_y),
+                float(tile_x + tile_width),
+                float(tile_y + tile_height),
+            )
+
+            if not valid_geometry.intersects(
+                tile_box
+            ):
+                tiles_skipped += 1
+                continue
+
+            tile_geometry = (
+                _f22_safe_tile_geometry(
+                    valid_geometry,
+                    tile_box,
+                )
+            )
+
+            if tile_geometry.is_empty:
+                tiles_skipped += 1
+                continue
+
+            valid_mask = (
+                _f11_geometry_mask_window(
+                    tile_geometry,
+                    origin_x=tile_x,
+                    origin_y=tile_y,
+                    width=tile_width,
+                    height=tile_height,
+                )
+            )
+
+            if not np.any(valid_mask):
+                tiles_skipped += 1
+                continue
+
+            dab = _f22_read_dab_tile(
+                slide,
+                tile_x=tile_x,
+                tile_y=tile_y,
+                tile_width=tile_width,
+                tile_height=tile_height,
+                full_width=full_width,
+                full_height=full_height,
+                inverse=inverse,
+                dab_index=dab_index,
+                maximum_od=maximum_od,
+                sigma_px=sigma_px,
+            )
+
+            values = dab[valid_mask]
+
+            if values.size < 1:
+                tiles_skipped += 1
+                continue
+
+            local_histogram, _edges = np.histogram(
+                values,
+                bins=histogram_bins,
+                range=(0.0, maximum_od),
+            )
+
+            histogram += local_histogram.astype(
+                np.int64,
+                copy=False,
+            )
+
+            valid_pixel_count += int(
+                values.size
+            )
+            dab_sum += float(
+                np.sum(
+                    values,
+                    dtype=np.float64,
+                )
+            )
+            tiles_processed += 1
+
+    if valid_pixel_count < 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No valid H-DAB tissue pixels remained "
+                "after ROI/exclusion masks"
+            ),
+        )
+
+    return {
+        "histogram": histogram,
+        "validPixels": int(valid_pixel_count),
+        "dabSum": float(dab_sum),
+        "tiles": {
+            "planned": int(tiles_planned),
+            "processed": int(tiles_processed),
+            "skipped": int(tiles_skipped),
+        },
+    }
+
+
+def _f22_polygon_parts(
+    geometry: Any,
+) -> list[Any]:
+    if geometry is None or geometry.is_empty:
+        return []
+
+    if not geometry.is_valid:
+        geometry = make_valid(geometry)
+
+    geometry = (
+        _polygonal_only(geometry)
+        or GeometryCollection()
+    )
+
+    return [
+        part
+        for part in _il1_polygon_parts(
+            geometry
+        )
+        if (
+            not part.is_empty
+            and part.area > 0
+        )
+    ]
+
+
+def _f22_package_parts(
+    parts: list[Any],
+    *,
+    spatial_group_size_px: int = 2048,
+) -> list[dict[str, Any]]:
+    spatial_groups: dict[
+        tuple[int, int],
+        list[Any],
+    ] = {}
+
+    for part in parts:
+        if (
+            part is None
+            or part.is_empty
+            or part.area <= 0
+        ):
+            continue
+
+        min_x, min_y, max_x, max_y = (
+            part.bounds
+        )
+
+        center_x = (
+            float(min_x)
+            + float(max_x)
+        ) * 0.5
+        center_y = (
+            float(min_y)
+            + float(max_y)
+        ) * 0.5
+
+        key = (
+            int(
+                center_x
+                // spatial_group_size_px
+            ),
+            int(
+                center_y
+                // spatial_group_size_px
+            ),
+        )
+
+        spatial_groups.setdefault(
+            key,
+            [],
+        ).append(part)
+
+    detections: list[
+        dict[str, Any]
+    ] = []
+
+    for index, key in enumerate(
+        sorted(
+            spatial_groups.keys(),
+            key=lambda item: (
+                item[1],
+                item[0],
+            ),
+        ),
+        start=1,
+    ):
+        group = spatial_groups[key]
+
+        geometry = (
+            group[0]
+            if len(group) == 1
+            else unary_union(group)
+        )
+
+        if (
+            not geometry.is_empty
+            and not geometry.is_valid
+        ):
+            geometry = make_valid(geometry)
+
+        geometry = (
+            _polygonal_only(geometry)
+            or GeometryCollection()
+        )
+
+        if geometry.is_empty:
+            continue
+
+        detections.append(
+            {
+                "id":
+                    f"hdab-positive-group-{index}",
+                "geometry":
+                    mapping(geometry),
+                "areaPx2":
+                    float(geometry.area),
+                "spatialGroup": {
+                    "column": int(key[0]),
+                    "row": int(key[1]),
+                    "sizePx": int(
+                        spatial_group_size_px
+                    ),
+                },
+            }
+        )
+
+    return detections
+
+
+@app.post(
+    "/api/images/{image_id}/analyze-hdab-v2-preview"
+)
+def analyze_hdab_v2_preview(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    from shapely.affinity import (
+        translate as shapely_translate,
+    )
+
+    collection = _f22_collection(payload)
+    params = _f22_parameters(payload)
+
+    (
+        slide,
+        _relative,
+        image_type,
+        full_width,
+        full_height,
+        inverse,
+        dab_index,
+    ) = _f22_prepare_slide(image_id)
+
+    (
+        valid_geometry,
+        geometry_report,
+    ) = _f20_hdab_valid_geometry(
+        collection,
+        full_width=full_width,
+        full_height=full_height,
+    )
+
+    histogram_pass = _f22_histogram_pass(
+        slide,
+        valid_geometry,
+        full_width=full_width,
+        full_height=full_height,
+        inverse=inverse,
+        dab_index=dab_index,
+        params=params,
+    )
+
+    threshold_od, threshold_method = (
+        _f22_threshold_from_histogram(
+            histogram_pass["histogram"],
+            params,
+        )
+    )
+
+    tile_size = int(params["tileSize"])
+    maximum_od = float(params["maximumOd"])
+    sigma_px = float(
+        params["smoothingSigmaPx"]
+    )
+
+    valid_pixel_count = int(
+        histogram_pass["validPixels"]
+    )
+
+    exact_raw_positive_pixels = 0
+    raw_group_geometries: list[Any] = []
+    preview_tiles_processed = 0
+    preview_tiles_skipped = 0
+    vectorized_tiles = 0
+    spatial_group_size_px = 2048
+
+    (
+        start_x,
+        start_y,
+        stop_x,
+        stop_y,
+    ) = _f22_tile_bounds(
+        valid_geometry,
+        tile_size=tile_size,
+        full_width=full_width,
+        full_height=full_height,
+    )
+
+    for tile_y in range(
+        start_y,
+        stop_y,
+        tile_size,
+    ):
+        tile_height = min(
+            tile_size,
+            full_height - tile_y,
+        )
+        if tile_height <= 0:
+            continue
+
+        for tile_x in range(
+            start_x,
+            stop_x,
+            tile_size,
+        ):
+            tile_width = min(
+                tile_size,
+                full_width - tile_x,
+            )
+            if tile_width <= 0:
+                continue
+
+            tile_box = box(
+                float(tile_x),
+                float(tile_y),
+                float(tile_x + tile_width),
+                float(tile_y + tile_height),
+            )
+
+            if not valid_geometry.intersects(
+                tile_box
+            ):
+                preview_tiles_skipped += 1
+                continue
+
+            tile_geometry = (
+                _f22_safe_tile_geometry(
+                    valid_geometry,
+                    tile_box,
+                )
+            )
+
+            if tile_geometry.is_empty:
+                preview_tiles_skipped += 1
+                continue
+
+            valid_mask = (
+                _f11_geometry_mask_window(
+                    tile_geometry,
+                    origin_x=tile_x,
+                    origin_y=tile_y,
+                    width=tile_width,
+                    height=tile_height,
+                )
+            )
+
+            if not np.any(valid_mask):
+                preview_tiles_skipped += 1
+                continue
+
+            dab = _f22_read_dab_tile(
+                slide,
+                tile_x=tile_x,
+                tile_y=tile_y,
+                tile_width=tile_width,
+                tile_height=tile_height,
+                full_width=full_width,
+                full_height=full_height,
+                inverse=inverse,
+                dab_index=dab_index,
+                maximum_od=maximum_od,
+                sigma_px=sigma_px,
+            )
+
+            positive_mask = (
+                valid_mask
+                & (
+                    dab
+                    >= float(threshold_od)
+                )
+            )
+
+            local_positive_pixels = int(
+                np.count_nonzero(
+                    positive_mask
+                )
+            )
+            exact_raw_positive_pixels += (
+                local_positive_pixels
+            )
+            preview_tiles_processed += 1
+
+            if local_positive_pixels < 1:
+                continue
+
+            local_geometry = _il1_mask_to_geometry(
+                positive_mask,
+                1.0,
+                1.0,
+            )
+
+            if (
+                local_geometry is None
+                or local_geometry.is_empty
+            ):
+                continue
+
+            global_geometry = shapely_translate(
+                local_geometry,
+                xoff=float(tile_x),
+                yoff=float(tile_y),
+            )
+
+            if (
+                not global_geometry.is_empty
+                and not global_geometry.is_valid
+            ):
+                global_geometry = make_valid(
+                    global_geometry
+                )
+
+            global_geometry = (
+                _polygonal_only(
+                    global_geometry
+                )
+                or GeometryCollection()
+            )
+
+            if global_geometry.is_empty:
+                continue
+
+            raw_group_geometries.append(
+                global_geometry
+            )
+            vectorized_tiles += 1
+
+    small_enabled = bool(
+        params["smallObjectFilterEnabled"]
+    )
+    minimum_area_px2 = float(
+        params["minimumObjectAreaPx2"]
+    )
+
+    objects_before = 0
+    objects_after = 0
+    removed_objects = 0
+    removed_area_px2 = 0.0
+
+    if raw_group_geometries:
+        merged = (
+            raw_group_geometries[0]
+            if len(raw_group_geometries) == 1
+            else unary_union(
+                raw_group_geometries
+            )
+        )
+        raw_parts = _f22_polygon_parts(
+            merged
+        )
+    else:
+        raw_parts = []
+
+    objects_before = int(len(raw_parts))
+
+    if (
+        small_enabled
+        and minimum_area_px2 > 0
+    ):
+        kept_parts = [
+            part
+            for part in raw_parts
+            if float(part.area)
+            >= minimum_area_px2
+        ]
+        removed_parts = [
+            part
+            for part in raw_parts
+            if float(part.area)
+            < minimum_area_px2
+        ]
+
+        objects_after = int(
+            len(kept_parts)
+        )
+        removed_objects = int(
+            len(removed_parts)
+        )
+        removed_area_px2 = float(
+            sum(
+                float(part.area)
+                for part in removed_parts
+            )
+        )
+
+        detections = _f22_package_parts(
+            kept_parts,
+            spatial_group_size_px=
+                spatial_group_size_px,
+        )
+
+        filtered_positive_area_px2 = float(
+            sum(
+                float(part.area)
+                for part in kept_parts
+            )
+        )
+
+        positive_area_px2 = max(
+            0.0,
+            min(
+                float(valid_pixel_count),
+                filtered_positive_area_px2,
+            ),
+        )
+
+        quantification_basis = (
+            "vectorized-final-positive-mask-after-minimum-area-filter"
+        )
+    else:
+        objects_after = objects_before
+        detections = _f22_package_parts(
+            raw_parts,
+            spatial_group_size_px=
+                spatial_group_size_px,
+        )
+
+        positive_area_px2 = float(
+            max(
+                0,
+                min(
+                    valid_pixel_count,
+                    exact_raw_positive_pixels,
+                ),
+            )
+        )
+
+        quantification_basis = (
+            "native-threshold-pixels"
+        )
+
+    negative_area_px2 = max(
+        0.0,
+        float(valid_pixel_count)
+        - positive_area_px2,
+    )
+
+    positive_percent = (
+        100.0
+        * positive_area_px2
+        / float(valid_pixel_count)
+        if valid_pixel_count > 0
+        else 0.0
+    )
+    negative_percent = (
+        100.0 - positive_percent
+    )
+
+    mean_dab_od = (
+        float(histogram_pass["dabSum"])
+        / float(valid_pixel_count)
+        if valid_pixel_count > 0
+        else 0.0
+    )
+
+    return {
+        "method":
+            "quantitative-hdab-native-v2",
+        "threshold": {
+            "mode":
+                str(params["thresholdMode"]),
+            "method":
+                threshold_method,
+            "dabOpticalDensity":
+                float(threshold_od),
+            "requestedDabOpticalDensity":
+                float(params["thresholdOd"]),
+            "weightedObjectVarianceDelta":
+                float(params["wovDelta"]),
+            "histogramBins":
+                int(params["histogramBins"]),
+            "maximumDabOpticalDensity":
+                float(maximum_od),
+        },
+        "processing": {
+            "gaussianSmoothing": {
+                "enabled":
+                    bool(
+                        params[
+                            "smoothingEnabled"
+                        ]
+                    ),
+                "sigma":
+                    float(
+                        params[
+                            "smoothingSigma"
+                        ]
+                    ),
+                "unit":
+                    str(
+                        params[
+                            "smoothingUnit"
+                        ]
+                    ),
+                "sigmaPx":
+                    float(sigma_px),
+                "space":
+                    "DAB-optical-density",
+            },
+            "smallObjectFilter": {
+                "enabled":
+                    bool(small_enabled),
+                "minimumArea":
+                    float(
+                        params[
+                            "minimumObjectArea"
+                        ]
+                    ),
+                "unit":
+                    str(
+                        params[
+                            "minimumObjectAreaUnit"
+                        ]
+                    ),
+                "minimumAreaPx2":
+                    float(minimum_area_px2),
+                "objectsBefore":
+                    int(objects_before),
+                "objectsAfter":
+                    int(objects_after),
+                "removedObjects":
+                    int(removed_objects),
+                "removedAreaPx2":
+                    float(removed_area_px2),
+            },
+            "calibrationMpp":
+                (
+                    float(params["mpp"])
+                    if float(params["mpp"]) > 0
+                    else None
+                ),
+            "quantificationBasis":
+                quantification_basis,
+        },
+        "analysis": {
+            "imageType": image_type,
+            "analysisRegion":
+                (
+                    "Tissue ROI - External border "
+                    "- Artifact - Anthracosis"
+                ),
+            "analysisResolution":
+                "native-level-0",
+            "tileSize":
+                int(tile_size),
+            "imageWidth":
+                int(full_width),
+            "imageHeight":
+                int(full_height),
+            **geometry_report,
+        },
+        "results": {
+            "validPixels":
+                int(valid_pixel_count),
+            "validAreaPx2":
+                float(valid_pixel_count),
+            "rawPositivePixels":
+                int(
+                    exact_raw_positive_pixels
+                ),
+            "positivePixels":
+                int(
+                    round(
+                        positive_area_px2
+                    )
+                ),
+            "positiveAreaPx2":
+                float(
+                    positive_area_px2
+                ),
+            "negativePixels":
+                int(
+                    round(
+                        negative_area_px2
+                    )
+                ),
+            "negativeAreaPx2":
+                float(
+                    negative_area_px2
+                ),
+            "positivePercent":
+                float(positive_percent),
+            "negativePercent":
+                float(negative_percent),
+            "meanDabOpticalDensity":
+                float(mean_dab_od),
+        },
+        "tiles":
+            histogram_pass["tiles"],
+        "preview": {
+            "className": "Positive",
+            "returnedFeatures":
+                int(len(detections)),
+            "spatialGroupSizePx":
+                int(
+                    spatial_group_size_px
+                ),
+            "tilesProcessed":
+                int(
+                    preview_tiles_processed
+                ),
+            "tilesSkipped":
+                int(
+                    preview_tiles_skipped
+                ),
+            "vectorizedTiles":
+                int(vectorized_tiles),
+            "vectorization":
+                "native-mask-contours-spatial-pack-v2",
+        },
+        "detections": detections,
+        "stains": {
+            "hematoxylin":
+                STAIN_HEMATOXYLIN.astype(
+                    float
+                ).tolist(),
+            "dab":
+                STAIN_DAB.astype(
+                    float
+                ).tolist(),
+        },
+    }
+
+
+@app.post(
+    "/api/images/{image_id}/analyze-hdab-live-preview"
+)
+def analyze_hdab_live_preview(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    from shapely.affinity import (
+        translate as shapely_translate,
+    )
+
+    collection = _f22_collection(payload)
+    params = _f22_parameters(payload)
+
+    (
+        slide,
+        _relative,
+        image_type,
+        full_width,
+        full_height,
+        inverse,
+        dab_index,
+    ) = _f22_prepare_slide(image_id)
+
+    (
+        valid_geometry,
+        _geometry_report,
+    ) = _f20_hdab_valid_geometry(
+        collection,
+        full_width=full_width,
+        full_height=full_height,
+    )
+
+    region = payload.get("region")
+    if not isinstance(region, dict):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "region is required for live preview"
+            ),
+        )
+
+    x = _f22_float(
+        region.get("x"),
+        0.0,
+        0.0,
+        float(full_width),
+    )
+    y = _f22_float(
+        region.get("y"),
+        0.0,
+        0.0,
+        float(full_height),
+    )
+    width = _f22_float(
+        region.get("width"),
+        512.0,
+        1.0,
+        float(full_width),
+    )
+    height = _f22_float(
+        region.get("height"),
+        512.0,
+        1.0,
+        float(full_height),
+    )
+
+    max_side = 1536.0
+    width = min(width, max_side)
+    height = min(height, max_side)
+
+    x = min(
+        x,
+        max(
+            0.0,
+            float(full_width) - width,
+        ),
+    )
+    y = min(
+        y,
+        max(
+            0.0,
+            float(full_height) - height,
+        ),
+    )
+
+    read_x = int(np.floor(x))
+    read_y = int(np.floor(y))
+
+    read_width = int(
+        min(
+            full_width - read_x,
+            max(1, np.ceil(width)),
+        )
+    )
+    read_height = int(
+        min(
+            full_height - read_y,
+            max(1, np.ceil(height)),
+        )
+    )
+
+    region_box = box(
+        float(read_x),
+        float(read_y),
+        float(read_x + read_width),
+        float(read_y + read_height),
+    )
+
+    region_geometry = _f22_safe_tile_geometry(
+        valid_geometry,
+        region_box,
+    )
+
+    if region_geometry.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Current live-preview region contains "
+                "no valid H-DAB tissue"
+            ),
+        )
+
+    valid_mask = _f11_geometry_mask_window(
+        region_geometry,
+        origin_x=read_x,
+        origin_y=read_y,
+        width=read_width,
+        height=read_height,
+    )
+
+    if not np.any(valid_mask):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Current live-preview region contains "
+                "no valid H-DAB pixels"
+            ),
+        )
+
+    dab = _f22_read_dab_tile(
+        slide,
+        tile_x=read_x,
+        tile_y=read_y,
+        tile_width=read_width,
+        tile_height=read_height,
+        full_width=full_width,
+        full_height=full_height,
+        inverse=inverse,
+        dab_index=dab_index,
+        maximum_od=float(
+            params["maximumOd"]
+        ),
+        sigma_px=float(
+            params[
+                "smoothingSigmaPx"
+            ]
+        ),
+    )
+
+    values = dab[valid_mask]
+
+    histogram, _edges = np.histogram(
+        values,
+        bins=int(
+            params["histogramBins"]
+        ),
+        range=(
+            0.0,
+            float(params["maximumOd"]),
+        ),
+    )
+
+    threshold_od, threshold_method = (
+        _f22_threshold_from_histogram(
+            histogram,
+            params,
+        )
+    )
+
+    positive_mask = (
+        valid_mask
+        & (
+            dab >= float(threshold_od)
+        )
+    )
+
+    raw_positive_pixels = int(
+        np.count_nonzero(
+            positive_mask
+        )
+    )
+
+    removed_objects = 0
+    removed_pixels = 0
+
+    if (
+        bool(
+            params[
+                "smallObjectFilterEnabled"
+            ]
+        )
+        and float(
+            params[
+                "minimumObjectAreaPx2"
+            ]
+        ) > 0
+        and raw_positive_pixels > 0
+    ):
+        try:
+            import cv2
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Small-object H-DAB filtering requires "
+                    "opencv-python-headless"
+                ),
+            ) from exc
+
+        (
+            count,
+            labels,
+            stats,
+            _centroids,
+        ) = cv2.connectedComponentsWithStats(
+            positive_mask.astype(
+                np.uint8
+            ),
+            connectivity=8,
+        )
+
+        filtered = np.zeros_like(
+            positive_mask,
+            dtype=bool,
+        )
+
+        minimum_area = float(
+            params[
+                "minimumObjectAreaPx2"
+            ]
+        )
+
+        for label in range(
+            1,
+            int(count),
+        ):
+            left = int(
+                stats[
+                    label,
+                    cv2.CC_STAT_LEFT,
+                ]
+            )
+            top = int(
+                stats[
+                    label,
+                    cv2.CC_STAT_TOP,
+                ]
+            )
+            component_width = int(
+                stats[
+                    label,
+                    cv2.CC_STAT_WIDTH,
+                ]
+            )
+            component_height = int(
+                stats[
+                    label,
+                    cv2.CC_STAT_HEIGHT,
+                ]
+            )
+            area = int(
+                stats[
+                    label,
+                    cv2.CC_STAT_AREA,
+                ]
+            )
+
+            touches_live_boundary = (
+                left <= 0
+                or top <= 0
+                or (
+                    left + component_width
+                ) >= read_width
+                or (
+                    top + component_height
+                ) >= read_height
+            )
+
+            if (
+                area >= minimum_area
+                or touches_live_boundary
+            ):
+                filtered[
+                    labels == label
+                ] = True
+            else:
+                removed_objects += 1
+                removed_pixels += int(area)
+
+        positive_mask = filtered
+
+    final_positive_pixels = int(
+        np.count_nonzero(
+            positive_mask
+        )
+    )
+
+    local_geometry = (
+        _il1_mask_to_geometry(
+            positive_mask,
+            1.0,
+            1.0,
+        )
+        if final_positive_pixels > 0
+        else GeometryCollection()
+    )
+
+    if (
+        local_geometry is not None
+        and not local_geometry.is_empty
+    ):
+        geometry = shapely_translate(
+            local_geometry,
+            xoff=float(read_x),
+            yoff=float(read_y),
+        )
+
+        if not geometry.is_valid:
+            geometry = make_valid(
+                geometry
+            )
+
+        geometry = (
+            _polygonal_only(geometry)
+            or GeometryCollection()
+        )
+    else:
+        geometry = GeometryCollection()
+
+    detections = (
+        [
+            {
+                "id":
+                    "hdab-live-positive",
+                "geometry":
+                    mapping(geometry),
+                "areaPx2":
+                    float(geometry.area),
+            }
+        ]
+        if not geometry.is_empty
+        else []
+    )
+
+    valid_pixels = int(
+        np.count_nonzero(valid_mask)
+    )
+    negative_pixels = max(
+        0,
+        valid_pixels
+        - final_positive_pixels,
+    )
+
+    positive_percent = (
+        100.0
+        * final_positive_pixels
+        / valid_pixels
+        if valid_pixels > 0
+        else 0.0
+    )
+
+    return {
+        "method":
+            "quantitative-hdab-live-preview-v1",
+        "threshold": {
+            "mode":
+                str(params["thresholdMode"]),
+            "method":
+                threshold_method,
+            "dabOpticalDensity":
+                float(threshold_od),
+            "requestedDabOpticalDensity":
+                float(params["thresholdOd"]),
+            "weightedObjectVarianceDelta":
+                float(params["wovDelta"]),
+        },
+        "processing": {
+            "gaussianSmoothing": {
+                "enabled":
+                    bool(
+                        params[
+                            "smoothingEnabled"
+                        ]
+                    ),
+                "sigma":
+                    float(
+                        params[
+                            "smoothingSigma"
+                        ]
+                    ),
+                "unit":
+                    str(
+                        params[
+                            "smoothingUnit"
+                        ]
+                    ),
+                "sigmaPx":
+                    float(
+                        params[
+                            "smoothingSigmaPx"
+                        ]
+                    ),
+            },
+            "smallObjectFilter": {
+                "enabled":
+                    bool(
+                        params[
+                            "smallObjectFilterEnabled"
+                        ]
+                    ),
+                "minimumArea":
+                    float(
+                        params[
+                            "minimumObjectArea"
+                        ]
+                    ),
+                "unit":
+                    str(
+                        params[
+                            "minimumObjectAreaUnit"
+                        ]
+                    ),
+                "minimumAreaPx2":
+                    float(
+                        params[
+                            "minimumObjectAreaPx2"
+                        ]
+                    ),
+                "removedObjects":
+                    int(removed_objects),
+                "removedPixels":
+                    int(removed_pixels),
+                "liveBoundaryObjectsPreserved":
+                    True,
+            },
+            "calibrationMpp":
+                (
+                    float(params["mpp"])
+                    if float(params["mpp"]) > 0
+                    else None
+                ),
+        },
+        "analysis": {
+            "imageType": image_type,
+            "analysisRegion":
+                "current-view-live-preview",
+            "analysisResolution":
+                "native-level-0",
+            "region": {
+                "x": int(read_x),
+                "y": int(read_y),
+                "width": int(read_width),
+                "height": int(read_height),
+                "maxSidePx":
+                    int(max_side),
+            },
+        },
+        "results": {
+            "validPixels":
+                int(valid_pixels),
+            "validAreaPx2":
+                float(valid_pixels),
+            "rawPositivePixels":
+                int(raw_positive_pixels),
+            "positivePixels":
+                int(
+                    final_positive_pixels
+                ),
+            "positiveAreaPx2":
+                float(
+                    final_positive_pixels
+                ),
+            "negativePixels":
+                int(negative_pixels),
+            "negativeAreaPx2":
+                float(negative_pixels),
+            "positivePercent":
+                float(positive_percent),
+            "negativePercent":
+                float(
+                    100.0
+                    - positive_percent
+                ),
+            "meanDabOpticalDensity":
+                float(
+                    np.mean(
+                        values,
+                        dtype=np.float64,
+                    )
+                ),
+        },
+        "preview": {
+            "className": "Positive",
+            "returnedFeatures":
+                int(len(detections)),
+            "live": True,
+        },
+        "detections": detections,
+    }
+

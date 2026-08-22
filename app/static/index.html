@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-F1.12">
+  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-F2.2.1">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F1.12</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F2.2.1</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -85,6 +85,7 @@
         <button id="phaseBFocusMenuButton" class="menu-item" type="button">Focus Mode</button>
         <button id="phaseBShortcutsMenuButton" class="menu-item" type="button">Keyboard shortcuts</button>
         <button id="phaseDTissueRoiMenuButton" class="menu-item" type="button">Tissue ROI…</button>
+        <button id="hdabQuantButton" class="menu-item" type="button" disabled>H-DAB quantification</button>
         <button id="phaseF1AnthracosisButton" class="menu-item" type="button">Detect anthracosis</button>
 <div class="phase-d7-1-v2-settings-separator">
 </div>
@@ -218,6 +219,113 @@
                 type="button">Accept</button>
         <button id="phaseF1PreviewCancelButton"
                 type="button">Cancel</button>
+      </div>
+
+      <div id="phaseF21HdabPreviewAction"
+           class="context-actions phase-f1-preview-action"
+           hidden>
+        <strong>H-DAB Positive preview</strong>
+        <span id="phaseF21HdabPreviewSummary">—</span>
+        <button id="phaseF21HdabChangeParametersButton"
+                type="button">Change parameters</button>
+        <button id="phaseF21HdabAcceptButton"
+                type="button">Accept</button>
+        <button id="phaseF21HdabCancelButton"
+                type="button">Cancel</button>
+      </div>
+
+      <style id="phaseF221LiveDockStyle">
+        #phaseF22LiveDock[hidden] {
+          display: none !important;
+        }
+
+        #phaseF22LiveDock {
+          width: min(430px, calc(100vw - 24px));
+          max-width: 430px;
+          min-width: 300px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          align-items: stretch;
+          padding: 12px;
+        }
+
+        #phaseF22LiveDock .phase-f22-live-dock-header {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        #phaseF22LiveDock .phase-f22-live-dock-slider {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 5px 10px;
+          align-items: center;
+        }
+
+        #phaseF22LiveDock .phase-f22-live-dock-slider input {
+          grid-column: 1 / -1;
+          width: 100%;
+          min-width: 0;
+        }
+
+        #phaseF22LiveDock .phase-f22-live-dock-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 7px;
+        }
+
+        #phaseF22LiveDock .phase-f22-live-dock-actions button {
+          flex: 1 1 auto;
+        }
+
+        #phaseF22LiveDockSummary {
+          line-height: 1.35;
+        }
+      </style>
+
+      <div id="phaseF22LiveDock"
+           class="context-actions phase-f1-preview-action"
+           hidden>
+        <div class="phase-f22-live-dock-header">
+          <strong>H-DAB manual live preview</strong>
+          <span>Fixed OD</span>
+        </div>
+
+        <span id="phaseF22LiveDockSummary">
+          Select a current-view region.
+        </span>
+
+        <label class="phase-f22-live-dock-slider">
+          <span>DAB OD threshold</span>
+          <output id="phaseF22LiveDockThresholdValue">0.30</output>
+          <input id="phaseF22LiveDockThreshold"
+                 type="range"
+                 min="0"
+                 max="6"
+                 step="0.01"
+                 value="0.30">
+        </label>
+
+        <div class="phase-f22-live-dock-actions">
+          <button id="phaseF22LiveDockRefreshButton"
+                  type="button">
+            Use current view
+          </button>
+          <button id="phaseF22LiveDockApplyButton"
+                  type="button">
+            Preview whole slide
+          </button>
+          <button id="phaseF22LiveDockParametersButton"
+                  type="button">
+            Parameters
+          </button>
+          <button id="phaseF22LiveDockClearButton"
+                  type="button">
+            Close live preview
+          </button>
+        </div>
       </div>
 
       <div id="phaseCWorkflowAction" class="context-actions phase-c-workflow-action" hidden>
@@ -446,6 +554,121 @@
         <button id="fillUnannotatedRefreshButton" type="button">Refresh preview</button>
         <button id="fillUnannotatedCancelButton" type="button">Cancel</button>
         <button id="fillUnannotatedCreateButton" type="button" disabled>Create annotation</button>
+      </div>
+    </section>
+  </div>
+
+    <div id="hdabQuantModal" class="modal-overlay" hidden>
+    <section class="modal-card stats-card" role="dialog" aria-modal="true" aria-labelledby="hdabQuantTitle">
+      <h2 id="hdabQuantTitle">Quantitative H-DAB analysis</h2>
+
+      <p class="modal-note">
+        Native level-0 DAB optical-density analysis. Valid tissue is Tissue ROI minus
+        the configured external border, Artifact and Anthracosis. Preview is
+        non-destructive; Accept creates editable Positive annotations.
+      </p>
+
+      <label class="phase-d-roi-setting">
+        <span>Threshold method</span>
+        <select id="hdabQuantThresholdMode">
+          <option value="auto_otsu" selected>Auto — Otsu</option>
+          <option value="auto_wov">Auto — Weighted object variance</option>
+          <option value="manual">Fixed / Manual DAB optical density</option>
+        </select>
+      </label>
+
+      <label id="hdabQuantWovDeltaField" class="phase-d-roi-setting" hidden>
+        <span>
+          WOV delta
+          <output id="hdabQuantWovDeltaValue">+0.25</output>
+        </span>
+        <input id="hdabQuantWovDelta"
+               type="range"
+               min="-1" max="1" step="0.05" value="0.25">
+        <small>
+          Positive values favor sparse Positive staining; negative values can be
+          useful for densely stained slides. Delta 0 is Otsu-equivalent.
+        </small>
+      </label>
+
+      <label id="hdabQuantThresholdField" class="phase-d-roi-setting">
+        <span>
+          Fixed DAB OD threshold
+          <output id="hdabQuantThresholdValue">0.30</output>
+        </span>
+        <input id="hdabQuantThreshold"
+               type="range"
+               min="0" max="6" step="0.01" value="0.30"
+               disabled>
+      </label>
+
+      <div id="hdabQuantLivePanel" class="phase-d-roi-panel" hidden>
+        <strong>Manual live preview</strong>
+        <p class="modal-note">
+          Zoom to a representative area, then use the current view. The selected
+          region is capped at 1536 × 1536 native pixels for responsive tuning.
+          Moving the DAB OD slider updates this region automatically.
+        </p>
+        <div class="modal-actions">
+          <button id="hdabQuantUseCurrentViewButton" type="button">
+            Use current view
+          </button>
+          <button id="hdabQuantClearLiveButton" type="button" disabled>
+            Clear live preview
+          </button>
+        </div>
+        <p id="hdabQuantLiveStatus" class="modal-note">
+          No live-preview region selected.
+        </p>
+      </div>
+
+      <label class="phase-d-roi-checkbox">
+        <input id="hdabQuantSmoothingEnabled" type="checkbox">
+        <span>Gaussian smoothing before threshold</span>
+      </label>
+
+      <label id="hdabQuantSmoothingField" class="phase-d-roi-setting" hidden>
+        <span>
+          Gaussian sigma
+          <output id="hdabQuantSmoothingValue">1.00</output>
+          <span id="hdabQuantSmoothingUnit">µm</span>
+        </span>
+        <input id="hdabQuantSmoothing"
+               type="range"
+               min="0.10" max="10" step="0.10" value="1.00">
+        <small>Smoothing is applied to DAB optical density, not RGB.</small>
+      </label>
+
+      <label class="phase-d-roi-checkbox">
+        <input id="hdabQuantSmallFilterEnabled" type="checkbox">
+        <span>Remove small Positive objects</span>
+      </label>
+
+      <label id="hdabQuantMinimumAreaField" class="phase-d-roi-setting" hidden>
+        <span>
+          Minimum Positive object area
+          <output id="hdabQuantMinimumAreaValue">25.0</output>
+          <span id="hdabQuantMinimumAreaUnit">µm²</span>
+        </span>
+        <input id="hdabQuantMinimumArea"
+               type="range"
+               min="0" max="500" step="1" value="25">
+        <small>
+          OFF by default. The final Positive percentage and accepted annotation
+          use the filtered mask when enabled.
+        </small>
+      </label>
+
+      <div id="hdabQuantContent">
+        <p class="modal-note">
+          Preview the whole slide before Accept. Manual mode can first be tuned
+          on a small current-view live preview.
+        </p>
+      </div>
+
+      <div class="modal-actions">
+        <button id="hdabQuantRunButton" type="button">Preview whole slide</button>
+        <button id="hdabQuantCloseButton" type="button">Close</button>
       </div>
     </section>
   </div>
@@ -779,6 +1002,6 @@
 
 
 
-  <script src="./static/app.js?v=1.4.0-dev-F1.12"></script>
+  <script src="./static/app.js?v=1.4.0-dev-F2.2.1"></script>
 </body>
 </html>

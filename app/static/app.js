@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-F1.12";
+  const VERSION = "1.4.0-dev-F2.2.1";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -202,6 +202,7 @@
     closeOfflineFiles: document.getElementById("closeOfflineFiles"),
     imageInfoButton: document.getElementById("imageInfoButton"),
     annotationStatsButton: document.getElementById("annotationStatsButton"),
+    hdabQuantButton: document.getElementById("hdabQuantButton"),
     fillUnannotatedButton: document.getElementById("fillUnannotatedButton"),
     fillUnannotatedModal: document.getElementById("fillUnannotatedModal"),
     fillUnannotatedClassSelect: document.getElementById("fillUnannotatedClassSelect"),
@@ -212,6 +213,31 @@
     annotationStatsModal: document.getElementById("annotationStatsModal"),
     annotationStatsContent: document.getElementById("annotationStatsContent"),
     annotationStatsCloseButton: document.getElementById("annotationStatsCloseButton"),
+    hdabQuantModal: document.getElementById("hdabQuantModal"),
+    hdabQuantContent: document.getElementById("hdabQuantContent"),
+    hdabQuantThresholdMode: document.getElementById("hdabQuantThresholdMode"),
+    hdabQuantThreshold: document.getElementById("hdabQuantThreshold"),
+    hdabQuantThresholdValue: document.getElementById("hdabQuantThresholdValue"),
+    hdabQuantThresholdField: document.getElementById("hdabQuantThresholdField"),
+    hdabQuantWovDeltaField: document.getElementById("hdabQuantWovDeltaField"),
+    hdabQuantWovDelta: document.getElementById("hdabQuantWovDelta"),
+    hdabQuantWovDeltaValue: document.getElementById("hdabQuantWovDeltaValue"),
+    hdabQuantLivePanel: document.getElementById("hdabQuantLivePanel"),
+    hdabQuantUseCurrentViewButton: document.getElementById("hdabQuantUseCurrentViewButton"),
+    hdabQuantClearLiveButton: document.getElementById("hdabQuantClearLiveButton"),
+    hdabQuantLiveStatus: document.getElementById("hdabQuantLiveStatus"),
+    hdabQuantSmoothingEnabled: document.getElementById("hdabQuantSmoothingEnabled"),
+    hdabQuantSmoothingField: document.getElementById("hdabQuantSmoothingField"),
+    hdabQuantSmoothing: document.getElementById("hdabQuantSmoothing"),
+    hdabQuantSmoothingValue: document.getElementById("hdabQuantSmoothingValue"),
+    hdabQuantSmoothingUnit: document.getElementById("hdabQuantSmoothingUnit"),
+    hdabQuantSmallFilterEnabled: document.getElementById("hdabQuantSmallFilterEnabled"),
+    hdabQuantMinimumAreaField: document.getElementById("hdabQuantMinimumAreaField"),
+    hdabQuantMinimumArea: document.getElementById("hdabQuantMinimumArea"),
+    hdabQuantMinimumAreaValue: document.getElementById("hdabQuantMinimumAreaValue"),
+    hdabQuantMinimumAreaUnit: document.getElementById("hdabQuantMinimumAreaUnit"),
+    hdabQuantRunButton: document.getElementById("hdabQuantRunButton"),
+    hdabQuantCloseButton: document.getElementById("hdabQuantCloseButton"),
     reviewModeButton: document.getElementById("reviewModeButton"),
     reviewPanel: document.getElementById("reviewPanel"),
     reviewScopeLabel: document.getElementById("reviewScopeLabel"),
@@ -12041,6 +12067,7 @@ if (!geometry) {
     if (els.downloadOfflineButton) els.downloadOfflineButton.disabled = !enabled || !currentInfo || Boolean(currentImage?.localNative);
     els.imageInfoButton.disabled = !enabled;
     if (els.annotationStatsButton) els.annotationStatsButton.disabled = !enabled || featureCollection.features.length === 0 || Boolean(currentImage?.localNative);
+    if (els.hdabQuantButton) els.hdabQuantButton.disabled = !enabled || !currentImage || !currentInfo || imageType !== "hdab" || Boolean(currentImage?.localNative);
     if (els.fillUnannotatedButton) els.fillUnannotatedButton.disabled = !enabled || !currentInfo || geometryBusy || Boolean(currentImage?.localNative);
     if (els.reviewModeButton) els.reviewModeButton.disabled = !enabled || featureCollection.features.length === 0;
     const phaseCWorkflowSummaryButton = document.getElementById("phaseCWorkflowSummaryButton");
@@ -14929,6 +14956,2071 @@ if (!geometry) {
       "Statistics CSV exported",
       "saved"
     );
+  }
+
+  // =========================================================
+  // Phase F2.1 — H-DAB Positive preview + Accept
+  // Reuses the proven F1/Anthracosis transient preview renderer.
+  // =========================================================
+
+  let phaseF21Busy = false;
+  let phaseF21PreviewPayload = null;
+  let phaseF21PreviewFeatures = [];
+  let phaseF21PreviewImageId = null;
+  let phaseF21PreviewAnnotationFile = null;
+
+  function phaseF21Refs() {
+    return {
+      action:
+        document.getElementById(
+          "phaseF21HdabPreviewAction"
+        ),
+      summary:
+        document.getElementById(
+          "phaseF21HdabPreviewSummary"
+        ),
+      changeParameters:
+        document.getElementById(
+          "phaseF21HdabChangeParametersButton"
+        ),
+      accept:
+        document.getElementById(
+          "phaseF21HdabAcceptButton"
+        ),
+      cancel:
+        document.getElementById(
+          "phaseF21HdabCancelButton"
+        ),
+    };
+  }
+
+  function phaseF21PositiveClass() {
+    return (
+      (classes || []).find(
+        (item) =>
+          String(
+            item?.name || ""
+          )
+            .trim()
+            .toLowerCase()
+          === "positive"
+      )
+      || {
+        name: "Positive",
+        color: "#ff6b6b",
+      }
+    );
+  }
+
+  function phaseF21IsAutomaticPositiveFeature(
+    feature
+  ) {
+    const metadata =
+      feature?.properties
+        ?.histoannotator
+        ?.autoDetection;
+
+    return (
+      phaseDIsAnnotationFeature(
+        feature
+      )
+      && String(
+        feature?.properties
+          ?.classification
+          ?.name
+        || ""
+      )
+        .trim()
+        .toLowerCase()
+        === "positive"
+      && String(
+        metadata?.type
+        || ""
+      )
+        .trim()
+        .toLowerCase()
+        === "hdab-positive"
+      && String(
+        metadata?.method
+        || ""
+      )
+        .trim()
+        .toLowerCase()
+        .startsWith("quantitative-hdab-native-v")
+    );
+  }
+
+  function phaseF21CreatePositiveFeature(
+    detection,
+    payload,
+    options = {}
+  ) {
+    const classInfo =
+      phaseF21PositiveClass();
+
+    const metadata =
+      phaseCCreateMetadata();
+
+    const threshold =
+      payload?.threshold || {};
+
+    const analysis =
+      payload?.analysis || {};
+
+    const results =
+      payload?.results || {};
+
+    metadata.autoDetection = {
+      type:
+        "hdab-positive",
+      method:
+        String(
+          payload?.method
+          || "quantitative-hdab-native-v1"
+        ),
+      thresholdMode:
+        String(
+          threshold?.mode
+          || "auto"
+        ),
+      thresholdMethod:
+        String(
+          threshold?.method
+          || ""
+        ),
+      dabOpticalDensityThreshold:
+        Number(
+          threshold?.dabOpticalDensity
+          || 0
+        ),
+      positivePercent:
+        Number(
+          results?.positivePercent
+          || 0
+        ),
+      analysisRegion:
+        String(
+          analysis?.analysisRegion
+          || (
+            "Tissue ROI - External border "
+            + "- Artifact - Anthracosis"
+          )
+        ),
+      analysisResolution:
+        String(
+          analysis?.analysisResolution
+          || "native-level-0"
+        ),
+      processing:
+        deepClone(
+          payload?.processing
+          || {}
+        ),
+      createdAt:
+        new Date().toISOString(),
+    };
+
+    if (options.preview) {
+      metadata.preview = {
+        transient: true,
+        type: "hdab-positive",
+      };
+    }
+
+    const color =
+      options.preview
+        ? "#ff8787"
+        : (
+            classInfo.color
+            || "#ff6b6b"
+          );
+
+    return {
+      type: "Feature",
+      id:
+        options.preview
+          ? `hdab-positive-preview-${uid()}`
+          : uid(),
+      geometry:
+        deepClone(
+          detection.geometry
+        ),
+      properties: {
+        objectType: "annotation",
+        classification: {
+          name: "Positive",
+          color:
+            hexToRgbArray(
+              color
+            ),
+        },
+        isLocked:
+          Boolean(
+            options.preview
+          ),
+        histoannotator:
+          metadata,
+      },
+    };
+  }
+
+  function phaseF21ResetPreviewState() {
+    phaseF21PreviewPayload = null;
+    phaseF21PreviewFeatures = [];
+    phaseF21PreviewImageId = null;
+    phaseF21PreviewAnnotationFile = null;
+    window.__phaseF1PreviewFeatures = [];
+  }
+
+  function phaseF21RenderPreview() {
+    window.__phaseF1PreviewFeatures =
+      Array.isArray(
+        phaseF21PreviewFeatures
+      )
+        ? phaseF21PreviewFeatures
+        : [];
+
+    drawAnnotations();
+  }
+
+  function phaseF21HidePreviewAction() {
+    const refs =
+      phaseF21Refs();
+
+    if (refs.action) {
+      refs.action.hidden = true;
+    }
+  }
+
+  function phaseF21ShowPreviewAction() {
+    const refs =
+      phaseF21Refs();
+
+    const results =
+      phaseF21PreviewPayload?.results
+      || {};
+
+    const threshold =
+      phaseF21PreviewPayload?.threshold
+      || {};
+
+    const preview =
+      phaseF21PreviewPayload?.preview
+      || {};
+
+    const percent =
+      Number(
+        results?.positivePercent
+        || 0
+      );
+
+    const thresholdOd =
+      Number(
+        threshold?.dabOpticalDensity
+        || 0
+      );
+
+    const features =
+      Number(
+        preview?.returnedFeatures
+        ?? phaseF21PreviewFeatures.length
+        ?? 0
+      );
+
+    if (refs.summary) {
+      refs.summary.textContent =
+        `${percent.toFixed(2)}% Positive`
+        + ` · ${thresholdOd.toFixed(3)} DAB OD`
+        + ` · ${features} preview feature`
+        + `${features === 1 ? "" : "s"}`
+        + (
+          features < 1
+            ? " · no Positive geometry to accept"
+            : ""
+        );
+    }
+
+    if (refs.accept) {
+      refs.accept.disabled =
+        features < 1
+        || phaseF21Busy;
+    }
+
+    if (refs.action) {
+      refs.action.hidden = false;
+    }
+  }
+
+  function phaseF21ClearPreview(
+    redraw = true
+  ) {
+    const hadPreview =
+      phaseF21PreviewFeatures.length
+      > 0;
+
+    phaseF21ResetPreviewState();
+    phaseF21HidePreviewAction();
+
+    if (
+      redraw
+      && hadPreview
+    ) {
+      drawAnnotations();
+    }
+  }
+
+  function phaseF21SetPreview(
+    payload,
+    imageId,
+    annotationFile
+  ) {
+    phaseF21PreviewPayload =
+      deepClone(
+        payload
+      );
+
+    phaseF21PreviewImageId =
+      String(
+        imageId
+      );
+
+    phaseF21PreviewAnnotationFile =
+      String(
+        annotationFile
+      );
+
+    const detections =
+      Array.isArray(
+        payload?.detections
+      )
+        ? payload.detections
+        : [];
+
+    phaseF21PreviewFeatures =
+      detections
+        .filter(
+          (item) =>
+            item?.geometry
+        )
+        .map(
+          (item) =>
+            phaseF21CreatePositiveFeature(
+              item,
+              payload,
+              {
+                preview: true,
+              }
+            )
+        );
+
+    phaseF21RenderPreview();
+  }
+
+  function phaseF21ChangeParameters() {
+    phaseF21HidePreviewAction();
+
+    phaseF20OpenHdabQuantification();
+
+    if (
+      els.hdabQuantContent
+      && phaseF21PreviewPayload
+    ) {
+      const results =
+        phaseF21PreviewPayload.results
+        || {};
+
+      const threshold =
+        phaseF21PreviewPayload.threshold
+        || {};
+
+      els.hdabQuantContent.innerHTML = `
+        <p class="modal-note">
+          Previous preview remains visible.
+          Current result:
+          <strong>${formatStatNumber(
+            Number(
+              results.positivePercent
+              || 0
+            ),
+            2
+          )}% Positive</strong>
+          · threshold
+          ${formatStatNumber(
+            Number(
+              threshold.dabOpticalDensity
+              || 0
+            ),
+            3
+          )} DAB OD.
+          Change parameters and press
+          Preview positive to recalculate.
+        </p>
+      `;
+    }
+  }
+
+  function phaseF21CancelPreview() {
+    if (phaseF21Busy) {
+      return;
+    }
+
+    phaseF21ClearPreview(
+      true
+    );
+
+    setStatus(
+      "H-DAB Positive preview cancelled",
+      "local"
+    );
+  }
+
+  async function phaseF21EnsurePositiveClass() {
+    const localExisting =
+      (classes || []).find(
+        (item) =>
+          String(
+            item?.name || ""
+          )
+            .trim()
+            .toLowerCase()
+          === "positive"
+      );
+
+    const response =
+      await apiFetch(
+        `${API}/classes/ensure-positive`,
+        {
+          method: "POST",
+          timeoutMs: 10000,
+        }
+      );
+
+    const payload =
+      await response.json();
+
+    const serverClass =
+      payload?.class
+      || {
+        name: "Positive",
+        color: "#ff6b6b",
+      };
+
+    if (
+      !localExisting
+      && Array.isArray(classes)
+    ) {
+      classes.push({
+        name:
+          String(
+            serverClass.name
+            || "Positive"
+          ),
+        color:
+          String(
+            serverClass.color
+            || "#ff6b6b"
+          ),
+      });
+
+      if (
+        typeof renderClasses
+        === "function"
+      ) {
+        renderClasses();
+      }
+
+      if (
+        typeof renderClassList
+        === "function"
+      ) {
+        renderClassList();
+      }
+
+      if (
+        typeof updateClassList
+        === "function"
+      ) {
+        updateClassList();
+      }
+
+      if (
+        typeof renderClassButtons
+        === "function"
+      ) {
+        renderClassButtons();
+      }
+
+      updateControls();
+    }
+
+    return (
+      localExisting
+      || serverClass
+    );
+  }
+
+  function phaseF21ApplyAcceptedResult(
+    payload
+  ) {
+    const detections =
+      Array.isArray(
+        payload?.detections
+      )
+        ? payload.detections
+        : [];
+
+    const existing =
+      featureCollection.features
+      || [];
+
+    const previousCount =
+      existing.filter(
+        phaseF21IsAutomaticPositiveFeature
+      ).length;
+
+    const retained =
+      existing.filter(
+        (feature) =>
+          !phaseF21IsAutomaticPositiveFeature(
+            feature
+          )
+      );
+
+    const generated =
+      detections
+        .filter(
+          (item) =>
+            item?.geometry
+        )
+        .map(
+          (item) =>
+            phaseF21CreatePositiveFeature(
+              item,
+              payload
+            )
+        );
+
+    if (
+      previousCount === 0
+      && generated.length === 0
+    ) {
+      return {
+        changed: false,
+        previousCount: 0,
+        newCount: 0,
+      };
+    }
+
+    pushUndo();
+
+    featureCollection.features = [
+      ...retained,
+      ...generated,
+    ];
+
+    clearSelectedFeatures(
+      false
+    );
+
+    markChanged();
+    updateControls();
+    drawAnnotations();
+
+    return {
+      changed: true,
+      previousCount,
+      newCount:
+        generated.length,
+    };
+  }
+
+  async function phaseF21AcceptPreview() {
+    if (
+      phaseF21Busy
+      || !phaseF21PreviewPayload
+    ) {
+      return;
+    }
+
+    if (
+      !currentImage
+      || String(
+        currentImage.id
+      )
+        !== phaseF21PreviewImageId
+      || String(
+        currentAnnotationFile
+      )
+        !== phaseF21PreviewAnnotationFile
+    ) {
+      phaseF21ClearPreview(
+        true
+      );
+
+      setStatus(
+        "The active image or annotation file changed; H-DAB preview was discarded",
+        "error"
+      );
+
+      return;
+    }
+
+    phaseF21Busy = true;
+
+    const refs =
+      phaseF21Refs();
+
+    if (refs.accept) {
+      refs.accept.disabled = true;
+      refs.accept.textContent =
+        "Accepting…";
+    }
+
+    if (refs.cancel) {
+      refs.cancel.disabled = true;
+    }
+
+    try {
+      await phaseF21EnsurePositiveClass();
+
+      const payload =
+        phaseF21PreviewPayload;
+
+      phaseF21ResetPreviewState();
+      phaseF21HidePreviewAction();
+
+      const result =
+        phaseF21ApplyAcceptedResult(
+          payload
+        );
+
+      const percent =
+        Number(
+          payload?.results
+            ?.positivePercent
+          || 0
+        );
+
+      setStatus(
+        result.newCount > 0
+          ? (
+              `Accepted H-DAB Positive · `
+              + `${percent.toFixed(2)}%`
+              + ` · ${result.newCount} editable feature`
+              + `${result.newCount === 1 ? "" : "s"}`
+            )
+          : (
+              "No H-DAB Positive geometry was accepted"
+            ),
+        result.changed
+          ? "saved"
+          : "local"
+      );
+    } catch (error) {
+      phaseF21RenderPreview();
+      phaseF21ShowPreviewAction();
+
+      setStatus(
+        `Could not accept H-DAB Positive: ${error.message}`,
+        "error"
+      );
+    } finally {
+      phaseF21Busy = false;
+
+      if (refs.accept) {
+        refs.accept.textContent =
+          "Accept";
+      }
+
+      if (refs.cancel) {
+        refs.cancel.disabled = false;
+      }
+
+      if (phaseF21PreviewPayload) {
+        phaseF21ShowPreviewAction();
+      }
+    }
+  }
+
+  async function phaseF21RunHdabPreview() {
+    if (
+      phaseF21Busy
+      || !currentImage
+      || !currentInfo
+      || imageType !== "hdab"
+    ) {
+      return;
+    }
+
+    if (
+      currentImage.localNative
+    ) {
+      setStatus(
+        "H-DAB quantification requires a server-backed image",
+        "error"
+      );
+      return;
+    }
+
+    if (!phaseDTissueRoiFeature()) {
+      setStatus(
+        "Create or detect Tissue ROI before H-DAB quantification",
+        "error"
+      );
+      return;
+    }
+
+    const thresholdMode =
+      String(
+        els.hdabQuantThresholdMode
+          ?.value
+        || "auto"
+      );
+
+    const thresholdOd =
+      Math.max(
+        0,
+        Math.min(
+          6,
+          Number(
+            els.hdabQuantThreshold
+              ?.value
+            || 0.30
+          )
+        )
+      );
+
+    const phaseF22Settings =
+      phaseF22SettingsPayload();
+
+    phaseF22ClearLivePreview(true);
+
+    const imageId =
+      String(
+        currentImage.id
+      );
+
+    const annotationFile =
+      String(
+        currentAnnotationFile
+      );
+
+    phaseF21Busy = true;
+    phaseF21HidePreviewAction();
+
+    if (
+      els.hdabQuantRunButton
+    ) {
+      els.hdabQuantRunButton.disabled =
+        true;
+      els.hdabQuantRunButton.textContent =
+        "Building preview…";
+    }
+
+    if (
+      els.hdabQuantContent
+    ) {
+      els.hdabQuantContent.innerHTML =
+        '<p class="modal-note">Analyzing native H-DAB pixels and building Positive preview… large slides may take a while.</p>';
+    }
+
+    setStatus(
+      "Building native H-DAB Positive preview…",
+      "local"
+    );
+
+    try {
+      const response =
+        await apiFetch(
+          `${API}/images/${encodeURIComponent(
+            imageId
+          )}/analyze-hdab-v2-preview`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body:
+              JSON.stringify({
+                featureCollection,
+                thresholdMode:
+                  phaseF22Settings.thresholdMode,
+                thresholdOd,
+                wovDelta:
+                  phaseF22Settings.wovDelta,
+                smoothingEnabled:
+                  phaseF22Settings.smoothingEnabled,
+                smoothingSigma:
+                  phaseF22Settings.smoothingSigma,
+                smallObjectFilterEnabled:
+                  phaseF22Settings.smallObjectFilterEnabled,
+                minimumObjectArea:
+                  phaseF22Settings.minimumObjectArea,
+                mpp:
+                  phaseF22Settings.mpp,
+                tileSize: 1024,
+              }),
+            timeoutMs:
+              5 * 60 * 1000,
+          }
+        );
+
+      const payload =
+        await response.json();
+
+      if (
+        !currentImage
+        || String(
+          currentImage.id
+        )
+          !== imageId
+        || String(
+          currentAnnotationFile
+        )
+          !== annotationFile
+      ) {
+        phaseF21ClearPreview(
+          true
+        );
+
+        setStatus(
+          "H-DAB analysis finished, but the active image or annotation file changed; preview was discarded",
+          "local"
+        );
+
+        return;
+      }
+
+      phaseF20LastHdabResult =
+        deepClone(
+          payload
+        );
+
+      phaseF21SetPreview(
+        payload,
+        imageId,
+        annotationFile
+      );
+
+      const results =
+        payload?.results || {};
+
+      const threshold =
+        payload?.threshold || {};
+
+      const analysis =
+        payload?.analysis || {};
+
+      const preview =
+        payload?.preview || {};
+
+      const positivePercent =
+        Number(
+          results?.positivePercent
+          || 0
+        );
+
+      const thresholdValue =
+        Number(
+          threshold?.dabOpticalDensity
+          || 0
+        );
+
+      const featureCount =
+        Number(
+          preview?.returnedFeatures
+          ?? phaseF21PreviewFeatures.length
+          ?? 0
+        );
+
+      if (
+        els.hdabQuantContent
+      ) {
+        els.hdabQuantContent.innerHTML = `
+          <p class="modal-note">
+            Preview ready:
+            <strong>${formatStatNumber(
+              positivePercent,
+              2
+            )}% Positive</strong>
+            · threshold
+            ${formatStatNumber(
+              thresholdValue,
+              3
+            )} DAB OD
+            · ${formatStatNumber(
+              featureCount
+            )} spatial feature
+            ${featureCount === 1 ? "" : "s"}.
+            Inspect the red overlay in the viewer.
+          </p>
+        `;
+      }
+
+      if (
+        els.hdabQuantModal
+      ) {
+        els.hdabQuantModal.hidden =
+          true;
+      }
+
+      phaseF21ShowPreviewAction();
+
+      setStatus(
+        (
+          `H-DAB Positive preview ready · `
+          + `${positivePercent.toFixed(2)}%`
+          + ` · threshold ${thresholdValue.toFixed(3)} OD`
+        ),
+        "local"
+      );
+    } catch (error) {
+      if (
+        phaseF21PreviewPayload
+      ) {
+        phaseF21RenderPreview();
+        phaseF21ShowPreviewAction();
+      }
+
+      if (
+        els.hdabQuantContent
+      ) {
+        els.hdabQuantContent.innerHTML =
+          `<p class="modal-note">H-DAB preview failed: ${escapeHtml(error.message)}</p>`;
+      }
+
+      setStatus(
+        `H-DAB preview failed: ${error.message}`,
+        "error"
+      );
+    } finally {
+      phaseF21Busy = false;
+
+      if (
+        els.hdabQuantRunButton
+      ) {
+        els.hdabQuantRunButton.disabled =
+          false;
+        els.hdabQuantRunButton.textContent =
+          "Preview whole slide";
+      }
+
+      // F2.2.1: the first action-bar render happens while the
+      // whole-slide request is still marked busy. Refresh it now
+      // so Accept becomes enabled whenever Positive geometry exists.
+      if (phaseF21PreviewPayload) {
+        phaseF21ShowPreviewAction();
+      }
+    }
+  }
+
+  // =========================================================
+  // Phase F2.2 — Advanced H-DAB processing + manual live preview
+  // =========================================================
+
+  let phaseF22LiveRegion = null;
+  let phaseF22LiveTimer = null;
+  let phaseF22LiveSequence = 0;
+  let phaseF22LiveFeatures = [];
+
+  function phaseF22Mpp() {
+    const calibration =
+      phaseEPhysicalPixelAreaMm2();
+
+    const areaFactor =
+      Number(
+        calibration?.mm2PerPx2
+      );
+
+    if (
+      Number.isFinite(areaFactor)
+      && areaFactor > 0
+    ) {
+      return Math.sqrt(
+        areaFactor
+        * 1_000_000
+      );
+    }
+
+    return null;
+  }
+
+  function phaseF22SettingsPayload() {
+    const mpp =
+      phaseF22Mpp();
+
+    return {
+      thresholdMode:
+        String(
+          els.hdabQuantThresholdMode
+            ?.value
+          || "auto_otsu"
+        ),
+      thresholdOd:
+        Math.max(
+          0,
+          Math.min(
+            6,
+            Number(
+              els.hdabQuantThreshold
+                ?.value
+              || 0.30
+            )
+          )
+        ),
+      wovDelta:
+        Math.max(
+          -1,
+          Math.min(
+            1,
+            Number(
+              els.hdabQuantWovDelta
+                ?.value
+              || 0.25
+            )
+          )
+        ),
+      smoothingEnabled:
+        Boolean(
+          els.hdabQuantSmoothingEnabled
+            ?.checked
+        ),
+      smoothingSigma:
+        Math.max(
+          0,
+          Number(
+            els.hdabQuantSmoothing
+              ?.value
+            || 1.0
+          )
+        ),
+      smallObjectFilterEnabled:
+        Boolean(
+          els.hdabQuantSmallFilterEnabled
+            ?.checked
+        ),
+      minimumObjectArea:
+        Math.max(
+          0,
+          Number(
+            els.hdabQuantMinimumArea
+              ?.value
+            || 25
+          )
+        ),
+      mpp:
+        Number.isFinite(
+          Number(mpp)
+        )
+          && Number(mpp) > 0
+          ? Number(mpp)
+          : 0,
+      tileSize:
+        1024,
+    };
+  }
+
+  function phaseF22UpdateProcessingControls() {
+    const settings =
+      phaseF22SettingsPayload();
+
+    const manual =
+      settings.thresholdMode
+      === "manual";
+
+    const wov =
+      settings.thresholdMode
+      === "auto_wov";
+
+    if (els.hdabQuantThreshold) {
+      els.hdabQuantThreshold.disabled =
+        !manual;
+    }
+
+    if (els.hdabQuantThresholdField) {
+      els.hdabQuantThresholdField.hidden =
+        !manual;
+    }
+
+    if (els.hdabQuantWovDeltaField) {
+      els.hdabQuantWovDeltaField.hidden =
+        !wov;
+    }
+
+    if (els.hdabQuantLivePanel) {
+      els.hdabQuantLivePanel.hidden =
+        !manual;
+    }
+
+    if (els.hdabQuantSmoothingField) {
+      els.hdabQuantSmoothingField.hidden =
+        !settings.smoothingEnabled;
+    }
+
+    if (els.hdabQuantMinimumAreaField) {
+      els.hdabQuantMinimumAreaField.hidden =
+        !settings.smallObjectFilterEnabled;
+    }
+
+    if (
+      els.hdabQuantThresholdValue
+      && els.hdabQuantThreshold
+    ) {
+      els.hdabQuantThresholdValue.textContent =
+        Number(
+          els.hdabQuantThreshold.value
+          || 0
+        ).toFixed(2);
+    }
+
+    if (
+      els.hdabQuantWovDeltaValue
+      && els.hdabQuantWovDelta
+    ) {
+      const value =
+        Number(
+          els.hdabQuantWovDelta.value
+          || 0
+        );
+
+      els.hdabQuantWovDeltaValue.textContent =
+        `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+    }
+
+    if (
+      els.hdabQuantSmoothingValue
+      && els.hdabQuantSmoothing
+    ) {
+      els.hdabQuantSmoothingValue.textContent =
+        Number(
+          els.hdabQuantSmoothing.value
+          || 0
+        ).toFixed(2);
+    }
+
+    if (
+      els.hdabQuantMinimumAreaValue
+      && els.hdabQuantMinimumArea
+    ) {
+      els.hdabQuantMinimumAreaValue.textContent =
+        Number(
+          els.hdabQuantMinimumArea.value
+          || 0
+        ).toFixed(1);
+    }
+
+    const calibrated =
+      Number(settings.mpp) > 0;
+
+    if (els.hdabQuantSmoothingUnit) {
+      els.hdabQuantSmoothingUnit.textContent =
+        calibrated
+          ? "µm"
+          : "px";
+    }
+
+    if (els.hdabQuantMinimumAreaUnit) {
+      els.hdabQuantMinimumAreaUnit.textContent =
+        calibrated
+          ? "µm²"
+          : "px²";
+    }
+
+    if (
+      !manual
+      && phaseF22LiveRegion
+    ) {
+      phaseF22ClearLivePreview(true);
+    }
+  }
+
+  function phaseF22ClearLivePreview(
+    redraw = true
+  ) {
+    if (phaseF22LiveTimer) {
+      clearTimeout(
+        phaseF22LiveTimer
+      );
+      phaseF22LiveTimer = null;
+    }
+
+    phaseF22LiveSequence += 1;
+
+    const hadLive =
+      phaseF22LiveFeatures.length > 0;
+
+    phaseF22LiveRegion = null;
+    phaseF22LiveFeatures = [];
+
+    if (!phaseF21PreviewPayload) {
+      window.__phaseF1PreviewFeatures = [];
+    } else {
+      phaseF21RenderPreview();
+    }
+
+    if (
+      els.hdabQuantClearLiveButton
+    ) {
+      els.hdabQuantClearLiveButton.disabled =
+        true;
+    }
+
+    if (els.hdabQuantLiveStatus) {
+      els.hdabQuantLiveStatus.textContent =
+        "No live-preview region selected.";
+    }
+
+    if (redraw && hadLive) {
+      drawAnnotations();
+    }
+  }
+
+  function phaseF22RenderLivePayload(
+    payload
+  ) {
+    const detections =
+      Array.isArray(
+        payload?.detections
+      )
+        ? payload.detections
+        : [];
+
+    phaseF22LiveFeatures =
+      detections
+        .filter(
+          (item) =>
+            item?.geometry
+        )
+        .map(
+          (item) =>
+            phaseF21CreatePositiveFeature(
+              item,
+              payload,
+              {
+                preview: true,
+              }
+            )
+        );
+
+    window.__phaseF1PreviewFeatures =
+      phaseF22LiveFeatures;
+
+    drawAnnotations();
+
+    const results =
+      payload?.results || {};
+    const threshold =
+      payload?.threshold || {};
+    const processing =
+      payload?.processing || {};
+    const small =
+      processing?.smallObjectFilter
+      || {};
+    const region =
+      payload?.analysis?.region
+      || {};
+
+    const liveStatusText =
+      `${Number(
+        results.positivePercent
+        || 0
+      ).toFixed(2)}% Positive`
+      + ` · ${Number(
+        threshold.dabOpticalDensity
+        || 0
+      ).toFixed(3)} DAB OD`
+      + ` · ${Number(
+        region.width
+        || 0
+      )}×${Number(
+        region.height
+        || 0
+      )} px`
+      + (
+        small.enabled
+          ? ` · removed ${Number(
+              small.removedObjects
+              || 0
+            )} small object(s)`
+          : ""
+      );
+
+    if (els.hdabQuantLiveStatus) {
+      els.hdabQuantLiveStatus.textContent =
+        liveStatusText;
+    }
+
+    const dockRefs =
+      phaseF22DockRefs();
+
+    if (dockRefs.summary) {
+      dockRefs.summary.textContent =
+        liveStatusText;
+    }
+
+    phaseF22SyncDockThreshold();
+  }
+
+  async function phaseF22RunLivePreview() {
+    if (
+      !phaseF22LiveRegion
+      || !currentImage
+      || !currentInfo
+      || imageType !== "hdab"
+    ) {
+      return;
+    }
+
+    const settings =
+      phaseF22SettingsPayload();
+
+    if (
+      settings.thresholdMode
+      !== "manual"
+    ) {
+      return;
+    }
+
+    const sequence =
+      ++phaseF22LiveSequence;
+
+    if (els.hdabQuantLiveStatus) {
+      els.hdabQuantLiveStatus.textContent =
+        "Updating live preview…";
+    }
+
+    const liveDockRefs =
+      phaseF22DockRefs();
+
+    if (liveDockRefs.summary) {
+      liveDockRefs.summary.textContent =
+        "Updating live preview…";
+    }
+
+    try {
+      const response =
+        await apiFetch(
+          `${API}/images/${encodeURIComponent(
+            currentImage.id
+          )}/analyze-hdab-live-preview`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body:
+              JSON.stringify({
+                featureCollection,
+                region:
+                  phaseF22LiveRegion,
+                ...settings,
+              }),
+            timeoutMs:
+              60 * 1000,
+          }
+        );
+
+      const payload =
+        await response.json();
+
+      if (
+        sequence
+        !== phaseF22LiveSequence
+      ) {
+        return;
+      }
+
+      phaseF22RenderLivePayload(
+        payload
+      );
+    } catch (error) {
+      if (
+        sequence
+        !== phaseF22LiveSequence
+      ) {
+        return;
+      }
+
+      const message =
+        `Live preview failed: ${error.message}`;
+
+      if (els.hdabQuantLiveStatus) {
+        els.hdabQuantLiveStatus.textContent =
+          message;
+      }
+
+      const dockRefs =
+        phaseF22DockRefs();
+
+      if (dockRefs.summary) {
+        dockRefs.summary.textContent =
+          message;
+      }
+    }
+  }
+
+  function phaseF22ScheduleLivePreview() {
+    if (
+      !phaseF22LiveRegion
+      || String(
+        els.hdabQuantThresholdMode
+          ?.value
+      )
+        !== "manual"
+    ) {
+      return;
+    }
+
+    if (phaseF22LiveTimer) {
+      clearTimeout(
+        phaseF22LiveTimer
+      );
+    }
+
+    phaseF22LiveTimer =
+      setTimeout(
+        () => {
+          phaseF22LiveTimer = null;
+          phaseF22RunLivePreview();
+        },
+        300
+      );
+  }
+
+  function phaseF22DockRefs() {
+    return {
+      dock:
+        document.getElementById(
+          "phaseF22LiveDock"
+        ),
+      summary:
+        document.getElementById(
+          "phaseF22LiveDockSummary"
+        ),
+      threshold:
+        document.getElementById(
+          "phaseF22LiveDockThreshold"
+        ),
+      thresholdValue:
+        document.getElementById(
+          "phaseF22LiveDockThresholdValue"
+        ),
+    };
+  }
+
+  function phaseF22SyncDockThreshold() {
+    const refs =
+      phaseF22DockRefs();
+
+    const value =
+      Number(
+        els.hdabQuantThreshold
+          ?.value
+        || 0.30
+      );
+
+    if (refs.threshold) {
+      refs.threshold.value =
+        String(value);
+    }
+
+    if (refs.thresholdValue) {
+      refs.thresholdValue.textContent =
+        value.toFixed(2);
+    }
+  }
+
+  function phaseF22ShowLiveDock() {
+    const refs =
+      phaseF22DockRefs();
+
+    phaseF22SyncDockThreshold();
+
+    if (els.hdabQuantModal) {
+      els.hdabQuantModal.hidden =
+        true;
+    }
+
+    if (refs.dock) {
+      refs.dock.hidden = false;
+    }
+
+    phaseF21HidePreviewAction();
+  }
+
+  function phaseF22HideLiveDock() {
+    const refs =
+      phaseF22DockRefs();
+
+    if (refs.dock) {
+      refs.dock.hidden = true;
+    }
+  }
+
+  function phaseF22OpenParametersFromDock() {
+    phaseF22HideLiveDock();
+
+    if (els.hdabQuantModal) {
+      els.hdabQuantModal.hidden =
+        false;
+    }
+
+    phaseF20UpdateThresholdControls();
+  }
+
+  async function phaseF22ApplyLiveSettingsWholeSlide() {
+    phaseF22HideLiveDock();
+    await phaseF21RunHdabPreview();
+  }
+
+  function phaseF22CaptureCurrentView() {
+    if (
+      !viewer
+      || !viewer.world
+      || !viewer.world.getItemCount()
+    ) {
+      setStatus(
+        "Open an image before selecting a live-preview region",
+        "error"
+      );
+      return;
+    }
+
+    const item =
+      viewer.world.getItemAt(0);
+
+    if (
+      !item
+      || typeof item.viewportToImageRectangle
+        !== "function"
+    ) {
+      setStatus(
+        "Could not convert the current view to image coordinates",
+        "error"
+      );
+      return;
+    }
+
+    const viewportBounds =
+      viewer.viewport.getBounds(true);
+
+    const imageBounds =
+      item.viewportToImageRectangle(
+        viewportBounds
+      );
+
+    const content =
+      item.getContentSize();
+
+    const fullWidth =
+      Number(
+        content?.x
+        || currentInfo?.width
+        || 0
+      );
+    const fullHeight =
+      Number(
+        content?.y
+        || currentInfo?.height
+        || 0
+      );
+
+    if (
+      !Number.isFinite(fullWidth)
+      || !Number.isFinite(fullHeight)
+      || fullWidth <= 0
+      || fullHeight <= 0
+    ) {
+      setStatus(
+        "Could not determine native image dimensions",
+        "error"
+      );
+      return;
+    }
+
+    const rawWidth =
+      Math.max(
+        1,
+        Math.min(
+          fullWidth,
+          Number(imageBounds.width)
+        )
+      );
+    const rawHeight =
+      Math.max(
+        1,
+        Math.min(
+          fullHeight,
+          Number(imageBounds.height)
+        )
+      );
+
+    const maxSide = 1536;
+
+    const width =
+      Math.min(
+        rawWidth,
+        maxSide
+      );
+    const height =
+      Math.min(
+        rawHeight,
+        maxSide
+      );
+
+    const centerX =
+      Number(imageBounds.x)
+      + rawWidth / 2;
+    const centerY =
+      Number(imageBounds.y)
+      + rawHeight / 2;
+
+    const x =
+      Math.max(
+        0,
+        Math.min(
+          fullWidth - width,
+          centerX - width / 2
+        )
+      );
+    const y =
+      Math.max(
+        0,
+        Math.min(
+          fullHeight - height,
+          centerY - height / 2
+        )
+      );
+
+    if (phaseF21PreviewPayload) {
+      phaseF21ClearPreview(true);
+    }
+
+    phaseF22LiveRegion = {
+      x,
+      y,
+      width,
+      height,
+    };
+
+    if (
+      els.hdabQuantClearLiveButton
+    ) {
+      els.hdabQuantClearLiveButton.disabled =
+        false;
+    }
+
+    phaseF22ShowLiveDock();
+    phaseF22RunLivePreview();
+  }
+
+  // =========================================================
+  // Phase F2.0 — Quantitative H-DAB analysis
+  // =========================================================
+
+  let phaseF20LastHdabResult = null;
+
+  function phaseF20UpdateThresholdControls() {
+    phaseF22UpdateProcessingControls();
+  }
+
+  function phaseF20OpenHdabQuantification() {
+    if (els.hdabQuantButton) {
+      els.hdabQuantButton.disabled =
+        !currentImage
+        || !currentInfo
+        || imageType !== "hdab"
+        || Boolean(currentImage?.localNative);
+    }
+
+    if (
+      !currentImage
+      || !currentInfo
+    ) {
+      return;
+    }
+
+    if (imageType !== "hdab") {
+      setStatus(
+        "Set Image type to Brightfield H-DAB first",
+        "error"
+      );
+      return;
+    }
+
+    toggleFileMenu(false);
+
+    phaseF20UpdateThresholdControls();
+
+    if (els.hdabQuantModal) {
+      els.hdabQuantModal.hidden = false;
+    }
+  }
+
+  function phaseF20ExportHdabCsv() {
+    const payload =
+      phaseF20LastHdabResult;
+
+    if (!payload) {
+      setStatus(
+        "Run H-DAB analysis before exporting CSV",
+        "error"
+      );
+      return;
+    }
+
+    const analysis =
+      payload.analysis || {};
+    const results =
+      payload.results || {};
+    const threshold =
+      payload.threshold || {};
+
+    const rows = [
+      ["Metric", "Value"],
+      ["Image", currentImage?.name || ""],
+      ["AnnotationFile", currentAnnotationFile || ""],
+      ["Method", payload.method || ""],
+      ["AnalysisRegion", analysis.analysisRegion || ""],
+      ["AnalysisResolution", analysis.analysisResolution || ""],
+      ["ThresholdMode", threshold.mode || ""],
+      ["ThresholdMethod", threshold.method || ""],
+      ["DABOpticalDensityThreshold", threshold.dabOpticalDensity ?? ""],
+      ["WeightedObjectVarianceDelta", threshold.weightedObjectVarianceDelta ?? ""],
+      ["GaussianSmoothingEnabled", payload.processing?.gaussianSmoothing?.enabled ?? ""],
+      ["GaussianSigma", payload.processing?.gaussianSmoothing?.sigma ?? ""],
+      ["GaussianSigmaUnit", payload.processing?.gaussianSmoothing?.unit ?? ""],
+      ["GaussianSigmaPx", payload.processing?.gaussianSmoothing?.sigmaPx ?? ""],
+      ["SmallObjectFilterEnabled", payload.processing?.smallObjectFilter?.enabled ?? ""],
+      ["MinimumPositiveObjectArea", payload.processing?.smallObjectFilter?.minimumArea ?? ""],
+      ["MinimumPositiveObjectAreaUnit", payload.processing?.smallObjectFilter?.unit ?? ""],
+      ["MinimumPositiveObjectAreaPx2", payload.processing?.smallObjectFilter?.minimumAreaPx2 ?? ""],
+      ["SmallObjectsRemoved", payload.processing?.smallObjectFilter?.removedObjects ?? ""],
+      ["SmallObjectAreaRemovedPx2", payload.processing?.smallObjectFilter?.removedAreaPx2 ?? ""],
+      ["CalibrationMpp", payload.processing?.calibrationMpp ?? ""],
+      ["QuantificationBasis", payload.processing?.quantificationBasis ?? ""],
+      ["ValidAreaPx2", results.validAreaPx2 ?? ""],
+      ["PositiveAreaPx2", results.positiveAreaPx2 ?? ""],
+      ["NegativeAreaPx2", results.negativeAreaPx2 ?? ""],
+      ["PositivePercent", results.positivePercent ?? ""],
+      ["NegativePercent", results.negativePercent ?? ""],
+      ["MeanDABOpticalDensity", results.meanDabOpticalDensity ?? ""],
+      ["ArtifactAreaPx2", analysis.artifactAreaPx2 ?? ""],
+      ["AnthracosisAreaPx2", analysis.anthracosisAreaPx2 ?? ""],
+      ["ExternalBorderActualPct", analysis.externalBorderActualPct ?? ""],
+    ];
+
+    const csv = rows
+      .map((row) =>
+        row
+          .map((value) =>
+            `"${String(value ?? "").replaceAll('"', '""')}"`
+          )
+          .join(",")
+      )
+      .join("\n");
+
+    const base = String(
+      currentImage?.name
+      || "image"
+    )
+      .replace(/\.[^.]+$/, "")
+      .replace(/[^a-zA-Z0-9._-]+/g, "_");
+
+    phaseEDownloadText(
+      `${base}_hdab_quantification.csv`,
+      csv
+    );
+
+    setStatus(
+      "H-DAB quantification CSV exported",
+      "saved"
+    );
+  }
+
+  async function phaseF20RunHdabQuantification() {
+    if (
+      !currentImage
+      || !currentInfo
+      || imageType !== "hdab"
+    ) {
+      return;
+    }
+
+    const thresholdMode = String(
+      els.hdabQuantThresholdMode?.value
+      || "auto"
+    );
+
+    const thresholdOd = Math.max(
+      0,
+      Math.min(
+        6,
+        Number(
+          els.hdabQuantThreshold?.value
+          || 0.30
+        )
+      )
+    );
+
+    if (els.hdabQuantContent) {
+      els.hdabQuantContent.innerHTML =
+        '<p class="modal-note">Analyzing native-resolution H-DAB pixels… large slides may take a while.</p>';
+    }
+
+    if (els.hdabQuantRunButton) {
+      els.hdabQuantRunButton.disabled = true;
+    }
+
+    try {
+      const response = await apiFetch(
+        `${API}/images/${currentImage.id}/analyze-hdab`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            featureCollection,
+            thresholdMode,
+            thresholdOd,
+            tileSize: 1024,
+          }),
+          timeoutMs: 5 * 60 * 1000,
+        }
+      );
+
+      const payload =
+        await response.json();
+
+      phaseF20LastHdabResult =
+        deepClone(payload);
+
+      const analysis =
+        payload.analysis || {};
+      const results =
+        payload.results || {};
+      const threshold =
+        payload.threshold || {};
+      const tiles =
+        payload.tiles || {};
+
+      const calibration =
+        phaseEPhysicalPixelAreaMm2();
+
+      const validArea =
+        Number(
+          results.validAreaPx2
+          || 0
+        );
+
+      const positiveArea =
+        Number(
+          results.positiveAreaPx2
+          || 0
+        );
+
+      const negativeArea =
+        Number(
+          results.negativeAreaPx2
+          || 0
+        );
+
+      const artifactArea =
+        Number(
+          analysis.artifactAreaPx2
+          || 0
+        );
+
+      const anthracosisArea =
+        Number(
+          analysis.anthracosisAreaPx2
+          || 0
+        );
+
+      const positivePercent =
+        Number(
+          results.positivePercent
+          || 0
+        );
+
+      const negativePercent =
+        Number(
+          results.negativePercent
+          || 0
+        );
+
+      const thresholdValue =
+        Number(
+          threshold.dabOpticalDensity
+          || 0
+        );
+
+      const meanDab =
+        Number(
+          results.meanDabOpticalDensity
+          || 0
+        );
+
+      if (els.hdabQuantContent) {
+        els.hdabQuantContent.innerHTML = `
+          <div class="stats-summary">
+            <strong>${escapeHtml(currentImage.name)}</strong>
+
+            <span>
+              Analysis region:
+              ${escapeHtml(
+                analysis.analysisRegion
+                || "Tissue ROI - External border - Artifact - Anthracosis"
+              )}
+            </span>
+
+            <span>
+              Resolution:
+              ${escapeHtml(
+                analysis.analysisResolution
+                || "native-level-0"
+              )}
+            </span>
+
+            <span>
+              Threshold:
+              <strong>${formatStatNumber(thresholdValue, 3)} DAB OD</strong>
+              · ${escapeHtml(threshold.mode || thresholdMode)}
+              · ${escapeHtml(threshold.method || "")}
+            </span>
+
+            <span>
+              Artifact excluded:
+              ${formatStatNumber(artifactArea)} px²
+              · ${phaseEFormatMm2(
+                phaseEAreaMm2(
+                  artifactArea,
+                  calibration
+                )
+              )}
+            </span>
+
+            <span>
+              Anthracosis excluded:
+              ${formatStatNumber(anthracosisArea)} px²
+              · ${phaseEFormatMm2(
+                phaseEAreaMm2(
+                  anthracosisArea,
+                  calibration
+                )
+              )}
+            </span>
+
+            <span>
+              <strong>Valid H-DAB tissue:</strong>
+              ${formatStatNumber(validArea)} px²
+              · ${phaseEFormatMm2(
+                phaseEAreaMm2(
+                  validArea,
+                  calibration
+                )
+              )}
+            </span>
+
+            <span>
+              <strong>DAB positive:</strong>
+              ${formatStatNumber(positiveArea)} px²
+              · ${phaseEFormatMm2(
+                phaseEAreaMm2(
+                  positiveArea,
+                  calibration
+                )
+              )}
+              · ${formatStatNumber(
+                positivePercent,
+                2
+              )}%
+            </span>
+
+            <span>
+              <strong>DAB negative:</strong>
+              ${formatStatNumber(negativeArea)} px²
+              · ${phaseEFormatMm2(
+                phaseEAreaMm2(
+                  negativeArea,
+                  calibration
+                )
+              )}
+              · ${formatStatNumber(
+                negativePercent,
+                2
+              )}%
+            </span>
+
+            <span>
+              Mean DAB optical density:
+              ${formatStatNumber(meanDab, 4)}
+            </span>
+
+            <span>
+              Tiles:
+              ${formatStatNumber(
+                tiles.processed || 0
+              )} processed
+              · ${formatStatNumber(
+                tiles.skipped || 0
+              )} skipped
+            </span>
+          </div>
+
+          <div class="modal-actions">
+            <button
+              id="phaseF20ExportHdabCsvButton"
+              type="button"
+            >
+              Export CSV
+            </button>
+          </div>
+
+          <p class="stats-note">
+            F2.0 reports pixel-area DAB positivity directly from native level-0
+            optical-density deconvolution. Auto mode uses Otsu on DAB optical
+            density inside valid tissue. Validate the selected threshold for the
+            staining protocol before comparing experimental batches.
+          </p>
+        `;
+
+        document
+          .getElementById(
+            "phaseF20ExportHdabCsvButton"
+          )
+          ?.addEventListener(
+            "click",
+            phaseF20ExportHdabCsv
+          );
+      }
+
+      setStatus(
+        `H-DAB positivity ${positivePercent.toFixed(2)}% · threshold ${thresholdValue.toFixed(3)} OD`,
+        "saved"
+      );
+
+    } catch (error) {
+      phaseF20LastHdabResult = null;
+
+      if (els.hdabQuantContent) {
+        els.hdabQuantContent.innerHTML =
+          `<p class="modal-note">H-DAB analysis failed: ${escapeHtml(error.message)}</p>`;
+      }
+
+      setStatus(
+        `H-DAB analysis failed: ${error.message}`,
+        "error"
+      );
+
+    } finally {
+      if (els.hdabQuantRunButton) {
+        els.hdabQuantRunButton.disabled = false;
+      }
+    }
   }
 
   async function showAnnotationStatistics() {
@@ -26200,6 +28292,241 @@ function phaseIL1Initialize() {
     els.saveButton.addEventListener("click", () => { toggleFileMenu(false); saveAnnotations(true); });
     els.imageInfoButton.addEventListener("click", showImageInfo);
     els.annotationStatsButton?.addEventListener("click", showAnnotationStatistics);
+    els.hdabQuantButton?.addEventListener(
+      "click",
+      phaseF20OpenHdabQuantification
+    );
+
+    // F2.0.1 - refresh H-DAB availability when Settings opens.
+    // Image type may have changed in the File menu since the previous
+    // generic control-state refresh.
+    document
+      .getElementById("phaseBSettingsButton")
+      ?.addEventListener(
+        "click",
+        () => {
+          if (els.hdabQuantButton) {
+            els.hdabQuantButton.disabled =
+              !currentImage
+              || !currentInfo
+              || imageType !== "hdab"
+              || Boolean(currentImage?.localNative);
+          }
+        }
+      );
+
+    els.hdabQuantRunButton?.addEventListener(
+      "click",
+      phaseF21RunHdabPreview
+    );
+
+    document
+      .getElementById(
+        "phaseF21HdabChangeParametersButton"
+      )
+      ?.addEventListener(
+        "click",
+        phaseF21ChangeParameters
+      );
+
+    document
+      .getElementById(
+        "phaseF21HdabAcceptButton"
+      )
+      ?.addEventListener(
+        "click",
+        phaseF21AcceptPreview
+      );
+
+    document
+      .getElementById(
+        "phaseF21HdabCancelButton"
+      )
+      ?.addEventListener(
+        "click",
+        phaseF21CancelPreview
+      );
+
+    els.hdabQuantCloseButton?.addEventListener(
+      "click",
+      () => {
+        if (els.hdabQuantModal) {
+          els.hdabQuantModal.hidden = true;
+        }
+
+        if (phaseF21PreviewPayload) {
+          phaseF21RenderPreview();
+          phaseF21ShowPreviewAction();
+        }
+      }
+    );
+
+    els.hdabQuantModal?.addEventListener(
+      "click",
+      (event) => {
+        if (
+          event.target
+          === els.hdabQuantModal
+        ) {
+          els.hdabQuantModal.hidden = true;
+
+          if (phaseF21PreviewPayload) {
+            phaseF21RenderPreview();
+            phaseF21ShowPreviewAction();
+          }
+        }
+      }
+    );
+
+    els.hdabQuantThresholdMode?.addEventListener(
+      "change",
+      phaseF20UpdateThresholdControls
+    );
+
+    els.hdabQuantThreshold?.addEventListener(
+      "input",
+      phaseF20UpdateThresholdControls
+    );
+
+    els.hdabQuantWovDelta?.addEventListener(
+      "input",
+      phaseF20UpdateThresholdControls
+    );
+
+    els.hdabQuantSmoothingEnabled?.addEventListener(
+      "change",
+      () => {
+        phaseF20UpdateThresholdControls();
+        phaseF22ScheduleLivePreview();
+      }
+    );
+
+    els.hdabQuantSmoothing?.addEventListener(
+      "input",
+      () => {
+        phaseF20UpdateThresholdControls();
+        phaseF22ScheduleLivePreview();
+      }
+    );
+
+    els.hdabQuantSmallFilterEnabled?.addEventListener(
+      "change",
+      () => {
+        phaseF20UpdateThresholdControls();
+        phaseF22ScheduleLivePreview();
+      }
+    );
+
+    els.hdabQuantMinimumArea?.addEventListener(
+      "input",
+      () => {
+        phaseF20UpdateThresholdControls();
+        phaseF22ScheduleLivePreview();
+      }
+    );
+
+    els.hdabQuantUseCurrentViewButton?.addEventListener(
+      "click",
+      phaseF22CaptureCurrentView
+    );
+
+    els.hdabQuantClearLiveButton?.addEventListener(
+      "click",
+      () => {
+        phaseF22ClearLivePreview(true);
+      }
+    );
+
+    els.hdabQuantThreshold?.addEventListener(
+      "input",
+      phaseF22ScheduleLivePreview
+    );
+
+    els.hdabQuantThresholdMode?.addEventListener(
+      "change",
+      () => {
+        phaseF20UpdateThresholdControls();
+
+        if (
+          String(
+            els.hdabQuantThresholdMode
+              ?.value
+          )
+          !== "manual"
+        ) {
+          phaseF22ClearLivePreview(true);
+        }
+      }
+    );
+
+    document
+      .getElementById(
+        "phaseF22LiveDockThreshold"
+      )
+      ?.addEventListener(
+        "input",
+        (event) => {
+          const value =
+            Number(
+              event.target?.value
+              || 0.30
+            );
+
+          if (els.hdabQuantThreshold) {
+            els.hdabQuantThreshold.value =
+              String(value);
+          }
+
+          phaseF20UpdateThresholdControls();
+          phaseF22SyncDockThreshold();
+          phaseF22ScheduleLivePreview();
+        }
+      );
+
+    document
+      .getElementById(
+        "phaseF22LiveDockRefreshButton"
+      )
+      ?.addEventListener(
+        "click",
+        phaseF22CaptureCurrentView
+      );
+
+    document
+      .getElementById(
+        "phaseF22LiveDockApplyButton"
+      )
+      ?.addEventListener(
+        "click",
+        phaseF22ApplyLiveSettingsWholeSlide
+      );
+
+    document
+      .getElementById(
+        "phaseF22LiveDockParametersButton"
+      )
+      ?.addEventListener(
+        "click",
+        phaseF22OpenParametersFromDock
+      );
+
+    document
+      .getElementById(
+        "phaseF22LiveDockClearButton"
+      )
+      ?.addEventListener(
+        "click",
+        () => {
+          phaseF22ClearLivePreview(true);
+          phaseF22HideLiveDock();
+
+          if (els.hdabQuantModal) {
+            els.hdabQuantModal.hidden =
+              false;
+          }
+        }
+      );
+
     els.annotationStatsCloseButton?.addEventListener("click", () => { els.annotationStatsModal.hidden = true; });
     els.annotationStatsModal?.addEventListener("click", (event) => {
       if (event.target === els.annotationStatsModal) els.annotationStatsModal.hidden = true;
@@ -26342,7 +28669,7 @@ function phaseIL1Initialize() {
 
 
   // ========================================================================
-  // Phase F1.12 — native-aware Anthracosis API transport
+  // Phase F2.2 — advanced H-DAB + live preview + F1.12 native Anthracosis transport
   // ========================================================================
 
   let phaseF1Busy = false;
