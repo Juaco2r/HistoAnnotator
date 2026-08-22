@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#172033">
   <title>HistoAnnotator</title>
   <link rel="manifest" href="./static/manifest.webmanifest">
-  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-F2.3">
+  <link rel="stylesheet" href="./static/styles.css?v=1.4.0-dev-F2.4.1">
   <script src="./static/vendor/openseadragon/openseadragon.min.js"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
         <option value="pathologist">Pathologist</option>
       </select>
     </label>
-    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F2.3</span></div>
+    <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F2.4.1</span></div>
     <label class="image-picker">
       <span>Image</span>
       <select id="imageSelect" aria-label="Select image">
@@ -86,6 +86,11 @@
         <button id="phaseBShortcutsMenuButton" class="menu-item" type="button">Keyboard shortcuts</button>
         <button id="phaseDTissueRoiMenuButton" class="menu-item" type="button">Tissue ROI…</button>
         <button id="hdabQuantButton" class="menu-item" type="button" disabled>H-DAB quantification</button>
+        <button id="phaseF24AnalysisProtocolsButton"
+                class="menu-item"
+                type="button">
+          Analysis protocols
+        </button>
         <button id="phaseF1AnthracosisButton" class="menu-item" type="button">Detect anthracosis</button>
 <div class="phase-d7-1-v2-settings-separator">
 </div>
@@ -558,7 +563,122 @@
     </section>
   </div>
 
-    <div id="hdabQuantModal" class="modal-overlay" hidden>
+    <div id="phaseF24AnalysisProtocolsModal"
+       class="modal-overlay"
+       hidden>
+    <section class="modal-card stats-card"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="phaseF24AnalysisProtocolsTitle">
+      <h2 id="phaseF24AnalysisProtocolsTitle">
+        Reproducible analysis protocols
+      </h2>
+
+      <p class="modal-note">
+        Save and reuse the complete analysis configuration:
+        Tissue ROI + external border, Anthracosis and quantitative H-DAB.
+        Loading a protocol changes parameters only; detectors are never run
+        automatically.
+      </p>
+
+      <label class="phase-d-roi-setting">
+        <span>Saved protocol</span>
+        <select id="phaseF24ProtocolSelect">
+          <option value="">No saved protocols</option>
+        </select>
+      </label>
+
+      <label class="phase-d-roi-setting">
+        <span>Protocol name</span>
+        <input id="phaseF24ProtocolName"
+               type="text"
+               maxlength="120"
+               placeholder="e.g. αSMA LUAD">
+      </label>
+
+      <div id="phaseF24ProtocolStatus"
+           class="stats-summary">
+        <span>No active protocol.</span>
+      </div>
+
+      <div id="phaseF241ProtocolRunStatus"
+           class="stats-summary"
+           hidden>
+        <strong>Protocol run</strong>
+        <span id="phaseF241ProtocolRunMessage">Ready.</span>
+      </div>
+
+      <div id="phaseF24ProtocolSummary"
+           class="stats-table-wrap">
+        <p class="modal-note">
+          Current analysis parameters will be shown here.
+        </p>
+      </div>
+
+      <div class="modal-actions">
+        <button id="phaseF24SaveNewButton"
+                type="button">
+          Save new
+        </button>
+        <button id="phaseF24SaveVersionButton"
+                type="button"
+                disabled>
+          Save new version
+        </button>
+        <button id="phaseF24ApplyButton"
+                type="button"
+                disabled>
+          Apply settings
+        </button>
+        <button id="phaseF241RunProtocolButton"
+                type="button"
+                disabled>
+          Run protocol
+        </button>
+        <button id="phaseF241CancelRunButton"
+                type="button"
+                disabled>
+          Cancel run
+        </button>
+      </div>
+
+      <div class="modal-actions">
+        <button id="phaseF24ExportButton"
+                type="button"
+                disabled>
+          Export JSON
+        </button>
+        <button id="phaseF24ImportButton"
+                type="button">
+          Import JSON
+        </button>
+        <button id="phaseF24DeleteButton"
+                type="button"
+                disabled>
+          Delete
+        </button>
+        <button id="phaseF24CloseButton"
+                type="button">
+          Close
+        </button>
+      </div>
+
+      <input id="phaseF24ImportInput"
+             type="file"
+             accept="application/json,.json"
+             hidden>
+
+      <p class="stats-note">
+        Tissue ROI geometry and Artifact geometry are image-specific and are
+        not copied between slides. The protocol stores how Tissue ROI should
+        be detected, the external-border setting, Anthracosis parameters,
+        H-DAB parameters and algorithm identities. Physical H-DAB filters
+        require compatible image calibration.
+      </p>
+    </section>
+  </div>
+
+  <div id="hdabQuantModal" class="modal-overlay" hidden>
     <section class="modal-card stats-card" role="dialog" aria-modal="true" aria-labelledby="hdabQuantTitle">
       <h2 id="hdabQuantTitle">Quantitative H-DAB analysis</h2>
 
@@ -1028,6 +1148,6 @@
 
 
 
-  <script src="./static/app.js?v=1.4.0-dev-F2.3"></script>
+  <script src="./static/app.js?v=1.4.0-dev-F2.4.1"></script>
 </body>
 </html>
