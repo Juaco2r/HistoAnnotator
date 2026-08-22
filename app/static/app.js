@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-F1.11";
+  const VERSION = "1.4.0-dev-F1.12";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -26342,7 +26342,7 @@ function phaseIL1Initialize() {
 
 
   // ========================================================================
-  // Phase F1.11 — optional final mask dilation for Anthracosis
+  // Phase F1.12 — native-aware Anthracosis API transport
   // ========================================================================
 
   let phaseF1Busy = false;
@@ -26767,69 +26767,17 @@ function phaseIL1Initialize() {
     url,
     options = {}
   ) {
-    const timeoutMs = 5 * 60 * 1000;
-    const controller =
-      new AbortController();
-
-    const externalSignal =
-      options?.signal || null;
-
-    let externalAbortHandler = null;
-
-    if (externalSignal) {
-      if (externalSignal.aborted) {
-        controller.abort();
-      } else {
-        externalAbortHandler = () => {
-          controller.abort();
-        };
-
-        externalSignal.addEventListener(
-          "abort",
-          externalAbortHandler,
-          { once: true }
-        );
+    // F1.12:
+    // Keep the dedicated long timeout, but route through apiFetch.
+    // On Capacitor/Android apiFetch translates API requests to the
+    // configured HistoAnnotator server instead of the local WebView origin.
+    return await apiFetch(
+      url,
+      {
+        ...options,
+        timeoutMs: 5 * 60 * 1000,
       }
-    }
-
-    const timer = window.setTimeout(
-      () => controller.abort(),
-      timeoutMs
     );
-
-    try {
-      return await fetch(
-        url,
-        {
-          ...options,
-          signal: controller.signal,
-          cache: "no-store",
-        }
-      );
-    } catch (error) {
-      if (
-        error?.name === "AbortError"
-        && !externalSignal?.aborted
-      ) {
-        throw new Error(
-          "Anthracosis detection timed out after 5 minutes"
-        );
-      }
-
-      throw error;
-    } finally {
-      window.clearTimeout(timer);
-
-      if (
-        externalSignal
-        && externalAbortHandler
-      ) {
-        externalSignal.removeEventListener(
-          "abort",
-          externalAbortHandler
-        );
-      }
-    }
   }
 
   async function phaseF1Detect() {

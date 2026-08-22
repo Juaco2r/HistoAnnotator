@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-F1.11"}
+    return {"status": "ok", "version": "1.4.0-dev-F1.12"}
 
 
 @app.get("/health")
