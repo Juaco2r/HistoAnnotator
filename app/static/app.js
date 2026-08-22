@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-F2.2.1";
+  const VERSION = "1.4.0-dev-F2.3";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -213,6 +213,11 @@
     annotationStatsModal: document.getElementById("annotationStatsModal"),
     annotationStatsContent: document.getElementById("annotationStatsContent"),
     annotationStatsCloseButton: document.getElementById("annotationStatsCloseButton"),
+    positiveByClassStatsModal: document.getElementById("positiveByClassStatsModal"),
+    positiveByClassStatsContent: document.getElementById("positiveByClassStatsContent"),
+    positiveByClassExportCsvButton: document.getElementById("positiveByClassExportCsvButton"),
+    positiveByClassBackButton: document.getElementById("positiveByClassBackButton"),
+    positiveByClassCloseButton: document.getElementById("positiveByClassCloseButton"),
     hdabQuantModal: document.getElementById("hdabQuantModal"),
     hdabQuantContent: document.getElementById("hdabQuantContent"),
     hdabQuantThresholdMode: document.getElementById("hdabQuantThresholdMode"),
@@ -17023,6 +17028,279 @@ if (!geometry) {
     }
   }
 
+  // =========================================================
+  // Phase F2.3 — Positive by class statistics
+  // =========================================================
+
+  function phaseF23PositiveByClassData() {
+    return (
+      phaseELastStatistics
+        ?.stats
+        ?.positiveByClass
+      || null
+    );
+  }
+
+  function phaseF23ShowPositiveByClass() {
+    const snapshot =
+      phaseELastStatistics;
+
+    const data =
+      phaseF23PositiveByClassData();
+
+    if (
+      !snapshot
+      || !data
+      || !data.available
+    ) {
+      setStatus(
+        "Positive by class requires at least one Positive annotation",
+        "error"
+      );
+      return;
+    }
+
+    const calibration =
+      snapshot.calibration
+      || phaseEPhysicalPixelAreaMm2();
+
+    const rows =
+      Array.isArray(data.rows)
+        ? data.rows
+        : [];
+
+    const rowsHtml =
+      rows.length
+        ? rows
+            .map((row) => {
+              const classArea =
+                Number(
+                  row.classAreaPx2
+                  || 0
+                );
+
+              const positiveArea =
+                Number(
+                  row.positiveAreaPx2
+                  || 0
+                );
+
+              const percent =
+                Number(
+                  row.positivePercentOfClass
+                  || 0
+                );
+
+              return `
+                <tr>
+                  <td>${escapeHtml(row.className || "")}</td>
+                  <td>${formatStatNumber(classArea)}</td>
+                  <td>${phaseEFormatMm2(phaseEAreaMm2(classArea, calibration))}</td>
+                  <td>${formatStatNumber(positiveArea)}</td>
+                  <td>${phaseEFormatMm2(phaseEAreaMm2(positiveArea, calibration))}</td>
+                  <td><strong>${formatStatNumber(percent, 2)}%</strong></td>
+                </tr>
+              `;
+            })
+            .join("")
+        : `
+            <tr>
+              <td colspan="6">
+                No eligible annotation classes with effective area were found.
+              </td>
+            </tr>
+          `;
+
+    const positiveArea =
+      Number(
+        data.positiveEffectiveAreaPx2
+        || 0
+      );
+
+    if (els.positiveByClassStatsContent) {
+      els.positiveByClassStatsContent.innerHTML = `
+        <div class="stats-summary">
+          <strong>${escapeHtml(snapshot.imageName || "")}</strong>
+          <span>
+            Annotation file:
+            ${escapeHtml(snapshot.annotationFile || "")}
+          </span>
+          <span>
+            Effective Positive area:
+            ${formatStatNumber(positiveArea)} px²
+            · ${phaseEFormatMm2(phaseEAreaMm2(positiveArea, calibration))}
+          </span>
+          <span>
+            <strong>Definition:</strong>
+            Positive within class =
+            area(Positive ∩ effective class)
+            / effective class area × 100.
+          </span>
+        </div>
+
+        <div class="stats-table-wrap">
+          <table class="stats-table">
+            <thead>
+              <tr>
+                <th>Class</th>
+                <th>Effective class area (px²)</th>
+                <th>Class area (mm²)</th>
+                <th>Positive intersection (px²)</th>
+                <th>Positive area (mm²)</th>
+                <th>Positive within class</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+
+        <p class="stats-note">
+          External border and Artifact are excluded before this calculation.
+          Anthracosis is removed from both Positive and each analyzed class.
+          Positive, Anthracosis and Artifact are not used as denominator
+          classes. If biological classes overlap, the same Positive region may
+          contribute independently to more than one class.
+        </p>
+      `;
+    }
+
+    if (els.annotationStatsModal) {
+      els.annotationStatsModal.hidden =
+        true;
+    }
+
+    if (els.positiveByClassStatsModal) {
+      els.positiveByClassStatsModal.hidden =
+        false;
+    }
+  }
+
+  function phaseF23ExportPositiveByClassCsv() {
+    const snapshot =
+      phaseELastStatistics;
+
+    const data =
+      phaseF23PositiveByClassData();
+
+    if (
+      !snapshot
+      || !data
+      || !data.available
+    ) {
+      setStatus(
+        "Run Positive by class before exporting CSV",
+        "error"
+      );
+      return;
+    }
+
+    const calibration =
+      snapshot.calibration
+      || phaseEPhysicalPixelAreaMm2();
+
+    const rows = [[
+      "Image",
+      "AnnotationFile",
+      "Class",
+      "EffectiveClassAreaPx2",
+      "EffectiveClassAreaMm2",
+      "PositiveIntersectionPx2",
+      "PositiveIntersectionMm2",
+      "PositiveWithinClassPercent",
+    ]];
+
+    for (
+      const row
+      of data.rows || []
+    ) {
+      const classArea =
+        Number(
+          row.classAreaPx2
+          || 0
+        );
+
+      const positiveArea =
+        Number(
+          row.positiveAreaPx2
+          || 0
+        );
+
+      rows.push([
+        snapshot.imageName || "",
+        snapshot.annotationFile || "",
+        row.className || "",
+        classArea,
+        phaseEAreaMm2(
+          classArea,
+          calibration
+        ) ?? "",
+        positiveArea,
+        phaseEAreaMm2(
+          positiveArea,
+          calibration
+        ) ?? "",
+        Number(
+          row.positivePercentOfClass
+          || 0
+        ),
+      ]);
+    }
+
+    const csv =
+      rows
+        .map(
+          (row) =>
+            row
+              .map(phaseECsvCell)
+              .join(",")
+        )
+        .join("\r\n")
+      + "\r\n";
+
+    const base =
+      String(
+        snapshot.imageName
+        || "image"
+      )
+        .replace(
+          /\.[^.]+$/,
+          ""
+        )
+        .replace(
+          /[^A-Za-z0-9._-]+/g,
+          "_"
+        );
+
+    phaseEDownloadText(
+      `${base}_positive_by_class.csv`,
+      csv
+    );
+
+    setStatus(
+      "Positive-by-class CSV exported",
+      "saved"
+    );
+  }
+
+  function phaseF23BackToAnnotationStatistics() {
+    if (els.positiveByClassStatsModal) {
+      els.positiveByClassStatsModal.hidden =
+        true;
+    }
+
+    if (els.annotationStatsModal) {
+      els.annotationStatsModal.hidden =
+        false;
+    }
+  }
+
+  function phaseF23ClosePositiveByClass() {
+    if (els.positiveByClassStatsModal) {
+      els.positiveByClassStatsModal.hidden =
+        true;
+    }
+  }
+
   async function showAnnotationStatistics() {
     if (
       !currentImage
@@ -17390,6 +17668,18 @@ if (!geometry) {
           >
             Export CSV
           </button>
+          ${
+            stats.positiveByClass?.available
+              ? `
+                <button
+                  id="phaseF23PositiveByClassButton"
+                  type="button"
+                >
+                  Positive by class
+                </button>
+              `
+              : ""
+          }
         </div>
 
         <p class="stats-note">
@@ -17409,6 +17699,15 @@ if (!geometry) {
         ?.addEventListener(
           "click",
           phaseEExportStatisticsCsv
+        );
+
+      document
+        .getElementById(
+          "phaseF23PositiveByClassButton"
+        )
+        ?.addEventListener(
+          "click",
+          phaseF23ShowPositiveByClass
         );
 
     } catch (error) {
@@ -28292,6 +28591,29 @@ function phaseIL1Initialize() {
     els.saveButton.addEventListener("click", () => { toggleFileMenu(false); saveAnnotations(true); });
     els.imageInfoButton.addEventListener("click", showImageInfo);
     els.annotationStatsButton?.addEventListener("click", showAnnotationStatistics);
+    els.positiveByClassExportCsvButton?.addEventListener(
+      "click",
+      phaseF23ExportPositiveByClassCsv
+    );
+    els.positiveByClassBackButton?.addEventListener(
+      "click",
+      phaseF23BackToAnnotationStatistics
+    );
+    els.positiveByClassCloseButton?.addEventListener(
+      "click",
+      phaseF23ClosePositiveByClass
+    );
+    els.positiveByClassStatsModal?.addEventListener(
+      "click",
+      (event) => {
+        if (
+          event.target
+          === els.positiveByClassStatsModal
+        ) {
+          phaseF23ClosePositiveByClass();
+        }
+      }
+    );
     els.hdabQuantButton?.addEventListener(
       "click",
       phaseF20OpenHdabQuantification

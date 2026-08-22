@@ -1091,7 +1091,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-F2.2.1"}
+    return {"status": "ok", "version": "1.4.0-dev-F2.3"}
 
 
 @app.get("/health")
@@ -4116,6 +4116,191 @@ def geojson_statistics(
             ),
         })
 
+    # --------------------------------------------------------
+    # Phase F2.3 — Positive by class
+    #
+    # Use the same grouped_valid geometries as standard Annotation
+    # statistics so exclusions are exactly identical.
+    # --------------------------------------------------------
+    positive_class_present = any(
+        class_name.casefold() == "positive"
+        for class_name in class_names
+    )
+
+    positive_items: list[Any] = []
+
+    for class_name, items in grouped_valid.items():
+        if class_name.casefold() == "positive":
+            positive_items.extend(items)
+
+    positive_union = (
+        unary_union(positive_items)
+        if positive_items
+        else GeometryCollection()
+    )
+
+    if (
+        not positive_union.is_empty
+        and not positive_union.is_valid
+    ):
+        positive_union = make_valid(
+            positive_union
+        )
+
+    positive_union = (
+        _polygonal_only(positive_union)
+        or GeometryCollection()
+    )
+
+    positive_effective_area = (
+        float(positive_union.area)
+        if not positive_union.is_empty
+        else 0.0
+    )
+
+    positive_by_class_rows: list[dict[str, Any]] = []
+
+    special_positive_analysis_classes = {
+        "positive",
+        "anthracosis",
+        "artifact",
+    }
+
+    for class_name in sorted(
+        class_names,
+        key=str.casefold,
+    ):
+        folded_name = class_name.casefold()
+
+        if folded_name in special_positive_analysis_classes:
+            continue
+
+        items = grouped_valid.get(
+            class_name,
+            [],
+        )
+
+        if not items:
+            continue
+
+        class_union = (
+            unary_union(items)
+            if len(items) > 1
+            else items[0]
+        )
+
+        if (
+            not class_union.is_empty
+            and not class_union.is_valid
+        ):
+            class_union = make_valid(
+                class_union
+            )
+
+        class_union = (
+            _polygonal_only(class_union)
+            or GeometryCollection()
+        )
+
+        if class_union.is_empty:
+            continue
+
+        class_area = float(
+            class_union.area
+        )
+
+        if class_area <= 0:
+            continue
+
+        positive_intersection = GeometryCollection()
+
+        if not positive_union.is_empty:
+            try:
+                positive_intersection = (
+                    class_union.intersection(
+                        positive_union
+                    )
+                )
+            except Exception:
+                repaired_class = make_valid(
+                    class_union
+                )
+                repaired_positive = make_valid(
+                    positive_union
+                )
+                positive_intersection = (
+                    repaired_class.intersection(
+                        repaired_positive
+                    )
+                )
+
+            if (
+                not positive_intersection.is_empty
+                and not positive_intersection.is_valid
+            ):
+                positive_intersection = make_valid(
+                    positive_intersection
+                )
+
+            positive_intersection = (
+                _polygonal_only(
+                    positive_intersection
+                )
+                or GeometryCollection()
+            )
+
+        intersection_area = (
+            float(
+                positive_intersection.area
+            )
+            if not positive_intersection.is_empty
+            else 0.0
+        )
+
+        intersection_area = max(
+            0.0,
+            min(
+                class_area,
+                intersection_area,
+            ),
+        )
+
+        positive_by_class_rows.append({
+            "className":
+                class_name,
+            "classAreaPx2":
+                class_area,
+            "positiveAreaPx2":
+                intersection_area,
+            "positivePercentOfClass": (
+                100.0
+                * intersection_area
+                / class_area
+                if class_area > 0
+                else 0.0
+            ),
+        })
+
+    positive_by_class = {
+        "available":
+            bool(positive_class_present),
+        "positiveEffectiveAreaPx2":
+            float(
+                positive_effective_area
+            ),
+        "rows":
+            positive_by_class_rows,
+        "denominator":
+            "effective-class-area",
+        "numerator":
+            "positive-effective-intersection-class-effective",
+        "exclusions": [
+            "external-border",
+            "artifact",
+            "anthracosis",
+        ],
+    }
+
     all_union = (
         unary_union(all_valid)
         if all_valid
@@ -4138,6 +4323,8 @@ def geojson_statistics(
 
     return {
         "rows": rows,
+        "positiveByClass":
+            positive_by_class,
         "totalAnnotations": int(
             sum(grouped_counts.values())
         ),
