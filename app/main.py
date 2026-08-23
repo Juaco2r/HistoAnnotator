@@ -1092,7 +1092,7 @@ def normalize_geojson(payload: dict[str, Any], relative: str) -> dict[str, Any]:
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
-    return {"status": "ok", "version": "1.4.0-dev-F2.5.4.4"}
+    return {"status": "ok", "version": "1.4.0-dev-F2.6.2"}
 
 
 @app.get("/health")
@@ -4942,23 +4942,41 @@ def get_annotations(image_id: str, file: str = Query("Default")) -> JSONResponse
 
 
 @app.put("/api/annotations/{image_id}")
-def put_annotations(image_id: str, payload: dict[str, Any] = Body(...), file: str = Query("Default")) -> dict[str, Any]:
+def put_annotations(
+    image_id: str,
+    payload: dict[str, Any] = Body(...),
+    file: str = Query("Default"),
+    compact: bool = Query(False),
+) -> dict[str, Any]:
     _, relative = safe_image_path(image_id)
     name = normalize_annotation_file(file)
     normalized, report = sanitize_qupath_feature_collection(payload)
+
+    # Phase F2.6.2: compact acknowledgement is safe only when the exact
+    # normalized server document equals the submitted client document.
+    # Any normalization difference falls back to the full response.
+    normalized_changed = normalized != payload
+
     destination = annotation_path(relative, name)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         shutil.copy2(destination, destination.with_suffix(destination.suffix + ".bak"))
     atomic_write_json(destination, normalized)
-    return {
+
+    response: dict[str, Any] = {
         "saved": True,
         "features": len(normalized.get("features", [])),
         "annotationFile": name,
         "relativePath": str(destination.relative_to(ANNOTATION_ROOT)),
-        "featureCollection": normalized,
         "report": report,
+        "compactAck": bool(compact and not normalized_changed),
+        "normalizedChanged": bool(normalized_changed),
     }
+
+    if not compact or normalized_changed:
+        response["featureCollection"] = normalized
+
+    return response
 
 
 @app.get("/api/annotations/{image_id}/download")

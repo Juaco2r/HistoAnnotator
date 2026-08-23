@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "1.4.0-dev-F2.5.4.4";
+  const VERSION = "1.4.0-dev-F2.6.2";
 
   // The same frontend runs both in the browser and inside Capacitor.
   const IS_NATIVE = Boolean(window.Capacitor?.isNativePlatform?.());
@@ -4222,7 +4222,13 @@
     return saved;
   }
 
-  async function applyAnnotationSyncResult(job, normalizedPayload) {
+  async function applyAnnotationSyncResult(
+    job,
+    normalizedPayload,
+    options = {}
+  ) {
+    const serverReturnedCollection =
+      Boolean(options.serverReturnedCollection);
     try {
       const db = await openDraftDb();
       await new Promise((resolve, reject) => {
@@ -4238,7 +4244,7 @@
             imageName: job.image.name,
             relativePath: job.image.relativePath,
             localNative: false,
-            featureCollection: deepClone(job.payload),
+            featureCollection: phaseF261FastClone(job.payload),
             pending: true,
             pendingChangeCount: 1,
             localRevision: job.revision,
@@ -4254,7 +4260,19 @@
 
           if (existingRevision <= job.revision) {
             existing.localRevision = job.revision;
-            existing.featureCollection = deepClone(normalizedPayload);
+
+            // With a compact ACK, persistLocalDraft() has already stored this
+            // exact revision before the server PUT. Keep the existing local
+            // FeatureCollection instead of cloning/writing it again.
+            if (
+              serverReturnedCollection
+              || !existing.featureCollection
+              || existingRevision < job.revision
+            ) {
+              existing.featureCollection =
+                phaseF261FastClone(normalizedPayload);
+            }
+
             existing.pending = false;
             existing.pendingChangeCount = 0;
           } else {
@@ -4314,7 +4332,7 @@
       }
 
       const response = await apiFetch(
-        `${API}/annotations/${job.image.id}?file=${encodeURIComponent(job.annotationFile)}`,
+        `${API}/annotations/${job.image.id}?file=${encodeURIComponent(job.annotationFile)}&compact=1`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -4326,20 +4344,50 @@
         }
       );
       const result = await response.json();
+
+      const serverReturnedCollection =
+        result?.featureCollection?.type === "FeatureCollection";
+
       const normalizedPayload =
-        result?.featureCollection?.type === "FeatureCollection"
+        serverReturnedCollection
           ? normalizeFeatureCollectionClient(result.featureCollection)
           : job.payload;
 
-      await applyAnnotationSyncResult(job, normalizedPayload);
+      await applyAnnotationSyncResult(
+        job,
+        normalizedPayload,
+        {
+          serverReturnedCollection,
+        }
+      );
+
+      if (
+        result?.compactAck
+        && !serverReturnedCollection
+      ) {
+        console.info(
+          "Compact annotation sync acknowledgement",
+          {
+            imageId: job.image?.id,
+            annotationFile: job.annotationFile,
+            revision: job.revision,
+            features: result?.features,
+          }
+        );
+      }
 
       if (currentDocumentKey() === key) {
         currentLastSyncedRevision = Math.max(currentLastSyncedRevision, job.revision);
 
         if (currentLocalRevision === job.revision) {
-          // Only the newest revision may replace the live document.
-          featureCollection = normalizedPayload;
-          featureCollection.features.forEach(featureId);
+          // A compact ACK proves that the server stored the exact submitted
+          // document, so preserve the current live objects and render caches.
+          if (serverReturnedCollection) {
+            featureCollection = normalizedPayload;
+            featureCollection.features.forEach(featureId);
+            phaseF26InvalidateGeometryCaches();
+          }
+
           dirty = false;
           currentPendingChangeCount = 0;
           localDraftState = "Synced";
@@ -5694,7 +5742,7 @@
 
     ["open", "animation", "update-viewport", "resize"].forEach((eventName) => {
       viewer.addHandler(eventName, () => {
-        drawAnnotations();
+        phaseF26ScheduleDraw();
         updateDiagnostics();
         updateScaleBar();
         updateCalibrationBadge();
@@ -11032,7 +11080,7 @@
       const cursor = viewerPositionFromPointer(event);
       if (mode === "brush") brushCursor = cursor;
       else wandCursor = cursor;
-      drawAnnotations();
+      phaseF26ScheduleDraw();
     }
     if (!pointerState || event.pointerId !== pointerState.id || !activeDraft) return;
     if (!captureAnnotationEvent(event)) return;
@@ -11048,7 +11096,7 @@
         activeDraft.end = point;
       }
     }
-    drawAnnotations();
+    phaseF26ScheduleDraw();
   }
 
   async function buildBrushGeometry(centerline, radius) {
@@ -11827,8 +11875,11 @@ if (!geometry) {
         return true;
       }
 
-      pushUndo();
       const feature = createAnnotationFeature(geometry);
+      phaseF261PushCreatedFeatureUndo(
+        feature,
+        featureCollection.features.length
+      );
       featureCollection.features.push(feature);
       // Keep the newest annotation selected for rapid Shift + Add/Subtract,
       // but mark that automatic selection as implicit.
@@ -11934,23 +11985,48 @@ if (!geometry) {
 
   function undo() {
     if (!undoStack.length) return;
+
     phaseCCaptureSemanticBaseline();
-    redoStack.push(deepClone(featureCollection.features));
-    featureCollection.features = undoStack.pop();
+
+    const entry = undoStack.pop();
+
+    if (phaseF261IsCreatedUndoEntry(entry)) {
+      phaseF261UndoCreatedFeature(entry);
+      updateControls();
+      return;
+    }
+
+    redoStack.push(
+      deepClone(featureCollection.features)
+    );
+    featureCollection.features = entry;
     clearSelectedFeatures(false);
     markChanged();
   }
 
   function redo() {
     if (!redoStack.length) return;
+
     phaseCCaptureSemanticBaseline();
-    undoStack.push(deepClone(featureCollection.features));
-    featureCollection.features = redoStack.pop();
+
+    const entry = redoStack.pop();
+
+    if (phaseF261IsCreatedUndoEntry(entry)) {
+      phaseF261RedoCreatedFeature(entry);
+      updateControls();
+      return;
+    }
+
+    undoStack.push(
+      deepClone(featureCollection.features)
+    );
+    featureCollection.features = entry;
     clearSelectedFeatures(false);
     markChanged();
   }
 
   function markChanged() {
+    phaseF26InvalidateGeometryCaches();
     phaseIL1AnnotationsChanged();
     phaseDSyncArtifactRoles();
     phaseCApplySemanticChanges();
@@ -11959,7 +12035,7 @@ if (!geometry) {
     dirty = true;
     const image = currentImage;
     const annotationFile = currentAnnotationFile;
-    const payload = deepClone(featureCollection);
+    const payload = phaseF261FastClone(featureCollection);
     const revision = nextLocalRevision();
     currentPendingChangeCount += 1;
 
@@ -12009,7 +12085,7 @@ if (!geometry) {
 
     const image = currentImage;
     const annotationFile = currentAnnotationFile;
-    const payload = deepClone(featureCollection);
+    const payload = phaseF261FastClone(featureCollection);
     const revision = currentLocalRevision;
     const draftKey = localDraftKey(image.id, annotationFile);
 
@@ -13185,6 +13261,606 @@ if (!geometry) {
     return true;
   }
 
+  // ======================================================================
+  // Phase F2.6.0 - Large Annotation Performance
+  //
+  // Display/interactivity optimization only.
+  // Original GeoJSON coordinates are NEVER simplified or replaced.
+  // Statistics, export, save and geometry operations continue to use the
+  // complete featureCollection.
+  // ======================================================================
+
+  const PHASE_F26_HEAVY_MULTIPOLYGON_COMPONENTS =
+    500;
+
+  const PHASE_F26_MIN_SCREEN_COMPONENT_PX =
+    0.6;
+
+  let phaseF26PolygonBoundsCache =
+    new WeakMap();
+
+  let phaseF26GeometryBoundsCache =
+    new WeakMap();
+
+  let phaseF26DrawFramePending =
+    false;
+
+  let phaseF26RenderStats =
+    [];
+
+  function phaseF26InvalidateGeometryCaches() {
+    phaseF26PolygonBoundsCache =
+      new WeakMap();
+
+    phaseF26GeometryBoundsCache =
+      new WeakMap();
+  }
+
+  function phaseF26BeginRenderFrame() {
+    phaseF26RenderStats =
+      [];
+
+    window.__histoannotatorF26RenderStats =
+      phaseF26RenderStats;
+  }
+
+  // ======================================================================
+  // Phase F2.6.1 - Real-time drawing + lightweight creation Undo
+  //
+  // Stored GeoJSON is unchanged. Heavy generated MultiPolygon overlays may
+  // be temporarily suppressed ONLY while an interactive draft is being drawn.
+  // ======================================================================
+
+  const PHASE_F261_UNDO_CREATED_FEATURE =
+    "phase-f261-created-feature";
+
+  function phaseF261FastClone(value) {
+    if (
+      typeof window.structuredClone === "function"
+    ) {
+      try {
+        return window.structuredClone(value);
+      } catch (_) {
+        // Fall through to the original JSON-compatible clone.
+      }
+    }
+
+    return deepClone(value);
+  }
+
+  function phaseF261InteractiveDraftActive() {
+    return Boolean(
+      activeDraft
+      || (
+        Array.isArray(polygonDraft)
+        && polygonDraft.length
+      )
+      || circleDraft
+    );
+  }
+
+  function phaseF261CreatedUndoEntry(feature, index) {
+    return {
+      kind: PHASE_F261_UNDO_CREATED_FEATURE,
+      index: Math.max(0, Number(index || 0)),
+      feature: phaseF261FastClone(feature),
+    };
+  }
+
+  function phaseF261IsCreatedUndoEntry(entry) {
+    return Boolean(
+      entry
+      && !Array.isArray(entry)
+      && entry.kind === PHASE_F261_UNDO_CREATED_FEATURE
+      && entry.feature
+      && typeof entry.feature === "object"
+    );
+  }
+
+  function phaseF261PushCreatedFeatureUndo(feature, index) {
+    phaseCCaptureSemanticBaseline();
+
+    undoStack.push(
+      phaseF261CreatedUndoEntry(feature, index)
+    );
+
+    if (undoStack.length > 50) undoStack.shift();
+    redoStack = [];
+    updateControls();
+  }
+
+  function phaseF261UndoCreatedFeature(entry) {
+    const id = String(featureId(entry.feature));
+    const currentIndex =
+      featureCollection.features.findIndex(
+        (feature) => String(featureId(feature)) === id
+      );
+
+    const currentFeature =
+      currentIndex >= 0
+        ? featureCollection.features[currentIndex]
+        : entry.feature;
+
+    redoStack.push(
+      phaseF261CreatedUndoEntry(
+        currentFeature,
+        currentIndex >= 0 ? currentIndex : entry.index
+      )
+    );
+
+    if (redoStack.length > 50) redoStack.shift();
+
+    if (currentIndex >= 0) {
+      featureCollection.features.splice(currentIndex, 1);
+    }
+
+    clearSelectedFeatures(false);
+    markChanged();
+  }
+
+  function phaseF261RedoCreatedFeature(entry) {
+    const feature = phaseF261FastClone(entry.feature);
+    const id = String(featureId(feature));
+
+    const existingIndex =
+      featureCollection.features.findIndex(
+        (item) => String(featureId(item)) === id
+      );
+
+    if (existingIndex >= 0) {
+      featureCollection.features.splice(existingIndex, 1);
+    }
+
+    const index = Math.max(
+      0,
+      Math.min(
+        Number(entry.index || 0),
+        featureCollection.features.length
+      )
+    );
+
+    undoStack.push(
+      phaseF261CreatedUndoEntry(feature, index)
+    );
+
+    if (undoStack.length > 50) undoStack.shift();
+
+    featureCollection.features.splice(index, 0, feature);
+    setSingleSelection(String(featureId(feature)), true);
+    markChanged();
+  }
+
+  function phaseF261EditableTarget(target) {
+    if (!target) return false;
+
+    const tag =
+      String(target.tagName || "").toLowerCase();
+
+    return Boolean(
+      target.isContentEditable
+      || tag === "input"
+      || tag === "textarea"
+      || tag === "select"
+    );
+  }
+
+  function phaseF261HandleUndoRedoShortcut(event) {
+    if (
+      !event
+      || event.defaultPrevented
+      || phaseF261EditableTarget(event.target)
+      || !(event.ctrlKey || event.metaKey)
+      || event.altKey
+    ) {
+      return;
+    }
+
+    const key =
+      String(event.key || "").toLowerCase();
+
+    if (key === "z" && event.shiftKey) {
+      event.preventDefault();
+      redo();
+      return;
+    }
+
+    if (key === "z") {
+      event.preventDefault();
+      undo();
+      return;
+    }
+
+    if (key === "y") {
+      event.preventDefault();
+      redo();
+    }
+  }
+
+  window.addEventListener(
+    "keydown",
+    phaseF261HandleUndoRedoShortcut,
+    true
+  );
+
+
+  function phaseF26ScheduleDraw() {
+    if (phaseF26DrawFramePending) {
+      return;
+    }
+
+    phaseF26DrawFramePending =
+      true;
+
+    const schedule =
+      typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame.bind(window)
+        : (callback) => window.setTimeout(callback, 0);
+
+    schedule(() => {
+      phaseF26DrawFramePending =
+        false;
+
+      drawAnnotations();
+    });
+  }
+
+  function phaseF26PolygonBounds(
+    polygon
+  ) {
+    if (
+      !Array.isArray(polygon)
+      || polygon.length === 0
+    ) {
+      return null;
+    }
+
+    const cached =
+      phaseF26PolygonBoundsCache.get(
+        polygon
+      );
+
+    if (cached) {
+      return cached;
+    }
+
+    let minX =
+      Infinity;
+
+    let minY =
+      Infinity;
+
+    let maxX =
+      -Infinity;
+
+    let maxY =
+      -Infinity;
+
+    for (const ring of polygon) {
+      if (!Array.isArray(ring)) {
+        continue;
+      }
+
+      for (const point of ring) {
+        if (
+          !Array.isArray(point)
+          || point.length < 2
+        ) {
+          continue;
+        }
+
+        const x =
+          Number(point[0]);
+
+        const y =
+          Number(point[1]);
+
+        if (
+          !Number.isFinite(x)
+          || !Number.isFinite(y)
+        ) {
+          continue;
+        }
+
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+
+    if (
+      !Number.isFinite(minX)
+      || !Number.isFinite(minY)
+      || !Number.isFinite(maxX)
+      || !Number.isFinite(maxY)
+    ) {
+      return null;
+    }
+
+    const bounds = {
+      minX,
+      minY,
+      maxX,
+      maxY,
+    };
+
+    phaseF26PolygonBoundsCache.set(
+      polygon,
+      bounds
+    );
+
+    return bounds;
+  }
+
+  function phaseF26GeometryBounds(
+    geometry
+  ) {
+    if (
+      !geometry
+      || typeof geometry !== "object"
+    ) {
+      return null;
+    }
+
+    const cached =
+      phaseF26GeometryBoundsCache.get(
+        geometry
+      );
+
+    if (cached) {
+      return cached;
+    }
+
+    const polygons =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : (
+            geometry.type === "MultiPolygon"
+              ? geometry.coordinates
+              : []
+          );
+
+    let minX =
+      Infinity;
+
+    let minY =
+      Infinity;
+
+    let maxX =
+      -Infinity;
+
+    let maxY =
+      -Infinity;
+
+    for (const polygon of polygons) {
+      const bounds =
+        phaseF26PolygonBounds(
+          polygon
+        );
+
+      if (!bounds) {
+        continue;
+      }
+
+      if (bounds.minX < minX) minX = bounds.minX;
+      if (bounds.minY < minY) minY = bounds.minY;
+      if (bounds.maxX > maxX) maxX = bounds.maxX;
+      if (bounds.maxY > maxY) maxY = bounds.maxY;
+    }
+
+    if (
+      !Number.isFinite(minX)
+      || !Number.isFinite(minY)
+      || !Number.isFinite(maxX)
+      || !Number.isFinite(maxY)
+    ) {
+      return null;
+    }
+
+    const bounds = {
+      minX,
+      minY,
+      maxX,
+      maxY,
+    };
+
+    phaseF26GeometryBoundsCache.set(
+      geometry,
+      bounds
+    );
+
+    return bounds;
+  }
+
+  function phaseF26BoundsIntersect(
+    left,
+    right
+  ) {
+    if (!left || !right) {
+      return true;
+    }
+
+    return !(
+      left.maxX < right.minX
+      || left.minX > right.maxX
+      || left.maxY < right.minY
+      || left.minY > right.maxY
+    );
+  }
+
+  function phaseF26PointInBounds(
+    point,
+    bounds
+  ) {
+    if (
+      !Array.isArray(point)
+      || point.length < 2
+      || !bounds
+    ) {
+      return false;
+    }
+
+    const x =
+      Number(point[0]);
+
+    const y =
+      Number(point[1]);
+
+    return (
+      Number.isFinite(x)
+      && Number.isFinite(y)
+      && x >= bounds.minX
+      && x <= bounds.maxX
+      && y >= bounds.minY
+      && y <= bounds.maxY
+    );
+  }
+
+  function phaseF26CurrentRenderContext() {
+    if (
+      !viewer
+      || !viewer.world?.getItemCount?.()
+      || !viewer.viewport
+    ) {
+      return null;
+    }
+
+    const item =
+      viewer.world.getItemAt(0);
+
+    if (
+      !item
+      || typeof item.viewportToImageRectangle
+        !== "function"
+      || typeof viewer.viewport.getBounds
+        !== "function"
+    ) {
+      return null;
+    }
+
+    try {
+      const viewportBounds =
+        viewer.viewport.getBounds(
+          true
+        );
+
+      const imageBounds =
+        item.viewportToImageRectangle(
+          viewportBounds
+        );
+
+      const x =
+        Number(imageBounds?.x);
+
+      const y =
+        Number(imageBounds?.y);
+
+      const width =
+        Number(imageBounds?.width);
+
+      const height =
+        Number(imageBounds?.height);
+
+      if (
+        !Number.isFinite(x)
+        || !Number.isFinite(y)
+        || !Number.isFinite(width)
+        || !Number.isFinite(height)
+        || width <= 0
+        || height <= 0
+      ) {
+        return null;
+      }
+
+      const padX =
+        Math.max(
+          4,
+          width * 0.04
+        );
+
+      const padY =
+        Math.max(
+          4,
+          height * 0.04
+        );
+
+      const imagePixelsPerScreenPixel =
+        Math.max(
+          0.000001,
+          Number(
+            screenToleranceToImage(1)
+          )
+          || 1
+        );
+
+      return {
+        viewport: {
+          minX:
+            x - padX,
+          minY:
+            y - padY,
+          maxX:
+            x + width + padX,
+          maxY:
+            y + height + padY,
+        },
+        minVisibleImageSpan:
+          imagePixelsPerScreenPixel
+          * PHASE_F26_MIN_SCREEN_COMPONENT_PX,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function phaseF26PolygonVisible(
+    polygon,
+    context
+  ) {
+    if (!context) {
+      return true;
+    }
+
+    const bounds =
+      phaseF26PolygonBounds(
+        polygon
+      );
+
+    if (!bounds) {
+      return true;
+    }
+
+    if (
+      !phaseF26BoundsIntersect(
+        bounds,
+        context.viewport
+      )
+    ) {
+      return false;
+    }
+
+    const width =
+      Math.max(
+        0,
+        bounds.maxX - bounds.minX
+      );
+
+    const height =
+      Math.max(
+        0,
+        bounds.maxY - bounds.minY
+      );
+
+    if (
+      Math.max(width, height)
+      < context.minVisibleImageSpan
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
   function drawGeometry(feature) {
     if (
       reviewState.active
@@ -13193,15 +13869,113 @@ if (!geometry) {
     ) {
       return;
     }
+
     const geometry = feature.geometry;
     if (!geometry) return;
+
     const color = colorForFeature(feature);
     const selected = selectedIds.has(featureId(feature));
-    // All area tools are displayed as standard QuPath-compatible annotation
-    // polygons, using the annotation class color and a yellow selection outline.
-    // Compound paths use the even-odd rule so subtraction holes display as holes.
-    if (geometry.type === "Polygon") drawPolygonRings(geometry.coordinates, color, selected);
-    else if (geometry.type === "MultiPolygon") geometry.coordinates.forEach((polygon) => drawPolygonRings(polygon, color, selected));
+
+    if (geometry.type === "Polygon") {
+      drawPolygonRings(
+        geometry.coordinates,
+        color,
+        selected
+      );
+      return;
+    }
+
+    if (geometry.type !== "MultiPolygon") {
+      return;
+    }
+
+    const polygons =
+      geometry.coordinates || [];
+
+    if (
+      phaseF261InteractiveDraftActive()
+      && polygons.length
+        >= PHASE_F26_HEAVY_MULTIPOLYGON_COMPONENTS
+    ) {
+      phaseF26RenderStats.push({
+        featureId: String(featureId(feature) || ""),
+        className: String(
+          feature?.properties?.classification?.name || ""
+        ),
+        totalComponents: polygons.length,
+        drawnComponents: 0,
+        culledComponents: polygons.length,
+        draftSuppressed: true,
+        minVisibleImageSpan: 0,
+      });
+      return;
+    }
+
+    if (
+      polygons.length
+      < PHASE_F26_HEAVY_MULTIPOLYGON_COMPONENTS
+    ) {
+      polygons.forEach(
+        (polygon) =>
+          drawPolygonRings(
+            polygon,
+            color,
+            selected
+          )
+      );
+      return;
+    }
+
+    const context =
+      phaseF26CurrentRenderContext();
+
+    let drawn =
+      0;
+
+    for (const polygon of polygons) {
+      if (
+        !phaseF26PolygonVisible(
+          polygon,
+          context
+        )
+      ) {
+        continue;
+      }
+
+      drawPolygonRings(
+        polygon,
+        color,
+        selected
+      );
+
+      drawn += 1;
+    }
+
+    phaseF26RenderStats.push({
+      featureId:
+        String(featureId(feature) || ""),
+      className:
+        String(
+          feature?.properties
+            ?.classification
+            ?.name
+          || ""
+        ),
+      totalComponents:
+        polygons.length,
+      drawnComponents:
+        drawn,
+      culledComponents:
+        Math.max(
+          0,
+          polygons.length - drawn
+        ),
+      minVisibleImageSpan:
+        Number(
+          context?.minVisibleImageSpan
+          || 0
+        ),
+    });
   }
 
   function drawingColor(operation = editOperation) {
@@ -13300,6 +14074,9 @@ if (!geometry) {
     const rect = resizeCanvas();
     ctx.clearRect(0, 0, rect.width, rect.height);
     if (!viewer || !viewer.world.getItemCount()) return;
+
+    phaseF26BeginRenderFrame();
+
     if (annotationsVisible) {
       const drawableFeatures = reviewState.active
         ? (reviewState.currentId ? [findFeature(reviewState.currentId)].filter(Boolean) : [])
@@ -13726,13 +14503,100 @@ if (!geometry) {
   }
 
   function hitTest(point) {
-    for (let index = featureCollection.features.length - 1; index >= 0; index -= 1) {
-      const feature = featureCollection.features[index];
-      const geometry = feature.geometry;
-      if (!geometry) continue;
-      if (geometry.type === "Polygon" && pointInPolygon(point, geometry.coordinates)) return featureId(feature);
-      if (geometry.type === "MultiPolygon" && geometry.coordinates.some((polygon) => pointInPolygon(point, polygon))) return featureId(feature);
+    for (
+      let index =
+        featureCollection.features.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const feature =
+        featureCollection.features[index];
+
+      const geometry =
+        feature.geometry;
+
+      if (!geometry) {
+        continue;
+      }
+
+      const geometryBounds =
+        phaseF26GeometryBounds(
+          geometry
+        );
+
+      if (
+        geometryBounds
+        && !phaseF26PointInBounds(
+          point,
+          geometryBounds
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        geometry.type === "Polygon"
+      ) {
+        const polygonBounds =
+          phaseF26PolygonBounds(
+            geometry.coordinates
+          );
+
+        if (
+          (
+            !polygonBounds
+            || phaseF26PointInBounds(
+              point,
+              polygonBounds
+            )
+          )
+          && pointInPolygon(
+            point,
+            geometry.coordinates
+          )
+        ) {
+          return featureId(feature);
+        }
+
+        continue;
+      }
+
+      if (
+        geometry.type !== "MultiPolygon"
+      ) {
+        continue;
+      }
+
+      for (
+        const polygon
+        of geometry.coordinates || []
+      ) {
+        const polygonBounds =
+          phaseF26PolygonBounds(
+            polygon
+          );
+
+        if (
+          polygonBounds
+          && !phaseF26PointInBounds(
+            point,
+            polygonBounds
+          )
+        ) {
+          continue;
+        }
+
+        if (
+          pointInPolygon(
+            point,
+            polygon
+          )
+        ) {
+          return featureId(feature);
+        }
+      }
     }
+
     return null;
   }
 
