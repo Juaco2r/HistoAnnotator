@@ -167,3 +167,47 @@ One final grouped characterization commit remains before structural refactoring:
 
 After Phase 1F passes, the initial characterization phase is considered complete
 and production-code refactoring can begin.
+
+## Characterization scope added in Phase 1F
+
+Phase 1F closes the initial characterization stage by freezing the remaining
+high-level workflows and platform integration contracts without modifying
+production source code.
+
+Frozen workflow behavior includes:
+
+- analysis protocol storage keys and schema filtering;
+- canonical/stable protocol serialization and deterministic hashing;
+- protocol stage aliases and metadata snapshots;
+- H-DAB protocol physical/pixel unit compatibility;
+- Batch result-file naming and source-clone rules;
+- preservation of Artifact and manual Positive during Batch preparation;
+- removal of Tissue ROI, Anthracosis, and automatic H-DAB Positive before rerun;
+- protocol execution order: Tissue ROI -> Anthracosis -> H-DAB;
+- Batch cancellation only after the current image finishes and is saved;
+- source/result annotation-file separation;
+- default and persisted keyboard shortcuts;
+- Focus Mode state/UI contract;
+- Review workflow decision interpretation;
+- Interactive Learning model identifiers A/B/C and labels;
+- training-source signatures and history retention;
+- reviewer feedback/correction metrics;
+- suggestion-priority weighting;
+- IL evaluation storage identity and history caps.
+
+Frozen platform/smoke behavior includes:
+
+- app.js JavaScript syntax validity;
+- FastAPI static shell and /health/live route wiring;
+- Capacitor Android service-worker/mixed-content settings;
+- Android web-build script syntax and native dependency injection;
+- registration of LocalImagePlugin and ServerHttpPlugin;
+- Desktop Python syntax compilation outside the repository tree;
+- Desktop /health/live liveness contract;
+- Docker port, healthcheck, and single-worker Uvicorn contract.
+
+After Phase 1F the initial characterization stage is considered complete.
+Subsequent work may add targeted tests when a refactor touches a specific area,
+but no additional pre-refactor characterization phase is planned.
+
+No production source file is modified by Phase 1F.
