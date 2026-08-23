@@ -140,46 +140,47 @@ def iter_image_files() -> Iterator[Path]:
                     return
 
 
-ANNOTATION_FILE_RE = re.compile(r"^[A-Za-z0-9 _.-]{1,80}$")
+# Annotation storage lives in app/storage/annotations.py.  Keep the historic
+# main.py helper names as compatibility facades because scientific, Batch, and
+# Interactive Learning code still call them directly during this incremental
+# refactor.
+if __package__:
+    from .storage.annotations import (
+        annotation_files as _storage_annotation_files,
+        annotation_path as _storage_annotation_path,
+        create_annotation_document as _storage_create_annotation_document,
+        delete_annotation_document as _storage_delete_annotation_document,
+        empty_feature_collection,
+        normalize_annotation_file,
+        read_annotation_document as _storage_read_annotation_document,
+        save_annotation_document as _storage_save_annotation_document,
+    )
+else:
+    from storage.annotations import (
+        annotation_files as _storage_annotation_files,
+        annotation_path as _storage_annotation_path,
+        create_annotation_document as _storage_create_annotation_document,
+        delete_annotation_document as _storage_delete_annotation_document,
+        empty_feature_collection,
+        normalize_annotation_file,
+        read_annotation_document as _storage_read_annotation_document,
+        save_annotation_document as _storage_save_annotation_document,
+    )
 
-def normalize_annotation_file(value: str | None) -> str:
-    name = (value or "Default").strip() or "Default"
-    if not ANNOTATION_FILE_RE.fullmatch(name) or name in {".", ".."}:
-        raise HTTPException(status_code=422, detail="Invalid annotation file name")
-    return name
 
 def annotation_path(relative: str, annotation_file: str = "Default") -> Path:
-    name = normalize_annotation_file(annotation_file)
-    if name.casefold() == "default":
-        destination = (ANNOTATION_ROOT / f"{relative}.geojson").resolve()
-    else:
-        destination = (ANNOTATION_ROOT / f"{relative}.annotations" / f"{name}.geojson").resolve()
-    try:
-        destination.relative_to(ANNOTATION_ROOT)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid annotation path") from exc
-    return destination
+    return _storage_annotation_path(
+        ANNOTATION_ROOT,
+        relative,
+        annotation_file,
+    )
+
 
 def annotation_files(relative: str) -> list[str]:
-    names: list[str] = ["Default"]
-    folder = (ANNOTATION_ROOT / f"{relative}.annotations").resolve()
-    try:
-        folder.relative_to(ANNOTATION_ROOT)
-    except ValueError:
-        return names
-    if folder.is_dir():
-        for path in sorted(folder.glob("*.geojson"), key=lambda item: item.name.casefold()):
-            name = path.stem
-            if name and name.casefold() != "default":
-                names.append(name)
-    return names
-
-
-def empty_feature_collection(relative: str) -> dict[str, Any]:
-    # QuPath exchanges annotation objects as a plain GeoJSON FeatureCollection.
-    # The image association is kept by HistoAnnotator's filename, not by adding
-    # non-standard collection properties.
-    return {"type": "FeatureCollection", "features": []}
+    return _storage_annotation_files(
+        ANNOTATION_ROOT,
+        relative,
+    )
 
 
 def atomic_write_json(path: Path, payload: Any) -> None:
@@ -4527,10 +4528,12 @@ def create_annotation_file(image_id: str, payload: dict[str, Any] = Body(...)) -
     name = normalize_annotation_file(str(payload.get("name") or ""))
     if name.casefold() == "default":
         return {"created": False, "name": "Default", "files": annotation_files(relative)}
-    path = annotation_path(relative, name)
-    if path.exists():
-        raise HTTPException(status_code=409, detail="An annotation file with this name already exists")
-    atomic_write_json(path, empty_feature_collection(relative))
+    _storage_create_annotation_document(
+        ANNOTATION_ROOT,
+        relative,
+        name,
+        atomic_write_json,
+    )
     return {"created": True, "name": name, "files": annotation_files(relative)}
 
 
@@ -4541,32 +4544,11 @@ def delete_annotation_file(
 ) -> dict[str, Any]:
     _, relative = safe_image_path(image_id)
     name = normalize_annotation_file(file)
-
-    if name.casefold() == "default":
-        raise HTTPException(status_code=409, detail="The Default annotation file cannot be deleted")
-
-    path = annotation_path(relative, name)
-    deleted = False
-    if path.exists():
-        try:
-            path.unlink()
-            deleted = True
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not delete annotation file: {exc}") from exc
-
-    backup = path.with_suffix(path.suffix + ".bak")
-    if backup.exists():
-        try:
-            backup.unlink()
-        except OSError:
-            pass
-
-    try:
-        if path.parent != ANNOTATION_ROOT and path.parent.is_dir() and not any(path.parent.iterdir()):
-            path.parent.rmdir()
-    except OSError:
-        pass
-
+    deleted = _storage_delete_annotation_document(
+        ANNOTATION_ROOT,
+        relative,
+        name,
+    )
     return {
         "deleted": deleted,
         "name": name,
@@ -4577,14 +4559,12 @@ def delete_annotation_file(
 @app.get("/api/annotations/{image_id}")
 def get_annotations(image_id: str, file: str = Query("Default")) -> JSONResponse:
     _, relative = safe_image_path(image_id)
-    path = annotation_path(relative, file)
-    if not path.exists():
-        return JSONResponse(empty_feature_collection(relative))
-    try:
-        with path.open("r", encoding="utf-8") as stream:
-            payload = json.load(stream)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read GeoJSON: {exc}") from exc
+    payload = _storage_read_annotation_document(
+        ANNOTATION_ROOT,
+        relative,
+        file,
+        error_prefix="Could not read GeoJSON",
+    )
     return JSONResponse(payload)
 
 
@@ -4604,11 +4584,13 @@ def put_annotations(
     # Any normalization difference falls back to the full response.
     normalized_changed = normalized != payload
 
-    destination = annotation_path(relative, name)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        shutil.copy2(destination, destination.with_suffix(destination.suffix + ".bak"))
-    atomic_write_json(destination, normalized)
+    destination = _storage_save_annotation_document(
+        ANNOTATION_ROOT,
+        relative,
+        name,
+        normalized,
+        atomic_write_json,
+    )
 
     response: dict[str, Any] = {
         "saved": True,
@@ -4630,16 +4612,14 @@ def put_annotations(
 def download_annotations(image_id: str, file: str = Query("Default")) -> Response:
     _, relative = safe_image_path(image_id)
     name = normalize_annotation_file(file)
-    path = annotation_path(relative, name)
     suffix = "" if name.casefold() == "default" else f".{name}"
     filename = f"{Path(relative).name}{suffix}.geojson"
-    if not path.exists():
-        collection = empty_feature_collection(relative)
-    else:
-        try:
-            collection = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=500, detail=f"Could not read annotation file: {exc}") from exc
+    collection = _storage_read_annotation_document(
+        ANNOTATION_ROOT,
+        relative,
+        name,
+        error_prefix="Could not read annotation file",
+    )
     collection, _report = sanitize_qupath_feature_collection(collection)
     body = json.dumps(collection, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
     return Response(body, media_type="application/geo+json", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
