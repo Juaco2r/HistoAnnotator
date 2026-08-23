@@ -91,6 +91,34 @@ Frozen behavior includes:
 
 No production source file is modified by Phase 1C.
 
+## Characterization scope added in Phase 1D
+
+Phase 1D adds deterministic contracts for GeoJSON normalization, QuPath
+compatibility, and annotation-file persistence without modifying production
+source code.
+
+Frozen behavior includes:
+
+- rejection of non-FeatureCollection documents;
+- dropping malformed, unsupported, and non-finite geometries;
+- repair of invalid/self-intersecting polygonal geometry;
+- preservation of finite Point and LineString geometries;
+- classification color normalization and precedence;
+- synchronization of Artifact classification with metadata role;
+- ROI role precedence over Artifact classification;
+- migration of legacy review metadata into workflow metadata;
+- Draft/Reviewed workflow semantics for review decisions;
+- removal of non-finite numeric measurement values;
+- QuPath export sanitation reports;
+- Default and named annotation-file path conventions;
+- named-file creation/listing/deletion behavior;
+- compact ACK only when server normalization leaves the payload unchanged;
+- backup creation before overwriting an existing annotation document;
+- GeoJSON download media type and filename conventions;
+- empty FeatureCollection response for missing annotation files.
+
+No production source file is modified by Phase 1D.
+
 ## Next characterization slices
 
 Planned independent commits:
