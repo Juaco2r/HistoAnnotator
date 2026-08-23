@@ -68,6 +68,29 @@ Frozen behavior includes:
 
 No production source file is modified by Phase 1B.
 
+## Characterization scope added in Phase 1C
+
+Phase 1C adds deterministic contracts for the existing H-DAB behavior without
+modifying production source code.
+
+Frozen behavior includes:
+
+- fixed Hematoxylin and DAB stain vectors and the derived H-DAB stain matrix;
+- optical-density DAB concentration for known RGB values;
+- Gaussian smoothing semantics for a constant DAB field;
+- current Otsu threshold selection from a fixed histogram;
+- current weighted-object-variance behavior when delta is zero;
+- advanced H-DAB parameter aliases, clamping, MPP conversion, and units;
+- threshold-method identifiers for manual, Otsu, and WOV modes;
+- requirement for a Tissue ROI;
+- analysis-region precedence: Tissue ROI -> External Border -> Artifact -> Anthracosis;
+- rejection of quantitative H-DAB for non-H-DAB image types;
+- native-resolution manual Positive/Negative pixel counts on a synthetic slide;
+- current automatic Otsu/bin-center semantics on the same synthetic slide;
+- F2.0 remaining quantitative/non-destructive (no generated GeoJSON returned).
+
+No production source file is modified by Phase 1C.
+
 ## Next characterization slices
 
 Planned independent commits:
