@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+echo "Checking modular frontend bundle..."
+python3 "$ROOT/scripts/build_frontend_bundle.py" --check
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker is required to run characterization tests." >&2
   exit 1

@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# app.js is generated from the modular frontend source parts.
+python3 "$ROOT/scripts/build_frontend_bundle.py" --check
 SOURCE="$ROOT/app/static"
 DEST="$ROOT/android-app/www"
 NODE_MODULES="$ROOT/android-app/node_modules"
