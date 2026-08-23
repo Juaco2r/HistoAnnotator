@@ -23,7 +23,7 @@ services:
       - ${PREPARED_ROOT:-/srv/histoannotator/prepared}:/data/prepared
       - ${UPLOAD_ROOT:-/srv/histoannotator/uploads}:/data/uploads
     ports:
-      - "127.0.0.1:8020:8000"
+      - "0.0.0.0:8020:8000"
     networks:
       cytomine:
         ipv4_address: 172.16.238.21
