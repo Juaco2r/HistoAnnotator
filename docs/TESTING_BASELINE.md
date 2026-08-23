@@ -119,15 +119,51 @@ Frozen behavior includes:
 
 No production source file is modified by Phase 1D.
 
-## Next characterization slices
+## Characterization scope added in Phase 1E
 
-Planned independent commits:
+Phase 1E freezes the current frontend document-state, local-persistence,
+synchronization, Undo/Redo, hit-testing, and edit-orchestration behavior without
+modifying production source code.
 
-1. Tissue ROI / Artifact / Anthracosis algorithm fixtures.
-2. H-DAB deterministic pixel/geometry fixtures.
-3. GeoJSON import/export and QuPath compatibility.
-4. Local persistence / IndexedDB / synchronization ordering.
-5. Undo/Redo and Review/Focus/shortcuts.
-6. Protocols and Batch Analysis.
-7. Interactive Learning contracts.
-8. Web/Android/Desktop/Docker platform smoke tests.
+The frontend characterization tests execute the exact named functions extracted
+from `app/static/app.js` inside a deterministic Node.js VM harness. This avoids
+adding exports or test hooks to production code before refactoring.
+
+Frozen behavior includes:
+
+- IndexedDB database name, version, and object-store schema;
+- Default/named annotation draft keys;
+- local revision restoration and monotonic revision generation;
+- local-native documents never becoming server-sync pending;
+- stale local writes not overwriting newer durable revisions;
+- persisted draft record shape and pending counters;
+- server ACK state updates preserving newer local edits;
+- queued sync revisions skipping superseded snapshots;
+- compact ACK preserving the live FeatureCollection object;
+- server-normalized collections replacing live state only for the current revision;
+- pending-draft filtering during reconnect synchronization;
+- standard Undo/Redo snapshot semantics and the 50-entry limit;
+- F2.6.1 lightweight created-feature Undo/Redo;
+- Polygon/MultiPolygon hit-testing, topmost precedence, and hole exclusion;
+- normal annotation creation through `commitGeometry()`;
+- rejection of geometry outside image bounds;
+- add/subtract edits preserving feature identity and metadata.
+
+Phase 1E requires Node.js 22+, matching the existing Android development
+requirements. No npm package or production dependency is added.
+
+No production source file is modified by Phase 1E.
+
+## Next characterization slice
+
+One final grouped characterization commit remains before structural refactoring:
+
+1. **Phase 1F — Workflow, learning, and platform contracts**
+   - reproducible Protocols and checksums;
+   - Batch Analysis orchestration;
+   - Interactive Learning core contracts;
+   - Review / Focus / shortcuts;
+   - Web / Android / Desktop / Docker smoke checks.
+
+After Phase 1F passes, the initial characterization phase is considered complete
+and production-code refactoring can begin.

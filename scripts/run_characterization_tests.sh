@@ -49,3 +49,29 @@ docker run --rm \
     cd /app
     PYTHONPATH=/app python -m unittest discover -s /tests -p "test_*.py" -v
   '
+echo
+echo "Running frontend characterization tests with Node.js..."
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "ERROR: Node.js 22+ is required for frontend characterization tests." >&2
+  exit 1
+fi
+
+NODE_VERSION="$(node --version)"
+NODE_MAJOR="${NODE_VERSION#v}"
+NODE_MAJOR="${NODE_MAJOR%%.*}"
+if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 22 )); then
+  echo "ERROR: Node.js 22+ is required; found $NODE_VERSION." >&2
+  exit 1
+fi
+
+shopt -s nullglob
+FRONTEND_TESTS=("$ROOT"/tests/test_frontend_*.mjs)
+shopt -u nullglob
+
+if (( ${#FRONTEND_TESTS[@]} == 0 )); then
+  echo "ERROR: no frontend characterization tests were found." >&2
+  exit 1
+fi
+
+HISTOANNOTATOR_ROOT="$ROOT" node --test "${FRONTEND_TESTS[@]}"
