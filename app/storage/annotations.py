@@ -110,6 +110,17 @@ def delete_annotation_document(
         except OSError:
             pass
 
+    metadata = annotation_metadata_path(
+        annotation_root,
+        relative,
+        name,
+    )
+    if metadata.exists():
+        try:
+            metadata.unlink()
+        except OSError:
+            pass
+
     try:
         if (
             path.parent != annotation_root
@@ -159,3 +170,132 @@ def save_annotation_document(
         )
     write_json(destination, payload)
     return destination
+
+ANNOTATION_FILE_ROLES = {
+    "annotation",
+    "ground_truth",
+    "model_prediction",
+    "consensus",
+    "reference",
+}
+
+ANNOTATION_SOURCE_TYPES = {
+    "manual",
+    "pathologist",
+    "model",
+    "external",
+    "mixed",
+}
+
+
+def normalize_annotation_file_metadata(
+    payload: Any,
+) -> dict[str, Any]:
+    item = payload if isinstance(payload, dict) else {}
+    role = str(
+        item.get("role") or "annotation"
+    ).strip().lower()
+    source_type = str(
+        item.get("sourceType") or "manual"
+    ).strip().lower()
+
+    if role not in ANNOTATION_FILE_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid annotation-file role: {role}",
+        )
+
+    if source_type not in ANNOTATION_SOURCE_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid annotation-file source type: "
+                f"{source_type}"
+            ),
+        )
+
+    return {
+        "schemaVersion": 1,
+        "role": role,
+        "sourceType": source_type,
+    }
+
+
+def annotation_metadata_path(
+    annotation_root: Path,
+    relative: str,
+    annotation_file: str = "Default",
+) -> Path:
+    document = annotation_path(
+        annotation_root,
+        relative,
+        annotation_file,
+    )
+    return document.with_suffix(
+        document.suffix + ".meta.json"
+    )
+
+
+def read_annotation_metadata(
+    annotation_root: Path,
+    relative: str,
+    annotation_file: str = "Default",
+) -> dict[str, Any]:
+    path = annotation_metadata_path(
+        annotation_root,
+        relative,
+        annotation_file,
+    )
+
+    if not path.exists():
+        return normalize_annotation_file_metadata({})
+
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+    except (OSError, json.JSONDecodeError):
+        return normalize_annotation_file_metadata({})
+
+    try:
+        return normalize_annotation_file_metadata(payload)
+    except HTTPException:
+        return normalize_annotation_file_metadata({})
+
+
+def save_annotation_metadata(
+    annotation_root: Path,
+    relative: str,
+    annotation_file: str,
+    payload: Any,
+) -> Path:
+    metadata = normalize_annotation_file_metadata(payload)
+    path = annotation_metadata_path(
+        annotation_root,
+        relative,
+        annotation_file,
+    )
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary = path.with_suffix(
+        path.suffix + ".tmp"
+    )
+
+    with temporary.open(
+        "w",
+        encoding="utf-8",
+    ) as stream:
+        json.dump(
+            metadata,
+            stream,
+            ensure_ascii=False,
+            indent=2,
+        )
+        stream.write("\n")
+
+    temporary.replace(path)
+    return path
+

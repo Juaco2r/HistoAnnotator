@@ -71,6 +71,7 @@ if __package__:
     from .analysis.tissue import *
     from .analysis.geometry_routes import *
     from .analysis.statistics import *
+    from .analysis.evaluation import *
     from .learning.service import *
     from .analysis.anthracosis import *
     from .analysis.hdab import *
@@ -78,6 +79,7 @@ if __package__:
     from .imaging.service import router as _imaging_router
     from .analysis.geometry_routes import router as _geometry_router
     from .analysis.statistics import router as _statistics_router
+    from .analysis.evaluation import router as _evaluation_router
     from .learning.service import (
         capabilities_router as _learning_capabilities_router,
         suggest_router as _learning_suggest_router,
@@ -89,6 +91,7 @@ else:
     from analysis.tissue import *
     from analysis.geometry_routes import *
     from analysis.statistics import *
+    from analysis.evaluation import *
     from learning.service import *
     from analysis.anthracosis import *
     from analysis.hdab import *
@@ -96,6 +99,7 @@ else:
     from imaging.service import router as _imaging_router
     from analysis.geometry_routes import router as _geometry_router
     from analysis.statistics import router as _statistics_router
+    from analysis.evaluation import router as _evaluation_router
     from learning.service import (
         capabilities_router as _learning_capabilities_router,
         suggest_router as _learning_suggest_router,
@@ -524,6 +528,7 @@ def tissue_roi_preview(
 
 app.include_router(_geometry_router)
 app.include_router(_statistics_router)
+app.include_router(_evaluation_router)
 
 
 

@@ -3040,4 +3040,107 @@ body.phase-r-picking-reference .phase-r-panel {
     width: 100%;
   }
 }
-
+/* Reference / Ground Truth Evaluation v1 */
+.annotation-file-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.annotation-file-meta-grid label,
+.phase-eval-file-grid label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.annotation-file-meta-grid span,
+.phase-eval-file-grid span {
+  font-size: 0.76rem;
+  opacity: 0.8;
+}
+.annotation-evaluation-button {
+  width: 100%;
+  margin-top: 8px;
+}
+.phase-eval-card {
+  width: min(1120px, calc(100vw - 32px));
+  max-height: min(900px, calc(100vh - 32px));
+  overflow: auto;
+}
+.phase-eval-file-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.phase-eval-preset-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: end;
+  margin: 12px 0;
+}
+.phase-eval-mapping-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 12px;
+}
+.phase-eval-mapping-panel {
+  min-width: 0;
+}
+.phase-eval-mapping-panel h3 {
+  margin: 0 0 8px;
+}
+.phase-eval-mapping-list {
+  display: grid;
+  gap: 6px;
+  max-height: 300px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.phase-eval-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+.phase-eval-source {
+  display: grid;
+  min-width: 0;
+}
+.phase-eval-source strong,
+.phase-eval-source small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.phase-eval-arrow {
+  opacity: 0.65;
+}
+.phase-eval-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 10px 0;
+}
+.phase-eval-summary span {
+  display: inline-flex;
+  gap: 5px;
+}
+.phase-eval-results {
+  margin-top: 14px;
+}
+.phase-eval-table th,
+.phase-eval-table td {
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .annotation-file-meta-grid,
+  .phase-eval-file-grid,
+  .phase-eval-mapping-grid {
+    grid-template-columns: 1fr;
+  }
+  .phase-eval-preset-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

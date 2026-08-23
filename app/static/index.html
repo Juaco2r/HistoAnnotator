@@ -368,7 +368,37 @@
   </div>
 </div>
         </div>
-      </section>
+      
+
+        <div class="annotation-file-meta-grid">
+          <label>
+            <span>Role</span>
+            <select id="annotationFileRoleSelect" disabled>
+              <option value="annotation">Regular annotation</option>
+              <option value="ground_truth">Ground truth</option>
+              <option value="model_prediction">Model prediction</option>
+              <option value="consensus">Consensus</option>
+              <option value="reference">Other reference</option>
+            </select>
+          </label>
+          <label>
+            <span>Source</span>
+            <select id="annotationFileSourceSelect" disabled>
+              <option value="manual">Manual / unspecified</option>
+              <option value="pathologist">Pathologist</option>
+              <option value="model">Model</option>
+              <option value="external">External dataset/tool</option>
+              <option value="mixed">Mixed / consensus</option>
+            </select>
+          </label>
+        </div>
+        <button id="annotationEvaluationButton"
+                class="small-button annotation-evaluation-button"
+                type="button"
+                disabled>
+          Evaluate / Ground truth…
+        </button>
+</section>
       <section class="class-section">
         <div class="section-heading">
           <div class="heading-copy">
@@ -1307,6 +1337,91 @@
 
 
 
+
+  <div id="referenceEvaluationModal" class="modal-overlay" hidden>
+    <section class="modal-card stats-card phase-eval-card"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="referenceEvaluationTitle">
+      <h2 id="referenceEvaluationTitle">Reference / Ground Truth Evaluation</h2>
+      <p class="modal-note">
+        Compare any two annotation files from the current image. Role and
+        provenance are metadata only: the original GeoJSON is not renamed or
+        rewritten. Multiple source classes can map to one target class.
+      </p>
+
+      <div class="phase-eval-file-grid">
+        <label>
+          <span>Candidate</span>
+          <select id="phaseEvalCandidateFile"></select>
+        </label>
+        <label>
+          <span>Reference / Ground truth</span>
+          <select id="phaseEvalReferenceFile"></select>
+        </label>
+      </div>
+
+      <div class="modal-actions">
+        <button id="phaseEvalLoadMappingButton" type="button">
+          Load classes / mapping
+        </button>
+      </div>
+
+      <div class="phase-eval-preset-row">
+        <label>
+          <span>Mapping preset</span>
+          <select id="phaseEvalPresetSelect">
+            <option value="">No mapping preset</option>
+          </select>
+        </label>
+        <button id="phaseEvalSavePresetButton" type="button">Save preset</button>
+        <button id="phaseEvalApplyPresetButton" type="button" disabled>Apply</button>
+        <button id="phaseEvalDeletePresetButton" type="button" disabled>Delete</button>
+      </div>
+
+      <div class="phase-eval-mapping-grid">
+        <section class="phase-eval-mapping-panel">
+          <h3>Candidate mapping</h3>
+          <p class="modal-note">
+            Choose the evaluation class for each Candidate source class.
+          </p>
+          <div id="phaseEvalCandidateMapping"
+               class="phase-eval-mapping-list"></div>
+        </section>
+
+        <section class="phase-eval-mapping-panel">
+          <h3>Reference mapping</h3>
+          <p class="modal-note">
+            Rename or merge external classes. Selecting the same target for
+            several source classes merges them before Dice is calculated.
+          </p>
+          <div id="phaseEvalReferenceMapping"
+               class="phase-eval-mapping-list"></div>
+        </section>
+      </div>
+
+      <div id="phaseEvalStatus" class="stats-summary">
+        Choose Candidate and Reference.
+      </div>
+
+      <div class="modal-actions">
+        <button id="phaseEvalRunButton" type="button" disabled>
+          Calculate Dice
+        </button>
+        <button id="phaseEvalExportCsvButton" type="button" disabled>
+          Export CSV
+        </button>
+        <button id="phaseEvalCloseButton" type="button">Close</button>
+      </div>
+
+      <div id="phaseEvalResults"
+           class="stats-table-wrap phase-eval-results">
+        <p class="modal-note">
+          Load classes to configure the evaluation mapping.
+        </p>
+      </div>
+    </section>
+  </div>
   <script src="./static/app.js?v=1.4.0-dev-F2.6.2"></script>
 </body>
 </html>

@@ -124,6 +124,7 @@ async function start() {
     phaseF1Initialize();
     phaseGInitialize();
     phaseG2Initialize();
+    phaseEvalInitialize();
     phaseIL1Initialize();
     phaseIL2Initialize();
     phaseIL11Initialize();

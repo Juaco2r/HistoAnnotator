@@ -6324,6 +6324,9 @@ if (!geometry) {
         !currentImage
         || String(currentAnnotationFile || "Default").toLowerCase() === "default";
     }
+    if (typeof phaseEvalAnnotationFileChanged === "function") {
+      void phaseEvalAnnotationFileChanged();
+    }
   }
 
   async function loadAnnotationFiles(imageId = currentImage?.id, preserve = true) {

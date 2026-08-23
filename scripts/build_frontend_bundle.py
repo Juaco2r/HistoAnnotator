@@ -15,6 +15,7 @@ PARTS = [
     "30_review_statistics.part.js",
     "40_hdab_protocols.part.js",
     "50_batch_files_platform.part.js",
+    "55_reference_evaluation.part.js",
     "60_interactive_learning.part.js",
     "70_event_bindings.part.js",
     "80_anthracosis_frontend.part.js",
