@@ -88,6 +88,6 @@ test('Docker contract keeps port 8000, health/live, and one Uvicorn worker', () 
   assert.match(dockerfile, /EXPOSE 8000/);
   assert.match(dockerfile, /\/health\/live/);
   assert.match(dockerfile, /"--workers", "1"/);
-  assert.match(compose, /127\.0\.0\.1:8020:8000/);
+  assert.match(compose, /0\.0\.0\.0:8020:8000/);
   assert.match(compose, /container_name:\s*histoannotator/);
 });
