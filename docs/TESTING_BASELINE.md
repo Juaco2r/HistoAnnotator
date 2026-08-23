@@ -47,6 +47,27 @@ The script uses the existing HistoAnnotator Docker image for dependencies, but m
 
 If the application image does not yet exist locally, the runner builds the existing production Docker image first.
 
+## Characterization scope added in Phase 1B
+
+Phase 1B adds deterministic contracts for the existing Tissue ROI / Artifact /
+Anthracosis behavior without modifying production source code.
+
+Frozen behavior includes:
+
+- Tissue detector output on a synthetic fixed image;
+- Tissue ROI vectorization, hole preservation/filling, and minimum-island filtering;
+- Anthracosis requirement for a Tissue ROI;
+- clipping the Anthracosis analysis ROI to image bounds;
+- Artifact subtraction when identified either by metadata role or by class name;
+- current F1.3/F1.5 black-seed thresholds at sensitivity 50;
+- rejection of an isolated dark-brown pixel without a true black seed;
+- bounded morphological growth radius;
+- rejection of a strong-blue boundary next to a valid black seed;
+- minimum component filtering;
+- final dilation remaining clipped to the valid analysis mask.
+
+No production source file is modified by Phase 1B.
+
 ## Next characterization slices
 
 Planned independent commits:
