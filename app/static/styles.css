@@ -3144,3 +3144,65 @@ body.phase-r-picking-reference .phase-r-panel {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* Compact collapsible Evaluation controls */
+.annotation-evaluation-details {
+  margin-top: 7px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.annotation-evaluation-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 29px;
+  padding: 3px 2px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-size: 0.78rem;
+  font-weight: 500;
+  opacity: 0.72;
+}
+
+.annotation-evaluation-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.annotation-evaluation-details > summary::before {
+  content: "›";
+  display: inline-block;
+  width: 11px;
+  font-size: 1rem;
+  line-height: 1;
+  transform-origin: center;
+  transition: transform 120ms ease;
+  opacity: 0.72;
+}
+
+.annotation-evaluation-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.annotation-evaluation-details > summary:hover {
+  opacity: 1;
+}
+
+.annotation-evaluation-details-body {
+  padding: 4px 0 2px;
+}
+
+.annotation-evaluation-details .annotation-file-meta-grid {
+  margin-top: 2px;
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+.annotation-evaluation-details .annotation-evaluation-button {
+  width: 100%;
+  margin-top: 7px;
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 0.74rem;
+}

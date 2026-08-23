@@ -370,34 +370,40 @@
         </div>
       
 
-        <div class="annotation-file-meta-grid">
-          <label>
-            <span>Role</span>
-            <select id="annotationFileRoleSelect" disabled>
-              <option value="annotation">Regular annotation</option>
-              <option value="ground_truth">Ground truth</option>
-              <option value="model_prediction">Model prediction</option>
-              <option value="consensus">Consensus</option>
-              <option value="reference">Other reference</option>
-            </select>
-          </label>
-          <label>
-            <span>Source</span>
-            <select id="annotationFileSourceSelect" disabled>
-              <option value="manual">Manual / unspecified</option>
-              <option value="pathologist">Pathologist</option>
-              <option value="model">Model</option>
-              <option value="external">External dataset/tool</option>
-              <option value="mixed">Mixed / consensus</option>
-            </select>
-          </label>
-        </div>
-        <button id="annotationEvaluationButton"
-                class="small-button annotation-evaluation-button"
-                type="button"
-                disabled>
-          Evaluate / Ground truth…
-        </button>
+        <details id="annotationEvaluationDetails"
+         class="annotation-evaluation-details">
+  <summary>Evaluation</summary>
+  <div class="annotation-evaluation-details-body">
+  <div class="annotation-file-meta-grid">
+            <label>
+              <span>Role</span>
+              <select id="annotationFileRoleSelect" disabled>
+                <option value="annotation">Regular annotation</option>
+                <option value="ground_truth">Ground truth</option>
+                <option value="model_prediction">Model prediction</option>
+                <option value="consensus">Consensus</option>
+                <option value="reference">Other reference</option>
+              </select>
+            </label>
+            <label>
+              <span>Source</span>
+              <select id="annotationFileSourceSelect" disabled>
+                <option value="manual">Manual / unspecified</option>
+                <option value="pathologist">Pathologist</option>
+                <option value="model">Model</option>
+                <option value="external">External dataset/tool</option>
+                <option value="mixed">Mixed / consensus</option>
+              </select>
+            </label>
+          </div>
+          <button id="annotationEvaluationButton"
+                  class="small-button annotation-evaluation-button"
+                  type="button"
+                  disabled>
+            Compare with reference
+          </button>
+  </div>
+</details>
 </section>
       <section class="class-section">
         <div class="section-heading">
