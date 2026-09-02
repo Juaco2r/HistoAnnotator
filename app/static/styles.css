@@ -3481,3 +3481,318 @@ body.phase-r-picking-reference .phase-r-panel {
     min-height: 180px;
   }
 }
+
+/* Notes + Handwriting + Share v1 */
+.phase-notes-overlay {
+  z-index: 86;
+}
+
+.phase-notes-card,
+.phase-notes-topic-card {
+  width: min(1120px, calc(100vw - 26px));
+  max-height: min(91vh, 950px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.phase-notes-editor-card {
+  width: min(1180px, calc(100vw - 24px));
+  max-height: min(92vh, 950px);
+  overflow: hidden;
+}
+
+.phase-notes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.phase-notes-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.phase-notes-muted {
+  font-size: 0.75rem;
+  opacity: 0.66;
+  overflow-wrap: anywhere;
+}
+
+.phase-notes-title-field {
+  display: grid;
+  gap: 4px;
+  min-width: min(460px, 46vw);
+}
+
+#phaseNotesTopicTitle {
+  width: 100%;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.phase-notes-note-modes,
+.phase-notes-hand-toolbar,
+.phase-notes-capture-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.phase-notes-note-modes button.active,
+.phase-notes-hand-toolbar button.active,
+.phase-notes-capture-toolbar button.active {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.phase-notes-note-panel {
+  margin-top: 8px;
+}
+
+#phaseNotesTypedText {
+  width: 100%;
+  resize: vertical;
+}
+
+.phase-notes-whiteboard-wrap {
+  margin-top: 8px;
+  max-height: 50vh;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+#phaseNotesHandCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #ffffff;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.phase-notes-captures-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  font-size: 0.78rem;
+}
+
+.phase-notes-captures-heading span {
+  opacity: 0.64;
+}
+
+.phase-notes-topic-list,
+.phase-notes-capture-list {
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 12px;
+}
+
+.phase-notes-empty {
+  min-height: 170px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+  gap: 5px;
+  opacity: 0.66;
+}
+
+.phase-notes-topic-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto minmax(180px, 0.8fr);
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  padding: 11px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+}
+
+.phase-notes-preview-strip {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.phase-notes-preview-strip img {
+  width: 58px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+.phase-notes-capture-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.phase-notes-capture-card {
+  display: grid;
+  grid-template-columns: minmax(145px, 44%) minmax(0, 1fr);
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+}
+
+.phase-notes-capture-preview {
+  width: 100%;
+  height: auto;
+  max-height: 210px;
+  border-radius: 7px;
+  background: #111;
+}
+
+.phase-notes-capture-info {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.phase-notes-capture-info span {
+  font-size: 0.72rem;
+  opacity: 0.7;
+  overflow-wrap: anywhere;
+}
+
+.phase-notes-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-top: 9px;
+  font-size: 0.72rem;
+}
+
+.phase-notes-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.75fr);
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.phase-notes-capture-canvas-wrap {
+  max-height: calc(92vh - 190px);
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  background: #111;
+  border-radius: 10px;
+}
+
+#phaseNotesCaptureCanvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.phase-notes-caption-column {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+#phaseNotesCaptureCaption {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 220px;
+  resize: vertical;
+}
+
+@media (max-width: 900px) {
+  .phase-notes-title-field {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .phase-notes-header {
+    flex-direction: column;
+  }
+
+  .phase-notes-actions {
+    justify-content: flex-start;
+  }
+
+  .phase-notes-capture-list {
+    grid-template-columns: 1fr;
+  }
+
+  .phase-notes-editor-layout {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .phase-notes-topic-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .phase-notes-preview-strip {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+/* Per-capture Typed / Handwritten note modes v1 */
+.phase-capture-note-mode-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 8px;
+}
+
+.phase-capture-note-mode-bar button.active {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.phase-capture-note-hand-panel {
+  min-width: 0;
+}
+
+.phase-capture-note-hand-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.phase-capture-note-hand-toolbar button.active {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.phase-capture-note-whiteboard {
+  width: 100%;
+  max-height: 46vh;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+#phaseReportNoteHandCanvas,
+#phaseNotesCaptureHandCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #ffffff;
+  touch-action: none;
+  cursor: crosshair;
+}
