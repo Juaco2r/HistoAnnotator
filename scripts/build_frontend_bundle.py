@@ -24,6 +24,7 @@ PARTS = [
     "87_report_builder.part.js",
     "88_notes_handwriting_share.part.js",
     "89_capture_note_modes.part.js",
+    "89_android_report_notes_refinements.part.js",
     "90_bootstrap.part.js"
 ]
 

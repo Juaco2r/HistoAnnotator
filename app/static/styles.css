@@ -3796,3 +3796,33 @@ body.phase-r-picking-reference .phase-r-panel {
   touch-action: none;
   cursor: crosshair;
 }
+
+/* Android Report / Notes refinements v2 */
+.phase-rn-hand-summary {
+  display: grid;
+  gap: 5px;
+  margin: 4px 0 8px;
+}
+
+.phase-rn-hand-summary-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  opacity: 0.72;
+}
+
+.phase-rn-hand-summary-image {
+  display: block;
+  width: min(100%, 430px);
+  max-height: 150px;
+  object-fit: contain;
+  object-position: left center;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+#phaseReportNote[inputmode="text"],
+#phaseNotesTypedText[inputmode="text"],
+#phaseNotesCaptureCaption[inputmode="text"] {
+  touch-action: manipulation;
+}
