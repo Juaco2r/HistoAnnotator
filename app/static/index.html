@@ -16,6 +16,7 @@
       <select id="drawingProfileSelect" aria-label="Drawing workflow">
         <option value="default">Default</option>
         <option value="pathologist">Pathologist</option>
+        <option value="detailed">Detailed</option>
       </select>
     </label>
     <div class="brand">HistoAnnotator <span class="badge">v1.4.0-dev-F2.6.2</span></div>
@@ -40,7 +41,6 @@
         <button id="syncNowButton" class="menu-item" type="button">↻ Sync now</button>
         <button id="openLocalImageButton" class="menu-item" type="button">＋ Open local image</button>
         <button id="localImagesButton" class="menu-item" type="button">▣ Local images</button>
-        <button id="connectionSettingsButton" class="menu-item" type="button">⚙ Connection settings</button>
         <div class="menu-separator"></div>
         <button id="importGeoJsonButton" class="menu-item" type="button" disabled>Import GeoJSON</button>
         <input id="importInput" class="visually-hidden" type="file" accept=".geojson,application/geo+json,application/json">
@@ -83,7 +83,7 @@
               aria-expanded="false">⚙</button>
       <div id="phaseBSettingsPanel" class="phase-b-settings-panel" hidden>
         <button id="phaseBFocusMenuButton" class="menu-item" type="button">Focus Mode</button>
-        <button id="phaseBShortcutsMenuButton" class="menu-item" type="button">Keyboard shortcuts</button>
+        
         <button id="phaseDTissueRoiMenuButton" class="menu-item" type="button">Tissue ROI…</button>
         <button id="hdabQuantButton" class="menu-item" type="button" disabled>H-DAB quantification</button>
         <button id="phaseF24AnalysisProtocolsButton"
@@ -101,7 +101,10 @@
         <button id="phaseGDuplicateAnnotationButton" class="menu-item" type="button">Duplicate file…</button>
         <!-- Phase G1.1 — Settings menu structure fix -->
 
-      </div>
+      
+    <div class="menu-separator phase-additional-tools-separator" aria-hidden="true"></div>
+    <button id="phaseAdditionalToolsButton" class="menu-item" type="button">Additional Tools…</button>
+</div>
     </div>
 
   </header>
@@ -147,6 +150,12 @@
         </select>
       </div>
       <button class="tool" data-mode="select" type="button">Select</button>
+<div id="phaseDetailedToolGroup" class="detailed-tool-group" hidden>
+  <span class="detailed-tool-title">Detailed tools</span>
+  <button class="tool" data-mode="detail-point" type="button" title="Create a point annotation">Point</button>
+  <button class="tool" data-mode="detail-line" type="button" title="Two-point straight line with length">Straight line</button>
+  <button class="tool" data-mode="detail-polyline" type="button" title="Open multi-segment line with total length">Open line</button>
+</div>
       <div id="editOperationControls" class="edit-operation-controls" hidden>
         <span class="edit-operation-label">Draw result</span>
         <div class="segmented-control" role="group" aria-label="How the new area should be applied">
@@ -185,6 +194,12 @@
         <button id="addPathologistHole" type="button">○ Inner contour</button>
         <button id="cancelPathologistContour" type="button">× Cancel</button>
       </div>
+      <div id="phaseDetailedPolylineActions" class="context-actions phase-detailed-measurement" hidden>
+  <strong>Open line</strong>
+  <span id="phaseDetailedMeasurementLabel"></span>
+  <button id="phaseDetailedFinishPolyline" type="button">✓ Finish line</button>
+  <button id="phaseDetailedCancelPolyline" type="button">× Cancel</button>
+</div>
       <div id="circleActions" class="context-actions circle-actions" hidden>
         <span id="circleInstruction">Tap the center</span>
         <button id="finishCircle" type="button" disabled>✓ Finish</button>
@@ -1428,6 +1443,41 @@
       </div>
     </section>
   </div>
+  <div id="phaseAdditionalToolsOverlay" class="modal-overlay" hidden>
+  <section class="modal-card phase-additional-tools-card"
+           role="dialog" aria-modal="true"
+           aria-labelledby="phaseAdditionalToolsTitle">
+    <h2 id="phaseAdditionalToolsTitle">Additional Tools</h2>
+    <p class="modal-note">Secondary configuration and evaluation tools.</p>
+    <div class="phase-additional-tools-grid">
+      <button id="phaseBShortcutsMenuButton" class="phase-additional-tool" type="button">
+        <span class="phase-additional-tool-icon">⌨</span>
+        <span class="phase-additional-tool-label">Keyboard shortcuts</span>
+      </button>
+      <button id="connectionSettingsButton" class="phase-additional-tool" type="button">
+        <span class="phase-additional-tool-icon">↔</span>
+        <span class="phase-additional-tool-label">Connection settings</span>
+      </button>
+            <button id="phaseAdditionalReportBuilderButton"
+              class="phase-additional-tool report-builder-tool"
+              type="button">
+        <span class="phase-additional-tool-icon">📝</span>
+        <span class="phase-additional-tool-label">Report Builder</span>
+      </button>
+
+<button id="phaseAdditionalReferenceEvaluationButton" class="phase-additional-tool" type="button">
+        <span class="phase-additional-tool-icon">◎</span>
+        <span class="phase-additional-tool-label">Reference evaluation</span>
+      </button>
+    </div>
+    <div class="modal-actions">
+      <button id="phaseAdditionalToolsClose" type="button">Close</button>
+    </div>
+  </section>
+</div>
+
   <script src="./static/app.js?v=1.4.0-dev-F2.6.2"></script>
+
+
 </body>
 </html>

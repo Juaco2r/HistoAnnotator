@@ -121,6 +121,7 @@ async function start() {
     renderAnnotationFileOptions();
     initViewer();
     bindEvents();
+    phaseWorkflowToolsInitialize();
     phaseF1Initialize();
     phaseGInitialize();
     phaseG2Initialize();

@@ -19,6 +19,9 @@ PARTS = [
     "60_interactive_learning.part.js",
     "70_event_bindings.part.js",
     "80_anthracosis_frontend.part.js",
+    "85_detailed_additional_tools.part.js",
+    "86_detailed_il_refinements.part.js",
+    "87_report_builder.part.js",
     "90_bootstrap.part.js"
 ]
 
