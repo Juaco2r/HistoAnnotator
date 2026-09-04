@@ -283,3 +283,687 @@ class ReferenceEvaluationContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_visual_evaluation_feature_collections_contract():
+    import app.analysis.evaluation as evaluation
+
+    candidate = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Cancer",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 0],
+                        [10, 0],
+                        [10, 10],
+                        [0, 10],
+                        [0, 0],
+                    ]],
+                },
+            }
+        ],
+    }
+
+    reference = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Cancer",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 0],
+                        [5, 0],
+                        [5, 10],
+                        [0, 10],
+                        [0, 0],
+                    ]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Stroma",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [5, 0],
+                        [10, 0],
+                        [10, 10],
+                        [5, 10],
+                        [5, 0],
+                    ]],
+                },
+            },
+        ],
+    }
+
+    result = evaluation.visual_evaluation_feature_collections(
+        candidate,
+        reference,
+        target_class="Cancer",
+        image_width=20,
+        image_height=20,
+    )
+
+    layers = {
+        item["id"]: item
+        for item in result["layers"]
+    }
+
+    assert layers["agreement"]["areaPx2"] == 50.0
+    assert layers["candidate_only"]["areaPx2"] == 50.0
+    assert layers["reference_only"]["areaPx2"] == 0.0
+    assert layers["wrong_class"]["areaPx2"] == 50.0
+
+    assert result["mismatches"][0]["candidateClass"] == "Cancer"
+    assert result["mismatches"][0]["referenceClass"] == "Stroma"
+
+    assert any(
+        region["kind"] == "wrong_class"
+        and region["candidateClass"] == "Cancer"
+        and region["referenceClass"] == "Stroma"
+        for region in result["regions"]
+    )
+
+
+def test_visual_evaluation_does_not_mutate_input():
+    import copy
+    import app.analysis.evaluation as evaluation
+
+    payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "A",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 0],
+                        [2, 0],
+                        [2, 2],
+                        [0, 2],
+                        [0, 0],
+                    ]],
+                },
+            }
+        ],
+    }
+
+    original = copy.deepcopy(payload)
+
+    evaluation.visual_evaluation_feature_collections(
+        payload,
+        payload,
+        target_class="A",
+        image_width=10,
+        image_height=10,
+    )
+
+    assert payload == original
+
+def _reference_roi_test_feature(
+    class_name,
+    coordinates,
+    *,
+    roi=False,
+):
+    properties = {
+        "classification": {
+            "name": class_name,
+        }
+    }
+
+    if roi:
+        properties["histoannotator"] = {
+            "role": "roi",
+            "roi": {
+                "kind": "tissue",
+            },
+        }
+
+    return {
+        "type": "Feature",
+        "properties": properties,
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [coordinates],
+        },
+    }
+
+
+def test_reference_roi_scopes_dice_to_ground_truth_roi():
+    import app.analysis.evaluation as evaluation
+
+    candidate = {
+        "type": "FeatureCollection",
+        "features": [
+            _reference_roi_test_feature(
+                "Cancer",
+                [
+                    [0, 0],
+                    [10, 0],
+                    [10, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+            ),
+        ],
+    }
+
+    reference = {
+        "type": "FeatureCollection",
+        "features": [
+            _reference_roi_test_feature(
+                "Tissue ROI",
+                [
+                    [0, 0],
+                    [5, 0],
+                    [5, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+                roi=True,
+            ),
+            _reference_roi_test_feature(
+                "Cancer",
+                [
+                    [0, 0],
+                    [5, 0],
+                    [5, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+            ),
+        ],
+    }
+
+    result = evaluation.evaluate_feature_collections(
+        candidate,
+        reference,
+        image_width=20,
+        image_height=20,
+    )
+
+    row = next(
+        item
+        for item in result["rows"]
+        if item["className"] == "Cancer"
+    )
+
+    assert result["evaluationRegion"] == "reference-roi"
+    assert result["referenceRoi"]["present"] is True
+    assert result["referenceRoi"]["areaPx2"] == 50.0
+    assert row["candidateAreaPx2"] == 50.0
+    assert row["referenceAreaPx2"] == 50.0
+    assert row["intersectionAreaPx2"] == 50.0
+    assert row["dice"] == 1.0
+
+
+def test_candidate_roi_does_not_define_evaluation_scope():
+    import app.analysis.evaluation as evaluation
+
+    candidate = {
+        "type": "FeatureCollection",
+        "features": [
+            _reference_roi_test_feature(
+                "Candidate ROI",
+                [
+                    [0, 0],
+                    [2, 0],
+                    [2, 2],
+                    [0, 2],
+                    [0, 0],
+                ],
+                roi=True,
+            ),
+            _reference_roi_test_feature(
+                "Cancer",
+                [
+                    [0, 0],
+                    [10, 0],
+                    [10, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+            ),
+        ],
+    }
+
+    reference = {
+        "type": "FeatureCollection",
+        "features": [
+            _reference_roi_test_feature(
+                "Cancer",
+                [
+                    [0, 0],
+                    [10, 0],
+                    [10, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+            ),
+        ],
+    }
+
+    result = evaluation.evaluate_feature_collections(
+        candidate,
+        reference,
+        image_width=20,
+        image_height=20,
+    )
+
+    assert result["evaluationRegion"] == "full-image-bounds"
+
+
+def test_reference_roi_scopes_visual_review():
+    import app.analysis.evaluation as evaluation
+
+    candidate = {
+        "type": "FeatureCollection",
+        "features": [
+            _reference_roi_test_feature(
+                "Cancer",
+                [
+                    [0, 0],
+                    [10, 0],
+                    [10, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+            ),
+        ],
+    }
+
+    reference = {
+        "type": "FeatureCollection",
+        "features": [
+            _reference_roi_test_feature(
+                "Tissue ROI",
+                [
+                    [0, 0],
+                    [5, 0],
+                    [5, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+                roi=True,
+            ),
+            _reference_roi_test_feature(
+                "Cancer",
+                [
+                    [0, 0],
+                    [5, 0],
+                    [5, 10],
+                    [0, 10],
+                    [0, 0],
+                ],
+            ),
+        ],
+    }
+
+    result = evaluation.visual_evaluation_feature_collections(
+        candidate,
+        reference,
+        target_class="Cancer",
+        image_width=20,
+        image_height=20,
+    )
+
+    layers = {
+        layer["id"]: layer
+        for layer in result["layers"]
+    }
+
+    assert result["evaluationRegion"] == "reference-roi"
+    assert result["referenceRoi"]["present"] is True
+    assert layers["agreement"]["areaPx2"] == 50.0
+    assert layers["candidate_only"]["areaPx2"] == 0.0
+    assert layers["reference_only"]["areaPx2"] == 0.0
+
+def test_reference_valid_region_uses_external_border_exclusion():
+    import app.analysis.evaluation as evaluation
+
+    roi = {
+        "type": "Feature",
+        "properties": {
+            "classification": {
+                "name": "Tissue",
+            },
+            "histoannotator": {
+                "role": "roi",
+                "roi": {
+                    "kind": "tissue",
+                    "externalBorderExclusion": {
+                        "enabled": True,
+                        "percent": 10.0,
+                    },
+                },
+            },
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [0, 0],
+                [100, 0],
+                [100, 100],
+                [0, 100],
+                [0, 0],
+            ]],
+        },
+    }
+
+    candidate_class = {
+        "type": "Feature",
+        "properties": {
+            "classification": {
+                "name": "Cancer",
+            }
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [0, 0],
+                [100, 0],
+                [100, 100],
+                [0, 100],
+                [0, 0],
+            ]],
+        },
+    }
+
+    reference_class = {
+        "type": "Feature",
+        "properties": {
+            "classification": {
+                "name": "Cancer",
+            }
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [0, 0],
+                [100, 0],
+                [100, 100],
+                [0, 100],
+                [0, 0],
+            ]],
+        },
+    }
+
+    result = evaluation.evaluate_feature_collections(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                candidate_class,
+            ],
+        },
+        {
+            "type": "FeatureCollection",
+            "features": [
+                roi,
+                reference_class,
+            ],
+        },
+        image_width=100,
+        image_height=100,
+    )
+
+    row = next(
+        item
+        for item in result["rows"]
+        if item["className"] == "Cancer"
+    )
+
+    assert result["evaluationRegion"] == "reference-roi-inner"
+    assert abs(row["candidateAreaPx2"] - 9000.0) < 1e-4
+    assert abs(row["referenceAreaPx2"] - 9000.0) < 1e-4
+    assert abs(row["intersectionAreaPx2"] - 9000.0) < 1e-4
+    assert row["dice"] == 1.0
+
+
+def test_reference_valid_region_without_border_uses_roi_itself():
+    import app.analysis.evaluation as evaluation
+
+    roi = {
+        "type": "Feature",
+        "properties": {
+            "classification": {
+                "name": "Tissue",
+            },
+            "histoannotator": {
+                "role": "roi",
+                "roi": {
+                    "kind": "tissue",
+                },
+            },
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [0, 0],
+                [10, 0],
+                [10, 10],
+                [0, 10],
+                [0, 0],
+            ]],
+        },
+    }
+
+    result = evaluation._evaluation_reference_valid_region_v3(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                roi,
+            ],
+        },
+        bounds=None,
+    )
+
+    geometry, mode = result
+
+    assert mode == "reference-roi"
+    assert geometry.area == 100.0
+
+def test_visual_review_v4_reference_target_composition():
+    import app.analysis.evaluation as evaluation
+
+    candidate = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Necrosis",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 0],
+                        [4, 0],
+                        [4, 10],
+                        [0, 10],
+                        [0, 0],
+                    ]],
+                },
+            },
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Tumor",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [4, 0],
+                        [8, 0],
+                        [8, 10],
+                        [4, 10],
+                        [4, 0],
+                    ]],
+                },
+            },
+        ],
+    }
+
+    reference = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Necrosis",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 0],
+                        [10, 0],
+                        [10, 10],
+                        [0, 10],
+                        [0, 0],
+                    ]],
+                },
+            }
+        ],
+    }
+
+    result = (
+        evaluation.visual_evaluation_feature_collections_v4(
+            candidate,
+            reference,
+            target_class="Necrosis",
+            image_width=20,
+            image_height=20,
+        )
+    )
+
+    perspective = result[
+        "perspectives"
+    ][
+        "referenceTarget"
+    ]
+
+    assert result["reviewSchemaVersion"] == 4
+    assert perspective["correctPercent"] == 40.0
+    assert perspective["wrongClassPercent"] == 40.0
+    assert perspective["unmatchedPercent"] == 20.0
+
+    tumor = next(
+        item
+        for item in perspective[
+            "mismatchClasses"
+        ]
+        if item["className"] == "Tumor"
+    )
+
+    assert tumor["percentOfTarget"] == 40.0
+
+    pair = result[
+        "mismatchLayers"
+    ][
+        tumor["pairIndex"]
+    ]
+
+    assert pair["candidateClass"] == "Tumor"
+    assert pair["referenceClass"] == "Necrosis"
+    assert pair["geometry"] is not None
+
+
+def test_visual_review_v4_region_percentage_is_relative_to_target():
+    import app.analysis.evaluation as evaluation
+
+    candidate = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Tumor",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 0],
+                        [5, 0],
+                        [5, 10],
+                        [0, 10],
+                        [0, 0],
+                    ]],
+                },
+            }
+        ],
+    }
+
+    reference = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "classification": {
+                        "name": "Necrosis",
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 0],
+                        [10, 0],
+                        [10, 10],
+                        [0, 10],
+                        [0, 0],
+                    ]],
+                },
+            }
+        ],
+    }
+
+    result = (
+        evaluation.visual_evaluation_feature_collections_v4(
+            candidate,
+            reference,
+            target_class="Necrosis",
+            image_width=20,
+            image_height=20,
+        )
+    )
+
+    wrong = next(
+        region
+        for region in result["regions"]
+        if region["kind"] == "wrong_class"
+    )
+
+    assert wrong["candidateClass"] == "Tumor"
+    assert wrong["referenceClass"] == "Necrosis"
+    assert wrong["percentOfTarget"] == 50.0
+    assert wrong["targetPerspective"] == "referenceTarget"

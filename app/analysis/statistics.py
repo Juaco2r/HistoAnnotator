@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
-from shapely.geometry import GeometryCollection, Polygon, mapping
+from shapely.geometry import GeometryCollection, Polygon, box, mapping
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 
@@ -632,6 +632,669 @@ def geojson_statistics(
         },
         "report": report,
     }
+
+
+
+def _review_tiles_valid_region(
+    collection_payload: dict[str, Any],
+    image_width: float,
+    image_height: float,
+) -> tuple[
+    dict[str, Any],
+    Any,
+    dict[str, Any],
+    list[tuple[str, str, Any]],
+]:
+    collection, report = sanitize_qupath_feature_collection(
+        collection_payload
+    )
+
+    image_region = GeometryCollection()
+
+    if image_width > 0 and image_height > 0:
+        image_region = Polygon(
+            [
+                (0.0, 0.0),
+                (image_width, 0.0),
+                (image_width, image_height),
+                (0.0, image_height),
+            ]
+        )
+
+    tissue_geometries: list[Any] = []
+    artifact_geometries: list[Any] = []
+    annotation_records: list[tuple[str, str, Any]] = []
+
+    border_enabled = False
+    border_percent = 0.0
+
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+
+        properties = feature.get("properties", {})
+
+        if not isinstance(properties, dict):
+            properties = {}
+
+        histo = properties.get("histoannotator", {})
+
+        if not isinstance(histo, dict):
+            histo = {}
+
+        role = str(
+            histo.get("role", "annotation")
+            or "annotation"
+        ).strip().lower()
+
+        class_name = str(
+            properties
+            .get("classification", {})
+            .get("name")
+            or "Unclassified"
+        ).strip()
+
+        geometry_payload = feature.get("geometry")
+
+        if not isinstance(geometry_payload, dict):
+            continue
+
+        try:
+            geometry = _polygonal_geometry(
+                geometry_payload
+            )
+        except HTTPException:
+            continue
+
+        if geometry.is_empty:
+            continue
+
+        roi_meta = histo.get("roi", {})
+
+        roi_kind = (
+            str(
+                roi_meta.get("kind", "tissue")
+            ).strip().lower()
+            if isinstance(roi_meta, dict)
+            else "tissue"
+        )
+
+        if (
+            role == "roi"
+            and roi_kind == "tissue"
+        ):
+            tissue_geometries.append(
+                geometry
+            )
+
+            if isinstance(roi_meta, dict):
+                border_meta = roi_meta.get(
+                    "externalBorderExclusion"
+                )
+
+                if isinstance(border_meta, dict):
+                    border_enabled = bool(
+                        border_meta.get(
+                            "enabled",
+                            False,
+                        )
+                    )
+
+                    try:
+                        border_percent = max(
+                            0.0,
+                            min(
+                                50.0,
+                                float(
+                                    border_meta.get(
+                                        "percent",
+                                        0,
+                                    )
+                                    or 0
+                                ),
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        border_percent = 0.0
+
+            continue
+
+        if (
+            role == "artifact"
+            or class_name.casefold()
+                == "artifact"
+        ):
+            artifact_geometries.append(
+                geometry
+            )
+            continue
+
+        if role != "annotation":
+            continue
+
+        feature_id = str(
+            feature.get("id")
+            or properties.get("id")
+            or ""
+        ).strip()
+
+        annotation_records.append(
+            (
+                feature_id,
+                class_name or "Unclassified",
+                geometry,
+            )
+        )
+
+    tissue_roi = (
+        unary_union(
+            tissue_geometries
+        )
+        if tissue_geometries
+        else GeometryCollection()
+    )
+
+    if (
+        not tissue_roi.is_empty
+        and not tissue_roi.is_valid
+    ):
+        tissue_roi = make_valid(
+            tissue_roi
+        )
+
+    tissue_roi = (
+        _polygonal_only(
+            tissue_roi
+        )
+        or GeometryCollection()
+    )
+
+    has_tissue_roi = (
+        not tissue_roi.is_empty
+    )
+
+    if has_tissue_roi:
+        analysis_base = tissue_roi
+
+        if not image_region.is_empty:
+            analysis_base = (
+                _polygonal_only(
+                    analysis_base.intersection(
+                        image_region
+                    )
+                )
+                or GeometryCollection()
+            )
+
+        analysis_source = "tissue-roi"
+
+    else:
+        analysis_base = image_region
+        analysis_source = "full-image"
+
+    if analysis_base.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Tile review requires either a valid Tissue ROI "
+                "or valid image dimensions"
+            ),
+        )
+
+    requested_border = (
+        border_percent
+        if (
+            has_tissue_roi
+            and border_enabled
+        )
+        else 0.0
+    )
+
+    (
+        post_border_region,
+        actual_border,
+        border_width,
+    ) = _stats_exclude_external_border(
+        analysis_base,
+        requested_border,
+    )
+
+    if post_border_region.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The Tissue ROI external-border exclusion "
+                "removed the complete review region"
+            ),
+        )
+
+    artifact_union = GeometryCollection()
+
+    if artifact_geometries:
+        artifact_union = unary_union(
+            artifact_geometries
+        )
+
+        if (
+            not artifact_union.is_empty
+            and not artifact_union.is_valid
+        ):
+            artifact_union = make_valid(
+                artifact_union
+            )
+
+        artifact_union = (
+            _polygonal_only(
+                artifact_union
+            )
+            or GeometryCollection()
+        )
+
+        if not artifact_union.is_empty:
+            artifact_union = (
+                _polygonal_only(
+                    artifact_union.intersection(
+                        post_border_region
+                    )
+                )
+                or GeometryCollection()
+            )
+
+    valid_region = (
+        post_border_region.difference(
+            artifact_union
+        )
+        if not artifact_union.is_empty
+        else post_border_region
+    )
+
+    if (
+        not valid_region.is_empty
+        and not valid_region.is_valid
+    ):
+        valid_region = make_valid(
+            valid_region
+        )
+
+    valid_region = (
+        _polygonal_only(
+            valid_region
+        )
+        or GeometryCollection()
+    )
+
+    if valid_region.is_empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Artifact exclusion removed the complete "
+                "tile-review region"
+            ),
+        )
+
+    return (
+        collection,
+        valid_region,
+        {
+            "source": analysis_source,
+            "roiPresent": bool(
+                has_tissue_roi
+            ),
+            "externalBorderEnabled": bool(
+                has_tissue_roi
+                and border_enabled
+            ),
+            "externalBorderRequestedPct": float(
+                requested_border
+            ),
+            "externalBorderActualPct": float(
+                actual_border
+            ),
+            "externalBorderWidthPx": float(
+                border_width
+            ),
+            "artifactAreaPx2": (
+                float(
+                    artifact_union.area
+                )
+                if not artifact_union.is_empty
+                else 0.0
+            ),
+            "validAreaPx2": float(
+                valid_region.area
+            ),
+            "report": report,
+        },
+        annotation_records,
+    )
+
+
+@router.post("/api/geojson/review-tiles")
+def geojson_review_tiles(
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    collection_payload = payload.get(
+        "featureCollection"
+    )
+
+    if not isinstance(
+        collection_payload,
+        dict,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="featureCollection is required",
+        )
+
+    image_width = max(
+        0.0,
+        float(
+            payload.get(
+                "imageWidth",
+                0,
+            )
+            or 0
+        ),
+    )
+
+    image_height = max(
+        0.0,
+        float(
+            payload.get(
+                "imageHeight",
+                0,
+            )
+            or 0
+        ),
+    )
+
+    tile_size = float(
+        payload.get(
+            "tileSizePx",
+            0,
+        )
+        or 0
+    )
+
+    if (
+        not tile_size
+        or tile_size < 128
+        or tile_size > 50000
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "tileSizePx must be between 128 and 50000"
+            ),
+        )
+
+    (
+        _collection,
+        valid_region,
+        analysis,
+        annotation_records,
+    ) = _review_tiles_valid_region(
+        collection_payload,
+        image_width,
+        image_height,
+    )
+
+    min_x, min_y, max_x, max_y = (
+        valid_region.bounds
+    )
+
+    start_x = (
+        float(
+            int(
+                min_x // tile_size
+            )
+        )
+        * tile_size
+    )
+
+    start_y = (
+        float(
+            int(
+                min_y // tile_size
+            )
+        )
+        * tile_size
+    )
+
+    columns = max(
+        1,
+        int(
+            (
+                max_x - start_x
+                + tile_size - 1
+            )
+            // tile_size
+        ),
+    )
+
+    rows = max(
+        1,
+        int(
+            (
+                max_y - start_y
+                + tile_size - 1
+            )
+            // tile_size
+        ),
+    )
+
+    possible_tiles = (
+        rows
+        * columns
+    )
+
+    if possible_tiles > 5000:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Tile size would create {possible_tiles} grid cells. "
+                "Choose a larger tile size (maximum 5000 cells)."
+            ),
+        )
+
+    annotation_bounds = [
+        (
+            feature_id,
+            class_name,
+            geometry,
+            geometry.bounds,
+        )
+        for (
+            feature_id,
+            class_name,
+            geometry,
+        )
+        in annotation_records
+    ]
+
+    tiles: list[dict[str, Any]] = []
+
+    tile_number = 0
+
+    for row in range(rows):
+        y = (
+            start_y
+            + row * tile_size
+        )
+
+        for column in range(columns):
+            x = (
+                start_x
+                + column * tile_size
+            )
+
+            tile_rect = box(
+                x,
+                y,
+                x + tile_size,
+                y + tile_size,
+            )
+
+            try:
+                effective = tile_rect.intersection(
+                    valid_region
+                )
+            except Exception:
+                effective = make_valid(
+                    tile_rect
+                ).intersection(
+                    make_valid(
+                        valid_region
+                    )
+                )
+
+            effective = (
+                _polygonal_only(
+                    effective
+                )
+                or GeometryCollection()
+            )
+
+            if (
+                effective.is_empty
+                or float(
+                    effective.area
+                ) <= 1.0
+            ):
+                continue
+
+            effective_bounds = (
+                effective.bounds
+            )
+
+            annotation_ids: list[str] = []
+            class_counts: dict[str, int] = {}
+
+            for (
+                feature_id,
+                class_name,
+                geometry,
+                bounds,
+            ) in annotation_bounds:
+                (
+                    feature_min_x,
+                    feature_min_y,
+                    feature_max_x,
+                    feature_max_y,
+                ) = bounds
+
+                (
+                    effective_min_x,
+                    effective_min_y,
+                    effective_max_x,
+                    effective_max_y,
+                ) = effective_bounds
+
+                if (
+                    feature_max_x
+                        < effective_min_x
+                    or feature_min_x
+                        > effective_max_x
+                    or feature_max_y
+                        < effective_min_y
+                    or feature_min_y
+                        > effective_max_y
+                ):
+                    continue
+
+                try:
+                    intersects = geometry.intersects(
+                        effective
+                    )
+                except Exception:
+                    intersects = make_valid(
+                        geometry
+                    ).intersects(
+                        make_valid(
+                            effective
+                        )
+                    )
+
+                if not intersects:
+                    continue
+
+                if feature_id:
+                    annotation_ids.append(
+                        feature_id
+                    )
+
+                class_counts[
+                    class_name
+                ] = (
+                    class_counts.get(
+                        class_name,
+                        0,
+                    )
+                    + 1
+                )
+
+            tile_number += 1
+
+            tiles.append(
+                {
+                    "id": (
+                        f"tile-{row}-{column}"
+                    ),
+                    "number": tile_number,
+                    "row": row,
+                    "column": column,
+                    "x": float(x),
+                    "y": float(y),
+                    "width": float(
+                        tile_size
+                    ),
+                    "height": float(
+                        tile_size
+                    ),
+                    "validAreaPx2": float(
+                        effective.area
+                    ),
+                    "validFraction": float(
+                        effective.area
+                        / (
+                            tile_size
+                            * tile_size
+                        )
+                    ),
+                    "annotationIds": (
+                        annotation_ids
+                    ),
+                    "annotationCount": len(
+                        annotation_ids
+                    ),
+                    "classCounts": (
+                        class_counts
+                    ),
+                }
+            )
+
+    return {
+        "schemaVersion": 1,
+        "method": (
+            "valid-tissue-review-grid"
+        ),
+        "tileSizePx": float(
+            tile_size
+        ),
+        "tiles": tiles,
+        "tileCount": len(
+            tiles
+        ),
+        "analysis": analysis,
+        "validRegionBounds": [
+            float(min_x),
+            float(min_y),
+            float(max_x),
+            float(max_y),
+        ],
+    }
+
+
 
 
 @router.post("/api/geojson/fill-unannotated")
