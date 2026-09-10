@@ -33,22 +33,22 @@ jobs:
         include:
           - os: windows-latest
             label: Windows x64
-            archive: HistoAnnotator-v1.2.0-rc1-Windows-x64.zip
+            archive: HistoAnnotator-v1.2.4-rc1-Windows-x64.zip
             executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop.exe
 
           - os: ubuntu-latest
             label: Linux x64
-            archive: HistoAnnotator-v1.2.0-rc1-Linux-x64.tar.gz
+            archive: HistoAnnotator-v1.2.4-rc1-Linux-x64.tar.gz
             executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
 
           - os: macos-latest
             label: macOS Apple Silicon
-            archive: HistoAnnotator-v1.2.0-rc1-macOS-AppleSilicon.tar.gz
+            archive: HistoAnnotator-v1.2.4-rc1-macOS-AppleSilicon.tar.gz
             executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
 
           - os: macos-15-intel
             label: macOS Intel
-            archive: HistoAnnotator-v1.2.0-rc1-macOS-Intel.tar.gz
+            archive: HistoAnnotator-v1.2.4-rc1-macOS-Intel.tar.gz
             executable: dist/HistoAnnotatorDesktop/HistoAnnotatorDesktop
 
     env:

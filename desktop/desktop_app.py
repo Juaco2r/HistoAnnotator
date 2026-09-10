@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QVBoxLayout,
 )
@@ -45,7 +46,7 @@ from .server_control import (
     ServerController,
 )
 
-DESKTOP_VERSION = "1.2.0"
+DESKTOP_VERSION = "1.2.4"
 
 
 def project_root() -> Path:
@@ -85,6 +86,44 @@ class ServerPanel(QFrame):
         )
         layout.addWidget(
             self.status_label
+        )
+
+        layout.addWidget(
+            QLabel(
+                "Server port"
+            )
+        )
+
+        port_row = QHBoxLayout()
+
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(
+            1024,
+            65535,
+        )
+        self.port_spin.setValue(
+            int(owner.config.port)
+        )
+        self.port_spin.setToolTip(
+            "Choose the TCP port used by "
+            "HistoAnnotator Desktop."
+        )
+        port_row.addWidget(
+            self.port_spin
+        )
+
+        self.port_apply_button = QPushButton(
+            "Apply port"
+        )
+        self.port_apply_button.clicked.connect(
+            owner.apply_server_port
+        )
+        port_row.addWidget(
+            self.port_apply_button
+        )
+
+        layout.addLayout(
+            port_row
         )
 
         layout.addWidget(
@@ -362,8 +401,15 @@ class DesktopWindow(QMainWindow):
             )
 
     def ensure_backend(self) -> None:
-        if self.controller.health(
+        existing = self.controller.health(
             self.config.port
+        )
+
+        if (
+            existing
+            and self.controller.owns_running_server(
+                self.config.port
+            )
         ):
             return
 
@@ -606,6 +652,91 @@ class DesktopWindow(QMainWindow):
         )
 
         self.restart_backend()
+
+    def apply_server_port(
+        self,
+    ) -> None:
+        new_port = int(
+            self.server_panel.port_spin.value()
+        )
+        old_port = int(
+            self.config.port
+        )
+
+        if new_port == old_port:
+            self.refresh_server_ui()
+            return
+
+        if not self.controller.port_available(
+            new_port,
+            share_lan=self.config.share_lan,
+        ):
+            QMessageBox.warning(
+                self,
+                "Port unavailable",
+                (
+                    f"Port {new_port} is already "
+                    "in use. Choose another port."
+                ),
+            )
+            self.server_panel.port_spin.setValue(
+                old_port
+            )
+            return
+
+        owned_old_server = (
+            self.controller
+            .owns_running_server(
+                old_port
+            )
+        )
+
+        try:
+            if owned_old_server:
+                self.controller.stop(
+                    old_port
+                )
+
+            self.config.port = new_port
+            save_config(
+                self.config
+            )
+
+            self.controller.start(
+                self.config
+            )
+
+            self.load_desktop_view()
+            self.refresh_server_ui()
+
+        except Exception as error:
+            self.config.port = old_port
+            save_config(
+                self.config
+            )
+
+            self.server_panel.port_spin.setValue(
+                old_port
+            )
+
+            if (
+                owned_old_server
+                and not self.controller.health(
+                    old_port
+                )
+            ):
+                try:
+                    self.controller.start(
+                        self.config
+                    )
+                except Exception:
+                    pass
+
+            QMessageBox.critical(
+                self,
+                "Could not change server port",
+                str(error),
+            )
 
     def advertised_host_changed(
         self,
