@@ -12,6 +12,20 @@
   const PHASE_F26_MIN_SCREEN_COMPONENT_PX =
     0.6;
 
+  // Phase F2.6.3 - viewport-scale annotation rendering.
+  // Display-only: stored GeoJSON and scientific calculations remain level-0.
+  const PHASE_F26_FEATURE_CULL_MIN_FEATURES =
+    400;
+
+  const PHASE_F26_NAVIGATION_DEFER_MIN_FEATURES =
+    800;
+
+  let phaseF26NavigationDeferred =
+    false;
+
+  let phaseF26NavigationOverlayHidden =
+    false;
+
   let phaseF26PolygonBoundsCache =
     new WeakMap();
 
@@ -25,6 +39,7 @@
     [];
 
   function phaseF26InvalidateGeometryCaches() {
+    phaseF264ResetCache();
     phaseF26PolygonBoundsCache =
       new WeakMap();
 
@@ -33,6 +48,7 @@
   }
 
   function phaseF26BeginRenderFrame() {
+    phaseF264BeginRenderFrame();
     phaseF26RenderStats =
       [];
 
@@ -549,6 +565,304 @@
     }
   }
 
+  function phaseF26UseFeatureViewportCulling(
+    features
+  ) {
+    return Boolean(
+      Array.isArray(features)
+      && features.length
+        >= PHASE_F26_FEATURE_CULL_MIN_FEATURES
+      && !reviewState.active
+    );
+  }
+
+  function phaseF26FeatureVisible(
+    feature,
+    context
+  ) {
+    if (!context) {
+      return true;
+    }
+
+    const geometry =
+      feature?.geometry;
+
+    if (
+      !geometry
+      || (
+        geometry.type !== "Polygon"
+        && geometry.type !== "MultiPolygon"
+      )
+    ) {
+      return true;
+    }
+
+    const bounds =
+      phaseF26GeometryBounds(
+        geometry
+      );
+
+    return (
+      !bounds
+      || phaseF26BoundsIntersect(
+        bounds,
+        context.viewport
+      )
+    );
+  }
+
+  function phaseF26HeavyNavigationEligible() {
+    const features =
+      featureCollection?.features;
+
+    return Boolean(
+      mode === "navigate"
+      && annotationsVisible
+      && Array.isArray(features)
+      && features.length
+        >= PHASE_F26_NAVIGATION_DEFER_MIN_FEATURES
+      && !phaseF261InteractiveDraftActive()
+      && !reviewState.active
+    );
+  }
+
+  function phaseF26SetAnnotationOverlayNavigationHidden(
+    hidden
+  ) {
+    const canvas =
+      ctx?.canvas;
+
+    if (!canvas) {
+      return;
+    }
+
+    const shouldHide =
+      Boolean(hidden);
+
+    if (
+      phaseF26NavigationOverlayHidden
+        === shouldHide
+    ) {
+      return;
+    }
+
+    phaseF26NavigationOverlayHidden =
+      shouldHide;
+
+    canvas.style.visibility =
+      shouldHide
+        ? "hidden"
+        : "";
+  }
+
+  // ======================================================================
+  // Phase F2.6.5 - Throttled annotation redraw during pan / zoom
+  //
+  // Navigation remains responsive by limiting overlay redraws to ~10 FPS.
+  // Each redraw still uses the existing viewport culling + adaptive visual LOD.
+  // Stored geometry, level-0 coordinates, editing, save/export, and evaluation
+  // are not modified by this display-only scheduling policy.
+  // ======================================================================
+
+  // Android WebView gets a slightly more conservative cadence because
+  // long annotation frames can otherwise keep the UI thread continuously busy.
+  // Desktop keeps the validated ~10 FPS navigation overlay cadence.
+  const PHASE_F26_ANDROID_NAVIGATION =
+    typeof navigator !== "undefined"
+    && /Android/i.test(
+      String(navigator.userAgent || "")
+    );
+
+  const PHASE_F26_NAVIGATION_THROTTLE_MS =
+    PHASE_F26_ANDROID_NAVIGATION
+      ? 150
+      : 100;
+
+  let phaseF26NavigationThrottleTimer =
+    null;
+
+  let phaseF26NavigationLastDrawAt =
+    0;
+
+  let phaseF26NavigationThrottleStats = {
+    throttleMs: PHASE_F26_NAVIGATION_THROTTLE_MS,
+    requests: 0,
+    throttledDraws: 0,
+    finalDraws: 0,
+    pending: false,
+    lastEventName: null,
+  };
+
+  function phaseF26NavigationClockMs() {
+    if (
+      typeof performance !== "undefined"
+      && typeof performance.now === "function"
+    ) {
+      return performance.now();
+    }
+
+    return Date.now();
+  }
+
+  function phaseF26PublishNavigationThrottleStats() {
+    phaseF26NavigationThrottleStats.pending =
+      Boolean(phaseF26NavigationThrottleTimer);
+
+    window.__histoannotatorF26NavigationThrottleStats = {
+      ...phaseF26NavigationThrottleStats,
+    };
+  }
+
+  function phaseF26CancelNavigationThrottleTimer() {
+    if (phaseF26NavigationThrottleTimer) {
+      clearTimeout(
+        phaseF26NavigationThrottleTimer
+      );
+
+      phaseF26NavigationThrottleTimer =
+        null;
+    }
+
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26RunNavigationThrottleDraw() {
+    phaseF26NavigationThrottleTimer =
+      null;
+
+    if (
+      !phaseF26NavigationDeferred
+      || !phaseF26HeavyNavigationEligible()
+    ) {
+      phaseF26PublishNavigationThrottleStats();
+      return;
+    }
+
+    phaseF26NavigationLastDrawAt =
+      phaseF26NavigationClockMs();
+
+    phaseF26NavigationThrottleStats
+      .throttledDraws += 1;
+
+    phaseF26SetAnnotationOverlayNavigationHidden(
+      false
+    );
+
+    phaseF26ScheduleDraw();
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26ScheduleNavigationThrottleDraw() {
+    phaseF26NavigationThrottleStats.requests += 1;
+
+    if (phaseF26NavigationThrottleTimer) {
+      phaseF26PublishNavigationThrottleStats();
+      return;
+    }
+
+    const now =
+      phaseF26NavigationClockMs();
+
+    const elapsed =
+      Math.max(
+        0,
+        now - phaseF26NavigationLastDrawAt
+      );
+
+    if (
+      !phaseF26NavigationLastDrawAt
+      || elapsed >= PHASE_F26_NAVIGATION_THROTTLE_MS
+    ) {
+      phaseF26RunNavigationThrottleDraw();
+      return;
+    }
+
+    const waitMs =
+      Math.max(
+        0,
+        PHASE_F26_NAVIGATION_THROTTLE_MS
+          - elapsed
+      );
+
+    phaseF26NavigationThrottleTimer =
+      setTimeout(
+        phaseF26RunNavigationThrottleDraw,
+        waitMs
+      );
+
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26HandleViewportDrawEvent(
+    eventName
+  ) {
+    phaseF26NavigationThrottleStats.lastEventName =
+      eventName;
+
+    if (
+      (
+        eventName === "animation"
+        || eventName === "update-viewport"
+      )
+      && phaseF26HeavyNavigationEligible()
+    ) {
+      phaseF26NavigationDeferred =
+        true;
+
+      phaseF26SetAnnotationOverlayNavigationHidden(
+        false
+      );
+
+      phaseF26ScheduleNavigationThrottleDraw();
+      return;
+    }
+
+    phaseF26CancelNavigationThrottleTimer();
+
+    phaseF26NavigationDeferred =
+      false;
+
+    phaseF26SetAnnotationOverlayNavigationHidden(
+      false
+    );
+
+    phaseF26NavigationLastDrawAt =
+      phaseF26NavigationClockMs();
+
+    phaseF26ScheduleDraw();
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26FinishNavigationDraw() {
+    const hadNavigationWork =
+      Boolean(
+        phaseF26NavigationDeferred
+        || phaseF26NavigationOverlayHidden
+        || phaseF26NavigationThrottleTimer
+      );
+
+    if (!hadNavigationWork) {
+      return;
+    }
+
+    phaseF26CancelNavigationThrottleTimer();
+
+    phaseF26NavigationDeferred =
+      false;
+
+    phaseF26SetAnnotationOverlayNavigationHidden(
+      false
+    );
+
+    phaseF26NavigationLastDrawAt =
+      phaseF26NavigationClockMs();
+
+    phaseF26NavigationThrottleStats.finalDraws += 1;
+
+    phaseF26ScheduleDraw();
+    phaseF26PublishNavigationThrottleStats();
+  }
+
   function phaseF26PolygonVisible(
     polygon,
     context
@@ -814,9 +1128,45 @@
     phaseF26BeginRenderFrame();
 
     if (annotationsVisible) {
-      const drawableFeatures = reviewState.active
+      const drawableSourceFeatures = reviewState.active
         ? (reviewState.currentId ? [findFeature(reviewState.currentId)].filter(Boolean) : [])
         : featureCollection.features;
+
+      const featureCullContext =
+        phaseF26UseFeatureViewportCulling(
+          drawableSourceFeatures
+        )
+          ? phaseF26CurrentRenderContext()
+          : null;
+
+      let featureCullCount =
+        0;
+
+      const drawableFeatures =
+        featureCullContext
+          ? drawableSourceFeatures.filter(
+              (feature) => {
+                const visible =
+                  phaseF26FeatureVisible(
+                    feature,
+                    featureCullContext
+                  );
+
+                if (!visible) {
+                  featureCullCount += 1;
+                }
+
+                return visible;
+              }
+            )
+          : drawableSourceFeatures;
+
+      window.__histoannotatorF26FeatureCullStats = {
+        enabled: Boolean(featureCullContext),
+        totalFeatures: drawableSourceFeatures.length,
+        drawnFeatures: drawableFeatures.length,
+        culledFeatures: featureCullCount,
+      };
 
       drawableFeatures.forEach((feature) => {
         if (!phaseDIsTissueRoi(feature)) {

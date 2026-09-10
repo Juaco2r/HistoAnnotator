@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import time
+from contextvars import ContextVar
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import Response
+from shapely import affinity
 from shapely.geometry import GeometryCollection, Polygon, shape
 from shapely.ops import unary_union
 from shapely.validation import make_valid
@@ -47,6 +52,73 @@ router = APIRouter()
 
 EVALUATION_SCHEMA_VERSION = 1
 EVALUATION_METHOD = "polygonal-union-dice-v1"
+
+
+# Visual Review performance profiling is opt-in per /evaluation-visual request.
+# Scientific /evaluate calls do not activate this ContextVar.
+_EVAL_VISUAL_PERF: ContextVar[dict[str, Any] | None] = ContextVar(
+    "histoannotator_eval_visual_perf",
+    default=None,
+)
+
+
+def _eval_visual_perf_start() -> float | None:
+    return time.perf_counter() if _EVAL_VISUAL_PERF.get() is not None else None
+
+
+def _eval_visual_perf_add_ms(key: str, started: float | None) -> None:
+    perf = _EVAL_VISUAL_PERF.get()
+    if perf is None or started is None:
+        return
+    perf[key] = round(
+        float(perf.get(key, 0.0))
+        + (time.perf_counter() - started) * 1000.0,
+        3,
+    )
+
+
+def _eval_visual_perf_inc(key: str, amount: int = 1) -> None:
+    perf = _EVAL_VISUAL_PERF.get()
+    if perf is None:
+        return
+    perf[key] = int(perf.get(key, 0)) + int(amount)
+
+
+def _eval_visual_coordinate_vertex_count(value: Any) -> int:
+    """Count XY coordinate pairs in a GeoJSON coordinates tree."""
+    if not isinstance(value, (list, tuple)):
+        return 0
+    if (
+        len(value) >= 2
+        and isinstance(value[0], (int, float))
+        and isinstance(value[1], (int, float))
+    ):
+        return 1
+    return sum(_eval_visual_coordinate_vertex_count(item) for item in value)
+
+
+def _eval_visual_geometry_vertex_count(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    geometry_type = str(payload.get("type") or "")
+    if geometry_type == "GeometryCollection":
+        return sum(
+            _eval_visual_geometry_vertex_count(item)
+            for item in payload.get("geometries", [])
+        )
+    return _eval_visual_coordinate_vertex_count(payload.get("coordinates"))
+
+
+def _eval_visual_response_vertex_count(value: Any) -> int:
+    """Count geometry coordinates in a response without counting bbox arrays."""
+    if isinstance(value, dict):
+        geometry_type = str(value.get("type") or "")
+        if geometry_type in {"Polygon", "MultiPolygon", "GeometryCollection"}:
+            return _eval_visual_geometry_vertex_count(value)
+        return sum(_eval_visual_response_vertex_count(item) for item in value.values())
+    if isinstance(value, list):
+        return sum(_eval_visual_response_vertex_count(item) for item in value)
+    return 0
 
 
 def _canonical_json_sha256(payload: Any) -> str:
@@ -92,19 +164,29 @@ def _safe_polygonal_geometry(feature: dict[str, Any]) -> Any | None:
     if not isinstance(geometry_payload, dict):
         return None
 
+    parse_started = _eval_visual_perf_start()
     try:
         geometry = shape(geometry_payload)
     except Exception:
+        _eval_visual_perf_add_ms("geometryParseMs", parse_started)
+        _eval_visual_perf_inc("geometryParseErrors")
         return None
+    _eval_visual_perf_add_ms("geometryParseMs", parse_started)
+    _eval_visual_perf_inc("geometryParsed")
 
     if geometry.is_empty:
         return None
 
     if not geometry.is_valid:
+        valid_started = _eval_visual_perf_start()
         try:
             geometry = make_valid(geometry)
         except Exception:
+            _eval_visual_perf_add_ms("makeValidMs", valid_started)
+            _eval_visual_perf_inc("makeValidErrors")
             return None
+        _eval_visual_perf_add_ms("makeValidMs", valid_started)
+        _eval_visual_perf_inc("makeValidCalls")
 
     geometry = _polygonal_only(geometry)
     if geometry is None or geometry.is_empty:
@@ -146,9 +228,17 @@ def _union_geometries(items: list[Any]) -> Any:
     if not items:
         return GeometryCollection()
 
+    union_started = _eval_visual_perf_start()
     geometry = unary_union(items) if len(items) > 1 else items[0]
+    _eval_visual_perf_add_ms("unionMs", union_started)
+    _eval_visual_perf_inc("unionCalls")
+    _eval_visual_perf_inc("unionInputGeometries", len(items))
+
     if not geometry.is_valid:
+        valid_started = _eval_visual_perf_start()
         geometry = make_valid(geometry)
+        _eval_visual_perf_add_ms("makeValidMs", valid_started)
+        _eval_visual_perf_inc("makeValidCalls")
 
     return _polygonal_only(geometry) or GeometryCollection()
 
@@ -159,9 +249,12 @@ def _mapped_geometries(
     *,
     bounds: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    sanitize_started = _eval_visual_perf_start()
     collection, sanitize_report = sanitize_qupath_feature_collection(
         collection_payload
     )
+    _eval_visual_perf_add_ms("sanitizeMs", sanitize_started)
+    _eval_visual_perf_inc("sanitizeCalls")
 
     mapped_groups: dict[str, list[Any]] = {}
     source_groups: dict[str, list[Any]] = {}
@@ -180,7 +273,10 @@ def _mapped_geometries(
             continue
 
         if bounds is not None:
+            clip_started = _eval_visual_perf_start()
             geometry = geometry.intersection(bounds)
+            _eval_visual_perf_add_ms("boundsClipMs", clip_started)
+            _eval_visual_perf_inc("boundsClipCalls")
             geometry = _polygonal_only(geometry)
             if geometry is None or geometry.is_empty:
                 continue
@@ -287,19 +383,35 @@ def _eval_visual_binary(
     if operation == "intersection":
         if right is None or getattr(right, "is_empty", True):
             return GeometryCollection()
+        binary_started = _eval_visual_perf_start()
         try:
             result = left.intersection(right)
         except Exception:
-            result = make_valid(left).intersection(make_valid(right))
+            repair_started = _eval_visual_perf_start()
+            repaired_left = make_valid(left)
+            repaired_right = make_valid(right)
+            _eval_visual_perf_add_ms("binaryRepairMs", repair_started)
+            _eval_visual_perf_inc("binaryRepairCalls")
+            result = repaired_left.intersection(repaired_right)
+        _eval_visual_perf_add_ms("intersectionMs", binary_started)
+        _eval_visual_perf_inc("intersectionCalls")
 
     elif operation == "difference":
         if right is None or getattr(right, "is_empty", True):
             result = left
         else:
+            binary_started = _eval_visual_perf_start()
             try:
                 result = left.difference(right)
             except Exception:
-                result = make_valid(left).difference(make_valid(right))
+                repair_started = _eval_visual_perf_start()
+                repaired_left = make_valid(left)
+                repaired_right = make_valid(right)
+                _eval_visual_perf_add_ms("binaryRepairMs", repair_started)
+                _eval_visual_perf_inc("binaryRepairCalls")
+                result = repaired_left.difference(repaired_right)
+            _eval_visual_perf_add_ms("differenceMs", binary_started)
+            _eval_visual_perf_inc("differenceCalls")
 
     else:
         raise ValueError(f"Unsupported visual-evaluation operation: {operation}")
@@ -344,31 +456,49 @@ def _eval_visual_region_rows(
     kind: str,
     candidate_class: str | None,
     reference_class: str | None,
+    defer_geometry_payload: bool = False,
 ) -> list[dict[str, Any]]:
+    """Build review-region rows, optionally deferring expensive GeoJSON payloads.
+
+    Visual Review sorts all components by area but only returns max_regions.
+    Deferring bbox/GeoJSON materialization avoids serializing thousands of
+    discarded polygons while preserving the exact selected region geometries.
+    """
     rows: list[dict[str, Any]] = []
 
     for component in _eval_visual_components(geometry):
-        min_x, min_y, max_x, max_y = component.bounds
-        rows.append(
-            {
-                "kind": kind,
-                "candidateClass": candidate_class,
-                "referenceClass": reference_class,
-                "areaPx2": float(component.area),
-                "bbox": [
-                    float(min_x),
-                    float(min_y),
-                    float(max_x),
-                    float(max_y),
-                ],
-                "geometry": _eval_visual_geometry_payload(component),
-            }
-        )
+        row: dict[str, Any] = {
+            "kind": kind,
+            "candidateClass": candidate_class,
+            "referenceClass": reference_class,
+            "areaPx2": float(component.area),
+        }
+
+        if defer_geometry_payload:
+            row["_geometryObject"] = component
+            _eval_visual_perf_inc("regionRowsDeferred")
+        else:
+            min_x, min_y, max_x, max_y = component.bounds
+            row["bbox"] = [
+                float(min_x),
+                float(min_y),
+                float(max_x),
+                float(max_y),
+            ]
+            row["geometry"] = _eval_visual_geometry_payload(component)
+
+        rows.append(row)
 
     return rows
 
 
-def visual_evaluation_feature_collections(
+# Visual Review shared-preparation optimization v1
+#
+# The old v4 path mapped/sanitized/clipped Candidate + Ground Truth twice:
+# once in visual_evaluation_feature_collections() and again in v4.  This
+# private context performs that work once and is reused by both layers.
+# Scientific /evaluate is intentionally untouched.
+def _eval_visual_prepare_context(
     candidate_payload: dict[str, Any],
     reference_payload: dict[str, Any],
     *,
@@ -377,8 +507,8 @@ def visual_evaluation_feature_collections(
     reference_mapping: Any = None,
     image_width: float | None = None,
     image_height: float | None = None,
-    max_regions: int = 500,
 ) -> dict[str, Any]:
+    prepare_started = _eval_visual_perf_start()
     bounds = None
 
     if (
@@ -421,7 +551,6 @@ def visual_evaluation_feature_collections(
     )
 
     target = str(target_class or "").strip()
-
     available_classes = sorted(
         set(candidate) | set(reference),
         key=str.casefold,
@@ -436,9 +565,86 @@ def visual_evaluation_feature_collections(
         )
 
     empty = GeometryCollection()
-
     candidate_target = candidate.get(target, empty)
     reference_target = reference.get(target, empty)
+
+    candidate_all = _union_geometries(
+        [
+            geometry
+            for geometry in candidate.values()
+            if geometry is not None and not geometry.is_empty
+        ]
+    )
+
+    reference_all = _union_geometries(
+        [
+            geometry
+            for geometry in reference.values()
+            if geometry is not None and not geometry.is_empty
+        ]
+    )
+
+    context = {
+        "bounds": bounds,
+        "candidate": candidate,
+        "reference": reference,
+        "candidateReport": candidate_report,
+        "referenceReport": reference_report,
+        "evaluationRoi": evaluation_roi,
+        "evaluationRegion": evaluation_region,
+        "target": target,
+        "availableClasses": available_classes,
+        "candidateTarget": candidate_target,
+        "referenceTarget": reference_target,
+        "candidateAll": candidate_all,
+        "referenceAll": reference_all,
+        # Filled by the base overlay and reused by v4.
+        "pairIntersections": {},
+    }
+
+    _eval_visual_perf_add_ms("sharedPrepareMs", prepare_started)
+    _eval_visual_perf_inc("sharedPrepareCalls")
+    return context
+
+
+def visual_evaluation_feature_collections(
+    candidate_payload: dict[str, Any],
+    reference_payload: dict[str, Any],
+    *,
+    target_class: str,
+    candidate_mapping: Any = None,
+    reference_mapping: Any = None,
+    image_width: float | None = None,
+    image_height: float | None = None,
+    max_regions: int = 500,
+    _prepared_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    prepared = _prepared_context
+    if prepared is None:
+        prepared = _eval_visual_prepare_context(
+            candidate_payload,
+            reference_payload,
+            target_class=target_class,
+            candidate_mapping=candidate_mapping,
+            reference_mapping=reference_mapping,
+            image_width=image_width,
+            image_height=image_height,
+        )
+    else:
+        _eval_visual_perf_inc("preparedContextReuse")
+
+    candidate = prepared["candidate"]
+    reference = prepared["reference"]
+    candidate_report = prepared["candidateReport"]
+    reference_report = prepared["referenceReport"]
+    evaluation_roi = prepared["evaluationRoi"]
+    evaluation_region = prepared["evaluationRegion"]
+    target = prepared["target"]
+    available_classes = prepared["availableClasses"]
+    candidate_target = prepared["candidateTarget"]
+    reference_target = prepared["referenceTarget"]
+    candidate_all = prepared["candidateAll"]
+    reference_all = prepared["referenceAll"]
 
     agreement = _eval_visual_binary(
         candidate_target,
@@ -458,24 +664,6 @@ def visual_evaluation_feature_collections(
         "difference",
     )
 
-    candidate_all = _union_geometries(
-        [
-            geometry
-            for geometry in candidate.values()
-            if geometry is not None
-            and not geometry.is_empty
-        ]
-    )
-
-    reference_all = _union_geometries(
-        [
-            geometry
-            for geometry in reference.values()
-            if geometry is not None
-            and not geometry.is_empty
-        ]
-    )
-
     unmatched_candidate = _eval_visual_binary(
         candidate_target,
         reference_all,
@@ -487,6 +675,9 @@ def visual_evaluation_feature_collections(
         candidate_all,
         "difference",
     )
+
+    # Cache exact class-pair intersections because v4 needs the same pairs.
+    pair_intersections = prepared.setdefault("pairIntersections", {})
 
     mismatch_items: list[dict[str, Any]] = []
     mismatch_geometries: list[Any] = []
@@ -503,18 +694,19 @@ def visual_evaluation_feature_collections(
             ):
                 continue
 
-            # Only return wrong-class pairs relevant to the selected class.
             if (
                 candidate_name != target
                 and reference_name != target
             ):
                 continue
 
+            pair_key = (candidate_name, reference_name)
             mismatch = _eval_visual_binary(
                 candidate_geometry,
                 reference_geometry,
                 "intersection",
             )
+            pair_intersections[pair_key] = mismatch
 
             if mismatch.is_empty:
                 continue
@@ -535,12 +727,11 @@ def visual_evaluation_feature_collections(
                     kind="wrong_class",
                     candidate_class=candidate_name,
                     reference_class=reference_name,
+                    defer_geometry_payload=True,
                 )
             )
 
-    wrong_class = _union_geometries(
-        mismatch_geometries
-    )
+    wrong_class = _union_geometries(mismatch_geometries)
 
     region_rows.extend(
         _eval_visual_region_rows(
@@ -548,6 +739,7 @@ def visual_evaluation_feature_collections(
             kind="candidate_only",
             candidate_class=target,
             reference_class=None,
+            defer_geometry_payload=True,
         )
     )
 
@@ -557,6 +749,7 @@ def visual_evaluation_feature_collections(
             kind="reference_only",
             candidate_class=None,
             reference_class=target,
+            defer_geometry_payload=True,
         )
     )
 
@@ -568,16 +761,32 @@ def visual_evaluation_feature_collections(
     total_region_count = len(region_rows)
     safe_max_regions = max(
         1,
-        min(
-            5000,
-            int(max_regions or 500),
-        ),
+        min(5000, int(max_regions or 500)),
     )
-
     visible_regions = region_rows[:safe_max_regions]
 
+    materialize_started = _eval_visual_perf_start()
     for index, row in enumerate(visible_regions, start=1):
+        component = row.pop("_geometryObject", None)
+        if component is not None:
+            min_x, min_y, max_x, max_y = component.bounds
+            row["bbox"] = [
+                float(min_x),
+                float(min_y),
+                float(max_x),
+                float(max_y),
+            ]
+            row["geometry"] = _eval_visual_geometry_payload(component)
         row["id"] = f"error-{index}"
+
+    _eval_visual_perf_add_ms("regionMaterializeMs", materialize_started)
+    _eval_visual_perf_inc("regionCandidates", total_region_count)
+    _eval_visual_perf_inc("regionSerialized", len(visible_regions))
+
+    # Reuse these exact base geometries in v4 instead of recomputing them.
+    prepared["agreement"] = agreement
+    prepared["candidateUnmatched"] = unmatched_candidate
+    prepared["referenceMissed"] = missed_reference
 
     layer_specs = [
         (
@@ -616,13 +825,10 @@ def visual_evaluation_feature_collections(
                 "color": color,
                 "areaPx2": (
                     float(geometry.area)
-                    if geometry is not None
-                    and not geometry.is_empty
+                    if geometry is not None and not geometry.is_empty
                     else 0.0
                 ),
-                "geometry": _eval_visual_geometry_payload(
-                    geometry
-                ),
+                "geometry": _eval_visual_geometry_payload(geometry),
             }
         )
 
@@ -656,7 +862,6 @@ def visual_evaluation_feature_collections(
             "sanitizeReport": reference_report,
         },
     }
-
 
 
 def _evaluation_reference_roi_geometry(
@@ -1440,14 +1645,22 @@ def visual_evaluation_feature_collections_v4(
     image_height: float | None = None,
     max_regions: int = 500,
 ) -> dict[str, Any]:
-    """
-    Enrich Visual Review with target-oriented composition and exact
-    class-pair mismatch geometries.
+    """Enrich Visual Review while reusing the base overlay preparation.
 
-    The underlying scientific overlay still comes from
-    visual_evaluation_feature_collections(), so Dice/IoU and review share
-    the same mapping and Ground Truth valid-region rules.
+    Mapping, sanitization, valid-region clipping, whole-class unions, agreement,
+    unmatched target geometries, and class-pair intersections are shared with
+    the base Visual Review overlay. Scientific /evaluate remains unchanged.
     """
+    prepared = _eval_visual_prepare_context(
+        candidate_payload,
+        reference_payload,
+        target_class=target_class,
+        candidate_mapping=candidate_mapping,
+        reference_mapping=reference_mapping,
+        image_width=image_width,
+        image_height=image_height,
+    )
+
     result = visual_evaluation_feature_collections(
         candidate_payload,
         reference_payload,
@@ -1457,92 +1670,22 @@ def visual_evaluation_feature_collections_v4(
         image_width=image_width,
         image_height=image_height,
         max_regions=max_regions,
+        _prepared_context=prepared,
     )
 
-    bounds = None
-
-    if (
-        image_width is not None
-        and image_height is not None
-        and float(image_width) > 0
-        and float(image_height) > 0
-    ):
-        bounds = Polygon(
-            [
-                (0.0, 0.0),
-                (float(image_width), 0.0),
-                (
-                    float(image_width),
-                    float(image_height),
-                ),
-                (0.0, float(image_height)),
-            ]
-        )
-
-    candidate, _, _ = _mapped_geometries(
-        candidate_payload,
-        candidate_mapping,
-        bounds=bounds,
-    )
-
-    reference, _, _ = _mapped_geometries(
-        reference_payload,
-        reference_mapping,
-        bounds=bounds,
-    )
-
-    (
-        candidate,
-        reference,
-        _valid_region,
-        evaluation_region,
-    ) = _evaluation_valid_scope_from_reference_v3(
-        candidate,
-        reference,
-        reference_payload,
-        bounds=bounds,
-    )
-
-    target = str(
-        target_class
-        or ""
-    ).strip()
-
-    empty = GeometryCollection()
-
-    candidate_target = candidate.get(
-        target,
-        empty,
-    )
-
-    reference_target = reference.get(
-        target,
-        empty,
-    )
-
-    candidate_all = _union_geometries(
-        [
-            geometry
-            for geometry in candidate.values()
-            if geometry is not None
-            and not geometry.is_empty
-        ]
-    )
-
-    reference_all = _union_geometries(
-        [
-            geometry
-            for geometry in reference.values()
-            if geometry is not None
-            and not geometry.is_empty
-        ]
-    )
+    candidate = prepared["candidate"]
+    reference = prepared["reference"]
+    evaluation_region = prepared["evaluationRegion"]
+    target = prepared["target"]
+    candidate_target = prepared["candidateTarget"]
+    reference_target = prepared["referenceTarget"]
+    candidate_all = prepared["candidateAll"]
+    reference_all = prepared["referenceAll"]
 
     candidate_other = _union_geometries(
         [
             geometry
-            for class_name, geometry
-            in candidate.items()
+            for class_name, geometry in candidate.items()
             if class_name != target
             and geometry is not None
             and not geometry.is_empty
@@ -1552,93 +1695,71 @@ def visual_evaluation_feature_collections_v4(
     reference_other = _union_geometries(
         [
             geometry
-            for class_name, geometry
-            in reference.items()
+            for class_name, geometry in reference.items()
             if class_name != target
             and geometry is not None
             and not geometry.is_empty
         ]
     )
 
-    agreement = _eval_visual_binary(
-        candidate_target,
-        reference_target,
-        "intersection",
-    )
+    agreement = prepared.get("agreement")
+    if agreement is None:
+        agreement = _eval_visual_binary(
+            candidate_target,
+            reference_target,
+            "intersection",
+        )
 
-    # Ground Truth perspective:
-    # "Of the GT target, what did Candidate call it?"
     reference_wrong = _eval_visual_binary(
         reference_target,
         candidate_other,
         "intersection",
     )
-
-    # If Candidate also marks the target here, count the area as correct.
     reference_wrong = _eval_visual_binary(
         reference_wrong,
         candidate_target,
         "difference",
     )
 
-    reference_missed = _eval_visual_binary(
-        reference_target,
-        candidate_all,
-        "difference",
-    )
+    reference_missed = prepared.get("referenceMissed")
+    if reference_missed is None:
+        reference_missed = _eval_visual_binary(
+            reference_target,
+            candidate_all,
+            "difference",
+        )
 
-    # Candidate perspective:
-    # "Of Candidate target, what does the GT call it?"
     candidate_wrong = _eval_visual_binary(
         candidate_target,
         reference_other,
         "intersection",
     )
-
-    # If GT also marks the target here, count the area as correct.
     candidate_wrong = _eval_visual_binary(
         candidate_wrong,
         reference_target,
         "difference",
     )
 
-    candidate_unmatched = _eval_visual_binary(
-        candidate_target,
-        reference_all,
-        "difference",
-    )
+    candidate_unmatched = prepared.get("candidateUnmatched")
+    if candidate_unmatched is None:
+        candidate_unmatched = _eval_visual_binary(
+            candidate_target,
+            reference_all,
+            "difference",
+        )
 
-    reference_denominator = _eval_v4_area(
-        reference_target
-    )
-
-    candidate_denominator = _eval_v4_area(
-        candidate_target
-    )
-
-    agreement_area = _eval_v4_area(
-        agreement
-    )
-
-    reference_wrong_area = _eval_v4_area(
-        reference_wrong
-    )
-
-    reference_missed_area = _eval_v4_area(
-        reference_missed
-    )
-
-    candidate_wrong_area = _eval_v4_area(
-        candidate_wrong
-    )
-
-    candidate_unmatched_area = _eval_v4_area(
-        candidate_unmatched
-    )
+    reference_denominator = _eval_v4_area(reference_target)
+    candidate_denominator = _eval_v4_area(candidate_target)
+    agreement_area = _eval_v4_area(agreement)
+    reference_wrong_area = _eval_v4_area(reference_wrong)
+    reference_missed_area = _eval_v4_area(reference_missed)
+    candidate_wrong_area = _eval_v4_area(candidate_wrong)
+    candidate_unmatched_area = _eval_v4_area(candidate_unmatched)
 
     mismatch_layers: list[dict[str, Any]] = []
     reference_breakdown: list[dict[str, Any]] = []
     candidate_breakdown: list[dict[str, Any]] = []
+    pair_intersections = prepared.get("pairIntersections", {})
 
     # Candidate class != target over GT target.
     for candidate_name, geometry in sorted(
@@ -1652,11 +1773,17 @@ def visual_evaluation_feature_collections_v4(
         ):
             continue
 
-        mismatch = _eval_visual_binary(
-            geometry,
-            reference_target,
-            "intersection",
-        )
+        pair_key = (candidate_name, target)
+        if pair_key in pair_intersections:
+            mismatch = pair_intersections[pair_key]
+            _eval_visual_perf_inc("pairIntersectionCacheHits")
+        else:
+            mismatch = _eval_visual_binary(
+                geometry,
+                reference_target,
+                "intersection",
+            )
+            _eval_visual_perf_inc("pairIntersectionCacheMisses")
 
         mismatch = _eval_visual_binary(
             mismatch,
@@ -1667,13 +1794,8 @@ def visual_evaluation_feature_collections_v4(
         if mismatch.is_empty:
             continue
 
-        area = _eval_v4_area(
-            mismatch
-        )
-
-        pair_index = len(
-            mismatch_layers
-        )
+        area = _eval_v4_area(mismatch)
+        pair_index = len(mismatch_layers)
 
         mismatch_layers.append(
             {
@@ -1686,9 +1808,7 @@ def visual_evaluation_feature_collections_v4(
                     area,
                     reference_denominator,
                 ),
-                "geometry": _eval_visual_geometry_payload(
-                    mismatch
-                ),
+                "geometry": _eval_visual_geometry_payload(mismatch),
             }
         )
 
@@ -1716,11 +1836,17 @@ def visual_evaluation_feature_collections_v4(
         ):
             continue
 
-        mismatch = _eval_visual_binary(
-            candidate_target,
-            geometry,
-            "intersection",
-        )
+        pair_key = (target, reference_name)
+        if pair_key in pair_intersections:
+            mismatch = pair_intersections[pair_key]
+            _eval_visual_perf_inc("pairIntersectionCacheHits")
+        else:
+            mismatch = _eval_visual_binary(
+                candidate_target,
+                geometry,
+                "intersection",
+            )
+            _eval_visual_perf_inc("pairIntersectionCacheMisses")
 
         mismatch = _eval_visual_binary(
             mismatch,
@@ -1731,13 +1857,8 @@ def visual_evaluation_feature_collections_v4(
         if mismatch.is_empty:
             continue
 
-        area = _eval_v4_area(
-            mismatch
-        )
-
-        pair_index = len(
-            mismatch_layers
-        )
+        area = _eval_v4_area(mismatch)
+        pair_index = len(mismatch_layers)
 
         mismatch_layers.append(
             {
@@ -1750,9 +1871,7 @@ def visual_evaluation_feature_collections_v4(
                     area,
                     candidate_denominator,
                 ),
-                "geometry": _eval_visual_geometry_payload(
-                    mismatch
-                ),
+                "geometry": _eval_visual_geometry_payload(mismatch),
             }
         )
 
@@ -1769,16 +1888,11 @@ def visual_evaluation_feature_collections_v4(
         )
 
     reference_breakdown.sort(
-        key=lambda item: float(
-            item["areaPx2"]
-        ),
+        key=lambda item: float(item["areaPx2"]),
         reverse=True,
     )
-
     candidate_breakdown.sort(
-        key=lambda item: float(
-            item["areaPx2"]
-        ),
+        key=lambda item: float(item["areaPx2"]),
         reverse=True,
     )
 
@@ -1834,54 +1948,20 @@ def visual_evaluation_feature_collections_v4(
 
     result["mismatchLayers"] = mismatch_layers
 
-    # Make every individual review item explain its importance as a
-    # percentage of the relevant selected-class target, rather than pixels.
-    for region in result.get(
-        "regions",
-        [],
-    ):
-        candidate_class = str(
-            region.get(
-                "candidateClass"
-            )
-            or ""
-        )
+    for region in result.get("regions", []):
+        candidate_class = str(region.get("candidateClass") or "")
+        reference_class = str(region.get("referenceClass") or "")
+        area = float(region.get("areaPx2") or 0.0)
 
-        reference_class = str(
-            region.get(
-                "referenceClass"
-            )
-            or ""
-        )
-
-        area = float(
-            region.get(
-                "areaPx2"
-            )
-            or 0.0
-        )
-
-        if (
-            reference_class == target
-            and candidate_class != target
-        ):
+        if reference_class == target and candidate_class != target:
             denominator = reference_denominator
             perspective = "referenceTarget"
-
-        elif (
-            candidate_class == target
-            and reference_class != target
-        ):
+        elif candidate_class == target and reference_class != target:
             denominator = candidate_denominator
             perspective = "candidateTarget"
-
-        elif (
-            region.get("kind")
-            == "reference_only"
-        ):
+        elif region.get("kind") == "reference_only":
             denominator = reference_denominator
             perspective = "referenceTarget"
-
         else:
             denominator = candidate_denominator
             perspective = "candidateTarget"
@@ -1890,20 +1970,507 @@ def visual_evaluation_feature_collections_v4(
             area,
             denominator,
         )
-
         region["targetPerspective"] = perspective
 
     return result
 
 
+def _eval_visual_normalize_review_scale(
+    value: Any,
+) -> float:
+    try:
+        scale = float(
+            value
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return 0.0625
+
+    for allowed in (
+        1.0,
+        0.5,
+        0.25,
+        0.125,
+        0.0625,
+    ):
+        if abs(
+            scale - allowed
+        ) < 1e-9:
+            return allowed
+
+    return 0.0625
+
+
+def _eval_visual_scaled_collection(
+    payload: dict[str, Any],
+    scale_factor: float,
+    *,
+    profile_label: str = "review",
+) -> dict[str, Any]:
+    pipeline_started = time.perf_counter()
+    copy_started = time.perf_counter()
+    output = copy.deepcopy(
+        payload
+    )
+    _eval_visual_perf_add_ms(f"{profile_label}CopyMs", copy_started)
+
+    if scale_factor == 1.0:
+        return output
+
+    features = output.get(
+        "features",
+        [],
+    )
+
+    if not isinstance(
+        features,
+        list,
+    ):
+        return output
+
+    perf = _EVAL_VISUAL_PERF.get()
+    if perf is not None:
+        perf[f"{profile_label}InputFeatures"] = len(features)
+        vertex_started = time.perf_counter()
+        perf[f"{profile_label}InputVertices"] = sum(
+            _eval_visual_geometry_vertex_count(feature.get("geometry"))
+            for feature in features
+            if isinstance(feature, dict)
+        )
+        _eval_visual_perf_add_ms("profilingVertexCountMs", vertex_started)
+
+        if scale_factor == 1.0:
+            perf[f"{profile_label}ReviewVertices"] = perf[f"{profile_label}InputVertices"]
+            perf[f"{profile_label}ScalePipelineMs"] = round(
+                (time.perf_counter() - pipeline_started) * 1000.0,
+                3,
+            )
+
+    if scale_factor == 1.0:
+        return output
+
+    # 0.75 review px == 12 level-0 px at the default 1/16 scale.
+    simplify_tolerance = 0.75
+
+    for feature in features:
+        if not isinstance(
+            feature,
+            dict,
+        ):
+            continue
+
+        geometry_payload = feature.get(
+            "geometry"
+        )
+
+        if not isinstance(
+            geometry_payload,
+            dict,
+        ):
+            continue
+
+        parse_started = time.perf_counter()
+        try:
+            geometry = shape(
+                geometry_payload
+            )
+        except Exception:
+            _eval_visual_perf_add_ms(f"{profile_label}ScaleParseMs", parse_started)
+            _eval_visual_perf_inc(f"{profile_label}ScaleParseErrors")
+            continue
+        _eval_visual_perf_add_ms(f"{profile_label}ScaleParseMs", parse_started)
+
+        if geometry.is_empty:
+            continue
+
+        if not geometry.is_valid:
+            valid_started = time.perf_counter()
+            try:
+                geometry = make_valid(
+                    geometry
+                )
+            except Exception:
+                _eval_visual_perf_add_ms(f"{profile_label}ScaleMakeValidMs", valid_started)
+                _eval_visual_perf_inc(f"{profile_label}ScaleMakeValidErrors")
+                continue
+            _eval_visual_perf_add_ms(f"{profile_label}ScaleMakeValidMs", valid_started)
+            _eval_visual_perf_inc(f"{profile_label}ScaleMakeValidCalls")
+
+        geometry = (
+            _polygonal_only(
+                geometry
+            )
+            or GeometryCollection()
+        )
+
+        if geometry.is_empty:
+            continue
+
+        scale_started = time.perf_counter()
+        scaled = affinity.scale(
+            geometry,
+            xfact=scale_factor,
+            yfact=scale_factor,
+            origin=(
+                0.0,
+                0.0,
+            ),
+        )
+        _eval_visual_perf_add_ms(f"{profile_label}AffinityScaleMs", scale_started)
+
+        if not scaled.is_empty:
+            simplify_started = time.perf_counter()
+            try:
+                simplified = scaled.simplify(
+                    simplify_tolerance,
+                    preserve_topology=True,
+                )
+            except Exception:
+                simplified = scaled
+            _eval_visual_perf_add_ms(f"{profile_label}SimplifyMs", simplify_started)
+            _eval_visual_perf_inc(f"{profile_label}SimplifyCalls")
+
+            if (
+                simplified is not None
+                and not simplified.is_empty
+            ):
+                scaled = simplified
+
+        scaled = (
+            _polygonal_only(
+                scaled
+            )
+            or GeometryCollection()
+        )
+
+        if scaled.is_empty:
+            continue
+
+        geometry_out = getattr(
+            scaled,
+            "__geo_interface__",
+            None,
+        )
+
+        if isinstance(
+            geometry_out,
+            dict,
+        ):
+            feature["geometry"] = geometry_out
+
+    if perf is not None:
+        vertex_started = time.perf_counter()
+        perf[f"{profile_label}ReviewVertices"] = sum(
+            _eval_visual_geometry_vertex_count(feature.get("geometry"))
+            for feature in features
+            if isinstance(feature, dict)
+        )
+        _eval_visual_perf_add_ms("profilingVertexCountMs", vertex_started)
+        perf[f"{profile_label}ScalePipelineMs"] = round(
+            (time.perf_counter() - pipeline_started) * 1000.0,
+            3,
+        )
+
+    return output
+
+
+def _eval_visual_restore_geometry_payload(
+    payload: dict[str, Any],
+    inverse_scale: float,
+) -> dict[str, Any]:
+    try:
+        geometry = shape(
+            payload
+        )
+    except Exception:
+        return payload
+
+    restored = affinity.scale(
+        geometry,
+        xfact=inverse_scale,
+        yfact=inverse_scale,
+        origin=(
+            0.0,
+            0.0,
+        ),
+    )
+
+    output = getattr(
+        restored,
+        "__geo_interface__",
+        None,
+    )
+
+    return (
+        output
+        if isinstance(
+            output,
+            dict,
+        )
+        else payload
+    )
+
+
+def _eval_visual_restore_result_level0(
+    value: Any,
+    review_scale: float,
+) -> Any:
+    if review_scale == 1.0:
+        return value
+
+    inverse = (
+        1.0
+        / review_scale
+    )
+
+    if isinstance(
+        value,
+        dict,
+    ):
+        geometry_type = str(
+            value.get(
+                "type"
+            )
+            or ""
+        )
+
+        if geometry_type in {
+            "Polygon",
+            "MultiPolygon",
+            "GeometryCollection",
+        }:
+            return _eval_visual_restore_geometry_payload(
+                value,
+                inverse,
+            )
+
+        output: dict[str, Any] = {}
+
+        for child_key, child_value in value.items():
+            if (
+                child_key == "bbox"
+                and isinstance(
+                    child_value,
+                    list,
+                )
+                and len(
+                    child_value
+                ) >= 4
+            ):
+                output[
+                    child_key
+                ] = [
+                    float(item)
+                    * inverse
+                    for item
+                    in child_value
+                ]
+
+            elif (
+                str(
+                    child_key
+                )
+                .casefold()
+                .endswith(
+                    "areapx2"
+                )
+                and isinstance(
+                    child_value,
+                    (
+                        int,
+                        float,
+                    ),
+                )
+            ):
+                output[
+                    child_key
+                ] = (
+                    float(
+                        child_value
+                    )
+                    * inverse
+                    * inverse
+                )
+
+            else:
+                output[
+                    child_key
+                ] = _eval_visual_restore_result_level0(
+                    child_value,
+                    review_scale,
+                )
+
+        return output
+
+    if isinstance(
+        value,
+        list,
+    ):
+        return [
+            _eval_visual_restore_result_level0(
+                item,
+                review_scale,
+            )
+            for item in value
+        ]
+
+    return value
+
+
+def visual_evaluation_feature_collections_scaled(
+    candidate_payload: dict[str, Any],
+    reference_payload: dict[str, Any],
+    *,
+    target_class: str,
+    candidate_mapping: Any = None,
+    reference_mapping: Any = None,
+    image_width: float | None = None,
+    image_height: float | None = None,
+    max_regions: int = 500,
+    review_scale: Any = None,
+    profile_performance: bool = False,
+) -> dict[str, Any]:
+    scale = _eval_visual_normalize_review_scale(
+        review_scale
+    )
+
+    perf: dict[str, Any] | None = {} if profile_performance else None
+    perf_token = _EVAL_VISUAL_PERF.set(perf) if perf is not None else None
+    total_started = time.perf_counter()
+
+    try:
+        candidate_review = _eval_visual_scaled_collection(
+            candidate_payload,
+            scale,
+            profile_label="candidate",
+        )
+
+        reference_review = _eval_visual_scaled_collection(
+            reference_payload,
+            scale,
+            profile_label="reference",
+        )
+
+        review_width = (
+            float(
+                image_width
+            )
+            * scale
+            if image_width is not None
+            else None
+        )
+
+        review_height = (
+            float(
+                image_height
+            )
+            * scale
+            if image_height is not None
+            else None
+        )
+
+        v4_started = time.perf_counter()
+        result = visual_evaluation_feature_collections_v4(
+            candidate_review,
+            reference_review,
+            target_class=target_class,
+            candidate_mapping=candidate_mapping,
+            reference_mapping=reference_mapping,
+            image_width=review_width,
+            image_height=review_height,
+            max_regions=max_regions,
+        )
+
+        _eval_visual_perf_add_ms("visualV4Ms", v4_started)
+
+        restore_started = time.perf_counter()
+        result = _eval_visual_restore_result_level0(
+            result,
+            scale,
+        )
+        _eval_visual_perf_add_ms("restoreLevel0Ms", restore_started)
+
+        result["reviewScale"] = scale
+        result["metricsResolution"] = "level-0"
+        result["reviewResolution"] = (
+            "full"
+            if scale == 1.0
+            else (
+                "half"
+                if scale == 0.5
+                else (
+                    "quarter"
+                    if scale == 0.25
+                    else (
+                        "eighth"
+                        if scale == 0.125
+                        else "sixteenth"
+                    )
+                )
+            )
+        )
+        result["reviewApproximation"] = (
+            "visual-only-scaled-simplified"
+            if scale != 1.0
+            else "full-resolution"
+        )
+
+        if perf is not None:
+            vertex_started = time.perf_counter()
+            perf["responseGeometryVertices"] = _eval_visual_response_vertex_count(result)
+            _eval_visual_perf_add_ms("profilingVertexCountMs", vertex_started)
+            perf["reviewScale"] = scale
+            perf["targetClass"] = str(target_class or "")
+            perf["outputLayers"] = len(result.get("layers") or [])
+            perf["outputRegions"] = len(result.get("regions") or [])
+            perf["regionCount"] = int(result.get("regionCount") or 0)
+            perf["mismatchLayers"] = len(result.get("mismatchLayers") or [])
+            perf["visualComputeTotalMs"] = round(
+                (time.perf_counter() - total_started) * 1000.0,
+                3,
+            )
+            result["performanceProfile"] = perf
+
+        return result
+    finally:
+        if perf_token is not None:
+            _EVAL_VISUAL_PERF.reset(perf_token)
+
+
+def _eval_visual_direct_json_response(
+    result: dict[str, Any],
+) -> Response:
+    """Return Visual Review JSON without FastAPI recursive response encoding.
+
+    This transport optimization is intentionally limited to /evaluation-visual.
+    Scientific /evaluate keeps its existing response path and level-0 metrics.
+    """
+    body = json.dumps(
+        result,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+    return Response(
+        content=body,
+        media_type="application/json",
+    )
 
 
 @router.post("/api/annotations/{image_id}/evaluation-visual")
 def visual_evaluation_annotation_files(
     image_id: str,
     payload: dict[str, Any] = Body(...),
-) -> dict[str, Any]:
+) -> Response:
+    profile_performance = bool(payload.get("profilePerformance"))
+    endpoint_started = time.perf_counter()
+
+    dimensions_started = time.perf_counter()
     relative, width, height = _image_dimensions(image_id)
+    dimensions_ms = (time.perf_counter() - dimensions_started) * 1000.0
 
     candidate_file = normalize_annotation_file(
         str(payload.get("candidateFile") or "Default")
@@ -1923,25 +2490,29 @@ def visual_evaluation_annotation_files(
             detail="targetClass is required",
         )
 
+    candidate_read_started = time.perf_counter()
     candidate_collection = read_annotation_document(
         ANNOTATION_ROOT,
         relative,
         candidate_file,
         error_prefix="Could not read candidate annotation file",
     )
+    candidate_read_ms = (time.perf_counter() - candidate_read_started) * 1000.0
 
+    reference_read_started = time.perf_counter()
     reference_collection = read_annotation_document(
         ANNOTATION_ROOT,
         relative,
         reference_file,
         error_prefix="Could not read reference annotation file",
     )
+    reference_read_ms = (time.perf_counter() - reference_read_started) * 1000.0
 
     candidate_mapping = payload.get("candidateMapping")
     reference_mapping = payload.get("referenceMapping")
 
     try:
-        result = visual_evaluation_feature_collections_v4(
+        result = visual_evaluation_feature_collections_scaled(
             candidate_collection,
             reference_collection,
             target_class=target_class,
@@ -1950,6 +2521,8 @@ def visual_evaluation_annotation_files(
             image_width=width,
             image_height=height,
             max_regions=int(payload.get("maxRegions") or 500),
+            review_scale=payload.get("reviewScale"),
+            profile_performance=profile_performance,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1970,6 +2543,7 @@ def visual_evaluation_annotation_files(
         ),
     }
 
+    metadata_started = time.perf_counter()
     result.update(
         {
             "imageId": image_id,
@@ -1997,7 +2571,75 @@ def visual_evaluation_annotation_files(
         }
     )
 
-    return result
+    if profile_performance:
+        perf = result.get("performanceProfile")
+        if not isinstance(perf, dict):
+            perf = {}
+            result["performanceProfile"] = perf
+
+        perf["imageDimensionsMs"] = round(dimensions_ms, 3)
+        perf["candidateReadMs"] = round(candidate_read_ms, 3)
+        perf["referenceReadMs"] = round(reference_read_ms, 3)
+        perf["metadataChecksumMs"] = round(
+            (time.perf_counter() - metadata_started) * 1000.0,
+            3,
+        )
+        perf["responseFastPath"] = True
+
+        serialize_started = time.perf_counter()
+        encoded = json.dumps(
+            result,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        perf["responseSerializeEstimateMs"] = round(
+            (time.perf_counter() - serialize_started) * 1000.0,
+            3,
+        )
+        perf["responseBytesEstimate"] = len(encoded)
+        perf["endpointTotalMs"] = round(
+            (time.perf_counter() - endpoint_started) * 1000.0,
+            3,
+        )
+
+        print(
+            "[VisualReview PERF] "
+            + json.dumps(perf, sort_keys=True, ensure_ascii=False),
+            flush=True,
+        )
+
+    response_encode_started = time.perf_counter()
+    response = _eval_visual_direct_json_response(result)
+    response_encode_ms = (time.perf_counter() - response_encode_started) * 1000.0
+    response_bytes = len(response.body)
+
+    response.headers["X-Histo-Visual-Fast-Path"] = "1"
+    response.headers["X-Histo-Visual-Response-Bytes"] = str(response_bytes)
+    response.headers["X-Histo-Visual-Response-Encode-Ms"] = f"{response_encode_ms:.3f}"
+    response.headers["Server-Timing"] = (
+        f"histo_visual_response_encode;dur={response_encode_ms:.3f}"
+    )
+
+    if profile_performance:
+        print(
+            "[VisualReview RESPONSE PERF] "
+            + json.dumps(
+                {
+                    "fastPath": True,
+                    "responseEncodeMs": round(response_encode_ms, 3),
+                    "responseBytes": response_bytes,
+                    "endpointThroughEncodeMs": round(
+                        (time.perf_counter() - endpoint_started) * 1000.0,
+                        3,
+                    ),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+    return response
 
 
 

@@ -136,14 +136,504 @@ function phaseReviewTileRectBounds(
 }
 
 
+// ------------------------------------------------------------------------
+// Cellular Tile Review ownership v1
+//
+// Tissue ROI defines the review grid but is never itself a review target.
+// In Cellular Annotation, a biological cell belongs to exactly one tile,
+// using the nucleus centroid when available and otherwise the cellular
+// geometry centroid. Persistent coordinates remain untouched.
+// ------------------------------------------------------------------------
+
+let phaseReviewTileCellOwnerPointMap =
+  null;
+
+
+function phaseReviewTileCellularActive() {
+  return Boolean(
+    typeof phaseCellDocumentIsCellular
+      === "function"
+    && phaseCellDocumentIsCellular()
+  );
+}
+
+
+function phaseReviewTileCellId(
+  feature
+) {
+  const histo =
+    feature?.properties
+      ?.histoannotator
+    || {};
+
+  const cell =
+    histo.cell
+    || {};
+
+  return String(
+    cell.cellId
+    ?? histo.cellId
+    ?? feature?.properties?.cellId
+    ?? feature?.cellId
+    ?? ""
+  );
+}
+
+
+function phaseReviewTileEmbeddedNucleusGeometry(
+  feature
+) {
+  return (
+    feature?.nucleusGeometry
+    || feature?.properties
+      ?.nucleusGeometry
+    || feature?.properties
+      ?.histoannotator
+      ?.cell
+      ?.nucleusGeometry
+    || null
+  );
+}
+
+
+function phaseReviewTileGeometryCentroid(
+  geometry
+) {
+  if (
+    !geometry
+    || typeof geometry !== "object"
+  ) {
+    return null;
+  }
+
+  const polygons =
+    geometry.type === "Polygon"
+      ? [geometry.coordinates]
+      : (
+          geometry.type === "MultiPolygon"
+            ? geometry.coordinates
+            : []
+        );
+
+  let best =
+    null;
+
+  let bestArea =
+    -1;
+
+  for (
+    const polygon
+    of polygons
+  ) {
+    const ring =
+      Array.isArray(polygon)
+        ? polygon[0]
+        : null;
+
+    if (
+      !Array.isArray(ring)
+      || ring.length < 3
+    ) {
+      continue;
+    }
+
+    let twiceArea =
+      0;
+
+    let weightedX =
+      0;
+
+    let weightedY =
+      0;
+
+    let fallbackX =
+      0;
+
+    let fallbackY =
+      0;
+
+    let fallbackCount =
+      0;
+
+    for (
+      let index = 0;
+      index < ring.length;
+      index += 1
+    ) {
+      const current =
+        ring[index];
+
+      const next =
+        ring[
+          (index + 1)
+          % ring.length
+        ];
+
+      if (
+        !Array.isArray(current)
+        || current.length < 2
+      ) {
+        continue;
+      }
+
+      const x =
+        Number(current[0]);
+
+      const y =
+        Number(current[1]);
+
+      if (
+        Number.isFinite(x)
+        && Number.isFinite(y)
+      ) {
+        fallbackX += x;
+        fallbackY += y;
+        fallbackCount += 1;
+      }
+
+      if (
+        !Array.isArray(next)
+        || next.length < 2
+      ) {
+        continue;
+      }
+
+      const nx =
+        Number(next[0]);
+
+      const ny =
+        Number(next[1]);
+
+      if (
+        !Number.isFinite(x)
+        || !Number.isFinite(y)
+        || !Number.isFinite(nx)
+        || !Number.isFinite(ny)
+      ) {
+        continue;
+      }
+
+      const cross =
+        x * ny
+        - nx * y;
+
+      twiceArea += cross;
+
+      weightedX +=
+        (x + nx)
+        * cross;
+
+      weightedY +=
+        (y + ny)
+        * cross;
+    }
+
+    const absoluteArea =
+      Math.abs(
+        twiceArea
+      );
+
+    let point =
+      null;
+
+    if (
+      absoluteArea > 1e-9
+    ) {
+      point = {
+        x:
+          weightedX
+          / (3 * twiceArea),
+
+        y:
+          weightedY
+          / (3 * twiceArea),
+      };
+
+    } else if (
+      fallbackCount
+    ) {
+      point = {
+        x:
+          fallbackX
+          / fallbackCount,
+
+        y:
+          fallbackY
+          / fallbackCount,
+      };
+    }
+
+    if (
+      point
+      && Number.isFinite(point.x)
+      && Number.isFinite(point.y)
+      && absoluteArea > bestArea
+    ) {
+      best =
+        point;
+
+      bestArea =
+        absoluteArea;
+    }
+  }
+
+  return best;
+}
+
+
+function phaseReviewTileCellRepresentativeScore(
+  feature
+) {
+  if (
+    phaseReviewTileEmbeddedNucleusGeometry(
+      feature
+    )
+  ) {
+    return 4;
+  }
+
+  const cell =
+    feature?.properties
+      ?.histoannotator
+      ?.cell
+    || {};
+
+  const descriptor =
+    [
+      cell.geometryRole,
+      cell.role,
+      cell.part,
+      cell.objectType,
+      feature?.properties
+        ?.objectType,
+      feature?.properties
+        ?.name,
+      featureId(
+        feature
+      ),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+  if (
+    descriptor.includes(
+      "nucleus"
+    )
+    || descriptor.includes(
+      "nuclei"
+    )
+  ) {
+    return 3;
+  }
+
+  if (
+    descriptor.includes(
+      "body"
+    )
+  ) {
+    return 1;
+  }
+
+  return 2;
+}
+
+
+function phaseReviewTileBuildCellOwnerPointMap() {
+  const chosen =
+    new Map();
+
+  for (
+    const feature
+    of (
+      featureCollection.features
+      || []
+    )
+  ) {
+    if (
+      !phaseCellIsCellularFeature(
+        feature
+      )
+    ) {
+      continue;
+    }
+
+    const cellId =
+      phaseReviewTileCellId(
+        feature
+      );
+
+    const key =
+      cellId
+        ? `cell:${cellId}`
+        : `feature:${String(
+            featureId(
+              feature
+            )
+            || ""
+          )}`;
+
+    const nucleusGeometry =
+      phaseReviewTileEmbeddedNucleusGeometry(
+        feature
+      );
+
+    const geometry =
+      nucleusGeometry
+      || feature.geometry;
+
+    const point =
+      phaseReviewTileGeometryCentroid(
+        geometry
+      );
+
+    if (!point) {
+      continue;
+    }
+
+    const score =
+      phaseReviewTileCellRepresentativeScore(
+        feature
+      );
+
+    const previous =
+      chosen.get(
+        key
+      );
+
+    if (
+      !previous
+      || score > previous.score
+    ) {
+      chosen.set(
+        key,
+        {
+          point,
+          score,
+        }
+      );
+    }
+  }
+
+  const result =
+    new Map();
+
+  for (
+    const [key, value]
+    of chosen.entries()
+  ) {
+    result.set(
+      key,
+      value.point
+    );
+  }
+
+  return result;
+}
+
+
+function phaseReviewTileCellOwnerPoint(
+  feature
+) {
+  const cellId =
+    phaseReviewTileCellId(
+      feature
+    );
+
+  const key =
+    cellId
+      ? `cell:${cellId}`
+      : `feature:${String(
+          featureId(
+            feature
+          )
+          || ""
+        )}`;
+
+  const cached =
+    phaseReviewTileCellOwnerPointMap
+      ?.get(
+        key
+      );
+
+  if (cached) {
+    return cached;
+  }
+
+  const geometry =
+    phaseReviewTileEmbeddedNucleusGeometry(
+      feature
+    )
+    || feature.geometry;
+
+  return phaseReviewTileGeometryCentroid(
+    geometry
+  );
+}
+
+
+function phaseReviewTilePointInTile(
+  point,
+  tile
+) {
+  if (
+    !point
+    || !tile
+  ) {
+    return false;
+  }
+
+  const bounds =
+    phaseReviewTileRectBounds(
+      tile
+    );
+
+  if (!bounds) {
+    return false;
+  }
+
+  return (
+    Number.isFinite(point.x)
+    && Number.isFinite(point.y)
+    && point.x >= bounds.minX
+    && point.x < bounds.maxX
+    && point.y >= bounds.minY
+    && point.y < bounds.maxY
+  );
+}
+
+
+
 function phaseReviewTileFeatureInTile(
   feature,
   tile =
     phaseReviewTileCurrent()
 ) {
+  if (!tile) {
+    return false;
+  }
+
   if (
-    !tile
-    || !phaseDIsAnnotationFeature(
+    phaseReviewTileCellularActive()
+  ) {
+    if (
+      !phaseCellIsCellularFeature(
+        feature
+      )
+    ) {
+      return false;
+    }
+
+    return phaseReviewTilePointInTile(
+      phaseReviewTileCellOwnerPoint(
+        feature
+      ),
+      tile
+    );
+  }
+
+  if (
+    !phaseDIsAnnotationFeature(
       feature
     )
   ) {
@@ -194,16 +684,33 @@ function phaseReviewTileFeatures(
     return [];
   }
 
-  return (
-    featureCollection.features
-    || []
-  ).filter(
-    (feature) =>
-      phaseReviewTileFeatureInTile(
-        feature,
-        tile
-      )
-  );
+  const cellular =
+    phaseReviewTileCellularActive();
+
+  const previousOwnerPointMap =
+    phaseReviewTileCellOwnerPointMap;
+
+  if (cellular) {
+    phaseReviewTileCellOwnerPointMap =
+      phaseReviewTileBuildCellOwnerPointMap();
+  }
+
+  try {
+    return (
+      featureCollection.features
+      || []
+    ).filter(
+      (feature) =>
+        phaseReviewTileFeatureInTile(
+          feature,
+          tile
+        )
+    );
+
+  } finally {
+    phaseReviewTileCellOwnerPointMap =
+      previousOwnerPointMap;
+  }
 }
 
 
@@ -910,7 +1417,7 @@ function phaseReviewEnsureTilePanel() {
     </div>
 
     <div class="phase-review-tile-selection-head">
-      <strong>Annotations in this tile</strong>
+      <strong>Tile objects</strong>
 
       <div>
         <button id="phaseReviewSelectPending"
@@ -943,7 +1450,7 @@ function phaseReviewEnsureTilePanel() {
 
     <p class="review-help">
       Select mode: tap an annotation to toggle it.
-      Colors remain visible for all annotations in the current tile.
+      
     </p>
   `;
 
@@ -2797,3 +3304,685 @@ els.reviewScopeSelect
     "change",
     phaseReviewTileSetupVisible
   );
+
+// ========================================================================
+// Tile Review session persistence v1
+//
+// Local/browser-only workflow state. This does not alter annotation geometry,
+// scientific metrics, ROI geometry, or level-0 coordinates.
+//
+// Stored per image/document + tile size + effective ROI signature:
+//   - current tile
+//   - reviewed tile ids
+//
+// On re-entering "By tiles..." the user can resume the previous location or
+// start from Tile 1. Starting from Tile 1 intentionally keeps annotation
+// reviewStatus values already saved in the document.
+// ========================================================================
+
+const PHASE_REVIEW_TILE_SESSION_STORAGE_VERSION =
+  1;
+
+const PHASE_REVIEW_TILE_SESSION_STORAGE_PREFIX =
+  "histoannotator:tile-review-session:v1:";
+
+
+function phaseReviewTileSessionHash(
+  value
+) {
+  const text =
+    String(
+      value
+      || ""
+    );
+
+  let hash =
+    2166136261;
+
+  for (
+    let index = 0;
+    index < text.length;
+    index += 1
+  ) {
+    hash ^=
+      text.charCodeAt(
+        index
+      );
+
+    hash =
+      Math.imul(
+        hash,
+        16777619
+      );
+  }
+
+  return (
+    hash >>> 0
+  ).toString(16);
+}
+
+
+function phaseReviewTileSessionImageIdentity() {
+  const image =
+    currentImage
+    || {};
+
+  const info =
+    currentInfo
+    || {};
+
+  const primary =
+    image.id
+    ?? image.imageId
+    ?? image.path
+    ?? image.url
+    ?? image.src
+    ?? image.name
+    ?? image.filename
+    ?? info.id
+    ?? info.imageId
+    ?? info.path
+    ?? info.name
+    ?? "";
+
+  const parts = [
+    String(primary || ""),
+    String(
+      info.width
+      ?? ""
+    ),
+    String(
+      info.height
+      ?? ""
+    ),
+    String(
+      image.localNative
+        ? "local"
+        : "remote"
+    ),
+  ];
+
+  return parts.join("|");
+}
+
+
+function phaseReviewTileSessionEffectiveRoiSignature() {
+  const roiPayload =
+    (
+      featureCollection.features
+      || []
+    )
+      .filter(
+        (feature) =>
+          typeof phaseDIsTissueRoi
+            === "function"
+          && phaseDIsTissueRoi(
+            feature
+          )
+      )
+      .map(
+        (roi) => {
+          const effective =
+            typeof phaseDEffectivePreviewForRoi
+              === "function"
+              ? phaseDEffectivePreviewForRoi(
+                  roi
+                )
+              : null;
+
+          return {
+            id:
+              String(
+                featureId(
+                  roi
+                )
+                || ""
+              ),
+
+            geometry:
+              effective?.geometry
+              || roi.geometry
+              || null,
+          };
+        }
+      );
+
+  return phaseReviewTileSessionHash(
+    JSON.stringify(
+      roiPayload
+    )
+  );
+}
+
+
+function phaseReviewTileSessionStorageKey() {
+  const identity =
+    phaseReviewTileSessionImageIdentity();
+
+  if (!identity) {
+    return null;
+  }
+
+  return (
+    PHASE_REVIEW_TILE_SESSION_STORAGE_PREFIX
+    + phaseReviewTileSessionHash(
+        identity
+      )
+  );
+}
+
+
+function phaseReviewTileSessionRead() {
+  const key =
+    phaseReviewTileSessionStorageKey();
+
+  if (!key) {
+    return null;
+  }
+
+  try {
+    const payload =
+      JSON.parse(
+        localStorage.getItem(
+          key
+        )
+        || "null"
+      );
+
+    if (
+      !payload
+      || Number(
+        payload.version
+      )
+        !== PHASE_REVIEW_TILE_SESSION_STORAGE_VERSION
+    ) {
+      return null;
+    }
+
+    return payload;
+
+  } catch (error) {
+    console.warn(
+      "Could not read Tile Review session",
+      error
+    );
+
+    return null;
+  }
+}
+
+
+function phaseReviewTileSessionClear() {
+  const key =
+    phaseReviewTileSessionStorageKey();
+
+  if (!key) {
+    return;
+  }
+
+  try {
+    localStorage.removeItem(
+      key
+    );
+  } catch (error) {
+    console.warn(
+      "Could not clear Tile Review session",
+      error
+    );
+  }
+}
+
+
+function phaseReviewTileSessionWrite() {
+  if (
+    !phaseReviewTileState.active
+    || !phaseReviewTileState
+      .tiles.length
+  ) {
+    return;
+  }
+
+  const key =
+    phaseReviewTileSessionStorageKey();
+
+  if (!key) {
+    return;
+  }
+
+  const currentTile =
+    phaseReviewTileCurrent();
+
+  const payload = {
+    version:
+      PHASE_REVIEW_TILE_SESSION_STORAGE_VERSION,
+
+    savedAt:
+      Date.now(),
+
+    imageIdentity:
+      phaseReviewTileSessionImageIdentity(),
+
+    roiSignature:
+      phaseReviewTileSessionEffectiveRoiSignature(),
+
+    tileSizePx:
+      Number(
+        phaseReviewTileState
+          .tileSizePx
+        || 0
+      ),
+
+    tileLabel:
+      String(
+        phaseReviewTileState
+          .tileLabel
+        || ""
+      ),
+
+    tileCount:
+      phaseReviewTileState
+        .tiles.length,
+
+    currentIndex:
+      Number(
+        phaseReviewTileState
+          .currentIndex
+        || 0
+      ),
+
+    currentTileId:
+      String(
+        currentTile?.id
+        || ""
+      ),
+
+    reviewedTileIds: [
+      ...phaseReviewTileState
+        .reviewedTileIds
+    ].map(String),
+  };
+
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify(
+        payload
+      )
+    );
+
+  } catch (error) {
+    console.warn(
+      "Could not persist Tile Review session",
+      error
+    );
+  }
+}
+
+
+function phaseReviewTileSessionMatchesCurrentGrid(
+  saved
+) {
+  if (
+    !saved
+    || !phaseReviewTileState
+      .tiles.length
+  ) {
+    return false;
+  }
+
+  const currentTileSize =
+    Number(
+      phaseReviewTileState
+        .tileSizePx
+      || 0
+    );
+
+  const savedTileSize =
+    Number(
+      saved.tileSizePx
+      || 0
+    );
+
+  const sizeTolerance =
+    Math.max(
+      0.01,
+      Math.abs(
+        currentTileSize
+      )
+      * 1e-6
+    );
+
+  return (
+    String(
+      saved.imageIdentity
+      || ""
+    )
+      === phaseReviewTileSessionImageIdentity()
+    && String(
+      saved.roiSignature
+      || ""
+    )
+      === phaseReviewTileSessionEffectiveRoiSignature()
+    && Number(
+      saved.tileCount
+    )
+      === phaseReviewTileState
+        .tiles.length
+    && Math.abs(
+      savedTileSize
+      - currentTileSize
+    )
+      <= sizeTolerance
+  );
+}
+
+
+function phaseReviewTileSessionRestore(
+  saved
+) {
+  if (
+    !phaseReviewTileSessionMatchesCurrentGrid(
+      saved
+    )
+  ) {
+    return false;
+  }
+
+  const savedTileId =
+    String(
+      saved.currentTileId
+      || ""
+    );
+
+  let index =
+    -1;
+
+  if (savedTileId) {
+    index =
+      phaseReviewTileState
+        .tiles
+        .findIndex(
+          (tile) =>
+            String(
+              tile?.id
+              || ""
+            )
+              === savedTileId
+        );
+  }
+
+  if (index < 0) {
+    index =
+      Math.max(
+        0,
+        Math.min(
+          phaseReviewTileState
+            .tiles.length
+            - 1,
+          Number(
+            saved.currentIndex
+          )
+          || 0
+        )
+      );
+  }
+
+  phaseReviewTileState.currentIndex =
+    index;
+
+  phaseReviewTileState.reviewedTileIds =
+    new Set(
+      (
+        saved.reviewedTileIds
+        || []
+      ).map(String)
+    );
+
+  clearSelectedFeatures(
+    false
+  );
+
+  phaseReviewRenderTilePanel();
+  phaseReviewZoomToCurrentTile();
+
+  return true;
+}
+
+
+function phaseReviewTileSessionOfferResume() {
+  const saved =
+    phaseReviewTileSessionRead();
+
+  if (
+    !phaseReviewTileSessionMatchesCurrentGrid(
+      saved
+    )
+  ) {
+    if (saved) {
+      phaseReviewTileSessionClear();
+    }
+
+    phaseReviewTileSessionWrite();
+    return;
+  }
+
+  const savedIndex =
+    Math.max(
+      0,
+      Math.min(
+        phaseReviewTileState
+          .tiles.length
+          - 1,
+        Number(
+          saved.currentIndex
+        )
+        || 0
+      )
+    );
+
+  const reviewedCount =
+    Array.isArray(
+      saved.reviewedTileIds
+    )
+      ? saved.reviewedTileIds.length
+      : 0;
+
+  const hasProgress =
+    savedIndex > 0
+    || reviewedCount > 0;
+
+  if (!hasProgress) {
+    phaseReviewTileSessionWrite();
+    return;
+  }
+
+  const resume =
+    window.confirm(
+      (
+        `Resume previous Tile Review at Tile ${
+          savedIndex + 1
+        } / ${
+          phaseReviewTileState.tiles.length
+        }?\n\n`
+        + `Reviewed tiles saved: ${reviewedCount}\n\n`
+        + "OK = Resume\n"
+        + "Cancel = Start from Tile 1 "
+        + "(keeps accepted annotation statuses)"
+      )
+    );
+
+  if (resume) {
+    const restored =
+      phaseReviewTileSessionRestore(
+        saved
+      );
+
+    if (restored) {
+      setStatus(
+        (
+          `Resumed Tile Review at Tile ${
+            phaseReviewTileState
+              .currentIndex + 1
+          }`
+        ),
+        "saved"
+      );
+    }
+
+    phaseReviewTileSessionWrite();
+    return;
+  }
+
+  phaseReviewTileState.currentIndex =
+    0;
+
+  phaseReviewTileState.reviewedTileIds =
+    new Set();
+
+  clearSelectedFeatures(
+    false
+  );
+
+  phaseReviewRenderTilePanel();
+  phaseReviewZoomToCurrentTile();
+  phaseReviewTileSessionWrite();
+
+  setStatus(
+    (
+      "Started Tile Review from Tile 1. "
+      + "Previously accepted annotation statuses were kept."
+    ),
+    "local"
+  );
+}
+
+
+const phaseReviewTileSessionBaseMoveTile =
+  phaseReviewMoveTile;
+
+phaseReviewMoveTile =
+  function phaseReviewTileSessionMoveTile(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseMoveTile(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseAcceptSelected =
+  phaseReviewAcceptSelectedTile;
+
+phaseReviewAcceptSelectedTile =
+  function phaseReviewTileSessionAcceptSelected(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseAcceptSelected(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseAcceptAll =
+  phaseReviewAcceptAllTile;
+
+phaseReviewAcceptAllTile =
+  function phaseReviewTileSessionAcceptAll(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseAcceptAll(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseUndoAction =
+  phaseReviewUndoAction;
+
+phaseReviewUndoAction =
+  function phaseReviewTileSessionUndoAction(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseUndoAction(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseStartTileMode =
+  phaseReviewStartTileMode;
+
+phaseReviewStartTileMode =
+  async function phaseReviewTileSessionStartTileMode(
+    ...args
+  ) {
+    const result =
+      await phaseReviewTileSessionBaseStartTileMode(
+        ...args
+      );
+
+    if (
+      phaseReviewTileState.active
+      && phaseReviewTileState
+        .tiles.length
+    ) {
+      phaseReviewTileSessionOfferResume();
+    }
+
+    return result;
+  };
+
+
+if (
+  typeof window
+  !== "undefined"
+) {
+  window.addEventListener(
+    "beforeunload",
+    phaseReviewTileSessionWrite
+  );
+
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (
+        document.visibilityState
+          === "hidden"
+      ) {
+        phaseReviewTileSessionWrite();
+      }
+    }
+  );
+
+  window.__histoannotatorTileReviewSession = {
+    read:
+      phaseReviewTileSessionRead,
+
+    save:
+      phaseReviewTileSessionWrite,
+
+    clear:
+      phaseReviewTileSessionClear,
+  };
+}
+

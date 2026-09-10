@@ -1091,6 +1091,12 @@ phaseEvalVisualLoadClass =
       && record.visualByClass[
         targetClass
       ]
+      && phaseEvalVisualCachedReviewScale(
+        record.visualByClass[
+          targetClass
+        ]
+      )
+        === phaseEvalVisualGetReviewScale()
       && (
         !Array.isArray(
           record.visualByClass[

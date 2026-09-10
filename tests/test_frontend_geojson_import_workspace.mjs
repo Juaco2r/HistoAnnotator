@@ -94,3 +94,41 @@ test("GeoJSON preview can render over the current WSI thumbnail", () => {
   assert.match(source, /phaseReportFetchRegion/);
   assert.match(source, /thumbnailDataUrl/);
 });
+
+test("Cellular GeoJSON is diverted before tissue workspace normalization", () => {
+  assert.match(
+    source,
+    /Cellular GeoJSON bypasses the tissue import workspace/
+  );
+
+  assert.match(
+    source,
+    /phaseCellPayloadLooksCellular/
+  );
+
+  assert.match(
+    source,
+    /phaseCellImportPayload/
+  );
+
+  const cellularIndex =
+    source.indexOf(
+      "phaseCellPayloadLooksCellular"
+    );
+
+  const tissueNormalizeIndex =
+    source.indexOf(
+      "phaseImportWorkspaceNormalizeExternalCollection",
+      cellularIndex
+    );
+
+  assert.ok(
+    cellularIndex >= 0,
+    "cellular detection must exist"
+  );
+
+  assert.ok(
+    tissueNormalizeIndex > cellularIndex,
+    "cellular detection must happen before tissue workspace normalization"
+  );
+});

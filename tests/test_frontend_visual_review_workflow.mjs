@@ -106,3 +106,115 @@ test("Previous and Next zoom only during individual review", () => {
     /pair\.referenceClass/
   );
 });
+
+test("Visual Review uses quarter resolution by default but keeps cached scales distinct", () => {
+  const base = fs.readFileSync(
+    new URL(
+      "../app/static/frontend/56_evaluation_visual_review.part.js",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  const cache = fs.readFileSync(
+    new URL(
+      "../app/static/frontend/57_evaluation_review_cache.part.js",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    base,
+    /PHASE_EVAL_VISUAL_DEFAULT_REVIEW_SCALE\s*=\s*\n\s*0\.0625/
+  );
+
+  assert.match(
+    base,
+    /id="phaseEvalVisualReviewScale"/
+  );
+
+  assert.match(
+    base,
+    /Ultra fast — 1\/16 resolution/
+  );
+
+  assert.match(
+    base,
+    /reviewScale:\s*\n\s*phaseEvalVisualGetReviewScale/
+  );
+
+  assert.match(
+    cache,
+    /phaseEvalVisualCachedReviewScale/
+  );
+
+  assert.match(
+    cache,
+    /phaseEvalVisualGetReviewScale/
+  );
+});
+
+test("Visual Review defaults to largest Ground Truth area and Move mode", () => {
+  const base = fs.readFileSync(
+    new URL(
+      "../app/static/frontend/56_evaluation_visual_review.part.js",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(base, /referenceAreaPx2/);
+  assert.match(base, /phaseEvalVisualRowArea/);
+  assert.match(base, /setMode\(\s*\n\s*"navigate"/);
+});
+
+test("Visual Review 1/16 defaults and navigation-first mode", () => {
+  const base = fs.readFileSync(
+    new URL(
+      "../app/static/frontend/56_evaluation_visual_review.part.js",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    base,
+    /PHASE_EVAL_VISUAL_DEFAULT_REVIEW_SCALE\s*=\s*\n\s*0\.0625/
+  );
+
+  assert.match(
+    base,
+    /Ultra fast — 1\/16 resolution/
+  );
+
+  assert.match(
+    base,
+    /Fast — 1\/8 resolution/
+  );
+
+  assert.match(
+    base,
+    /Balanced — 1\/4 resolution/
+  );
+
+  assert.match(
+    base,
+    /phaseEvalVisualLargestReferenceAreaDefault/
+  );
+
+  assert.match(
+    base,
+    /referenceAreaPx2/
+  );
+
+  assert.match(
+    base,
+    /phaseEvalVisualDefaultMoveMode/
+  );
+
+  assert.match(
+    base,
+    /setMode\(\s*\n\s*"move"/
+  );
+});

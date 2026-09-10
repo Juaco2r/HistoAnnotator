@@ -3276,6 +3276,34 @@ importGeoJson =
         );
       }
 
+
+      // Cellular GeoJSON bypasses the tissue import workspace.
+      //
+      // This check belongs in the workspace import callback itself because
+      // this module currently owns Import GeoJSON… and would otherwise open
+      // the tissue Class mapping UI first.
+      if (
+        typeof phaseCellPayloadLooksCellular
+          === "function"
+        && typeof phaseCellImportPayload
+          === "function"
+        && phaseCellPayloadLooksCellular(
+          payload
+        )
+      ) {
+        await phaseCellImportPayload(
+          file,
+          payload
+        );
+
+        if (els.importInput) {
+          els.importInput.value =
+            "";
+        }
+
+        return;
+      }
+
       const collection =
         phaseImportWorkspaceNormalizeExternalCollection(
           payload

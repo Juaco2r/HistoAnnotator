@@ -10,6 +10,49 @@ let phaseEvalVisualRegionIndex = -1;
 let phaseEvalVisualViewerHandlersBound = false;
 let phaseEvalVisualPreviousAnnotationVisibility = "";
 let phaseEvalVisualLoadingSequence = 0;
+let phaseEvalVisualPreviousToolMode = null;
+let phaseEvalVisualPreviousImageTimeout = null;
+let phaseEvalVisualPerfDrawSample = null;
+let phaseEvalVisualNavigationOverlayHidden = false;
+
+function phaseEvalVisualPerfNow() {
+  return (
+    typeof performance !== "undefined"
+    && typeof performance.now === "function"
+  )
+    ? performance.now()
+    : Date.now();
+}
+
+function phaseEvalVisualPerfTileSnapshot() {
+  const session = window.__histoEvalVisualPerfSession;
+  if (!session || typeof session !== "object") {
+    return null;
+  }
+  return {
+    loaded: Number(session.tileLoaded || 0),
+    failed: Number(session.tileFailed || 0),
+    failures: Array.isArray(session.failures)
+      ? session.failures.slice(-8)
+      : [],
+  };
+}
+
+// Fast Visual Review scale v1
+//
+// Scientific Dice/IoU/etc. remain level-0. This controls only derived
+// Visual Review overlays and navigable mismatch geometries.
+const PHASE_EVAL_VISUAL_DEFAULT_REVIEW_SCALE =
+  0.0625;
+
+const PHASE_EVAL_VISUAL_ALLOWED_REVIEW_SCALES =
+  [
+    1,
+    0.5,
+    0.25,
+    0.125,
+    0.0625,
+  ];
 
 const PHASE_EVAL_VISUAL_DEFAULTS = {
   agreement: true,
@@ -18,6 +61,50 @@ const PHASE_EVAL_VISUAL_DEFAULTS = {
   wrong_class: true,
 };
 
+
+function phaseEvalVisualNormalizeReviewScale(
+  value
+) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0.0625;
+  for (const allowed of [1, 0.5, 0.25, 0.125, 0.0625]) {
+    if (Math.abs(allowed - numeric) < 1e-9) return allowed;
+  }
+  return 0.0625;
+}
+
+
+function phaseEvalVisualGetReviewScale() {
+  const select =
+    document.getElementById(
+      "phaseEvalVisualReviewScale"
+    );
+
+  return phaseEvalVisualNormalizeReviewScale(
+    select?.value
+    ?? PHASE_EVAL_VISUAL_DEFAULT_REVIEW_SCALE
+  );
+}
+
+
+function phaseEvalVisualCachedReviewScale(
+  visual
+) {
+  // Cached payloads created before this feature were full-resolution.
+  if (
+    !visual
+    || visual.reviewScale
+      === undefined
+    || visual.reviewScale
+      === null
+  ) {
+    return 1;
+  }
+
+  return phaseEvalVisualNormalizeReviewScale(
+    visual.reviewScale
+  );
+}
 
 function phaseEvalVisualEnsureUi() {
   const refs = phaseEvalRefs();
@@ -133,6 +220,30 @@ function phaseEvalVisualEnsureUi() {
         <select id="phaseEvalVisualClass"></select>
       </label>
 
+      <label class="phase-eval-visual-class-field">
+        <span>Review quality</span>
+        <select id="phaseEvalVisualReviewScale">
+          <option value="0.0625" selected>
+            Ultra fast — 1/16 resolution
+          </option>
+          <option value="0.125">
+            Fast — 1/8 resolution
+          </option>
+          <option value="0.25">
+            Balanced — 1/4 resolution
+          </option>
+          <option value="0.5">
+            High quality — 1/2 resolution
+          </option>
+          <option value="1">
+            Full resolution
+          </option>
+        </select>
+        <small>
+          Visual overlays only · scientific metrics stay full resolution
+        </small>
+      </label>
+
       <div class="phase-eval-visual-legend">
         <label>
           <input type="checkbox"
@@ -236,6 +347,27 @@ function phaseEvalVisualEnsureUi() {
     );
 
     document.getElementById(
+      "phaseEvalVisualReviewScale"
+    )?.addEventListener(
+      "change",
+      () => {
+        phaseEvalVisualData =
+          null;
+
+        phaseEvalVisualRegionIndex =
+          -1;
+
+        phaseEvalVisualDraw();
+
+        phaseEvalVisualSetStatus(
+          "Review quality changed. Reloading this class…"
+        );
+
+        void phaseEvalVisualLoadClass();
+      }
+    );
+
+    document.getElementById(
       "phaseEvalVisualOpacity"
     )?.addEventListener(
       "input",
@@ -314,6 +446,37 @@ function phaseEvalVisualAvailableRows() {
 }
 
 
+function phaseEvalVisualRowArea(
+  row
+) {
+  const referenceArea =
+    Number(
+      row?.referenceAreaPx2
+    );
+
+  if (
+    Number.isFinite(
+      referenceArea
+    )
+  ) {
+    return referenceArea;
+  }
+
+  const candidateArea =
+    Number(
+      row?.candidateAreaPx2
+    );
+
+  return (
+    Number.isFinite(
+      candidateArea
+    )
+      ? candidateArea
+      : 0
+  );
+}
+
+
 function phaseEvalVisualPopulateClasses() {
   const select =
     document.getElementById(
@@ -328,31 +491,17 @@ function phaseEvalVisualPopulateClasses() {
     [...phaseEvalVisualAvailableRows()]
       .sort(
         (left, right) => {
-          const leftDice =
-            Number(
-              left?.dice
-            );
-
-          const rightDice =
-            Number(
-              right?.dice
-            );
-
-          if (
-            Number.isFinite(leftDice)
-            && Number.isFinite(rightDice)
-          ) {
-            return leftDice - rightDice;
-          }
-
-          return String(
-            left?.className
-            || ""
-          ).localeCompare(
-            String(
-              right?.className
-              || ""
-            )
+          const leftReference = Number(left?.referenceAreaPx2);
+          const rightReference = Number(right?.referenceAreaPx2);
+          const leftArea = Number.isFinite(leftReference)
+            ? leftReference
+            : Number(left?.candidateAreaPx2 || 0);
+          const rightArea = Number.isFinite(rightReference)
+            ? rightReference
+            : Number(right?.candidateAreaPx2 || 0);
+          if (rightArea !== leftArea) return rightArea - leftArea;
+          return String(left?.className || "").localeCompare(
+            String(right?.className || "")
           );
         }
       );
@@ -385,6 +534,47 @@ function phaseEvalVisualPopulateClasses() {
       option
     );
   }
+  // phaseEvalVisualLargestReferenceAreaDefault
+  // Ground Truth is the fixed target, so reference area defines the default.
+  const largestAreaRow =
+    rows.reduce(
+      (
+        best,
+        row
+      ) => {
+        const rowArea =
+          Number(
+            row?.referenceAreaPx2
+            ?? row?.candidateAreaPx2
+            ?? 0
+          );
+
+        const bestArea =
+          Number(
+            best?.referenceAreaPx2
+            ?? best?.candidateAreaPx2
+            ?? -1
+          );
+
+        return (
+          rowArea > bestArea
+            ? row
+            : best
+        );
+      },
+      null
+    );
+
+  if (
+    largestAreaRow
+  ) {
+    select.value =
+      String(
+        largestAreaRow.className
+        || ""
+      );
+  }
+
 }
 
 
@@ -559,6 +749,11 @@ function phaseEvalVisualPathRing(
   let started =
     false;
 
+  if (phaseEvalVisualPerfDrawSample) {
+    phaseEvalVisualPerfDrawSample.vertices += ring.length;
+    phaseEvalVisualPerfDrawSample.rings += 1;
+  }
+
   for (
     const point
     of ring
@@ -608,7 +803,8 @@ function phaseEvalVisualPathRing(
 
 function phaseEvalVisualGeometryPath(
   context,
-  geometry
+  geometry,
+  renderContext = null
 ) {
   if (
     !geometry
@@ -625,6 +821,17 @@ function phaseEvalVisualGeometryPath(
     geometry.type
       === "Polygon"
   ) {
+    if (
+      renderContext
+      && typeof phaseF26PolygonVisible === "function"
+      && !phaseF26PolygonVisible(
+        geometry.coordinates,
+        renderContext
+      )
+    ) {
+      return false;
+    }
+
     for (
       const ring
       of geometry.coordinates
@@ -650,6 +857,17 @@ function phaseEvalVisualGeometryPath(
       of geometry.coordinates
         || []
     ) {
+      if (
+        renderContext
+        && typeof phaseF26PolygonVisible === "function"
+        && !phaseF26PolygonVisible(
+          polygon,
+          renderContext
+        )
+      ) {
+        continue;
+      }
+
       for (
         const ring
         of polygon
@@ -679,7 +897,8 @@ function phaseEvalVisualGeometryPath(
       drawn =
         phaseEvalVisualGeometryPath(
           context,
-          child
+          child,
+          renderContext
         )
         || drawn;
     }
@@ -692,7 +911,8 @@ function phaseEvalVisualGeometryPath(
 function phaseEvalVisualDrawLayer(
   context,
   layer,
-  opacity
+  opacity,
+  renderContext = null
 ) {
   if (
     !layer?.geometry
@@ -703,6 +923,10 @@ function phaseEvalVisualDrawLayer(
     return;
   }
 
+  if (phaseEvalVisualPerfDrawSample) {
+    phaseEvalVisualPerfDrawSample.layers += 1;
+  }
+
   context.save();
 
   context.beginPath();
@@ -710,7 +934,8 @@ function phaseEvalVisualDrawLayer(
   const hasPath =
     phaseEvalVisualGeometryPath(
       context,
-      layer.geometry
+      layer.geometry,
+      renderContext
     );
 
   if (hasPath) {
@@ -754,6 +979,24 @@ function phaseEvalVisualDrawLayer(
 
 
 function phaseEvalVisualDraw() {
+  const shouldProfile = Boolean(
+    window.__histoEvalVisualPerfPendingDraw
+  );
+  const monitorSlowDraw = Boolean(
+    window.__histoEvalVisualPerfSession
+  );
+  const drawStarted = (shouldProfile || monitorSlowDraw)
+    ? phaseEvalVisualPerfNow()
+    : 0;
+
+  if (shouldProfile) {
+    phaseEvalVisualPerfDrawSample = {
+      vertices: 0,
+      rings: 0,
+      layers: 0,
+    };
+  }
+
   const frame =
     phaseEvalVisualCanvasContext();
 
@@ -791,6 +1034,13 @@ function phaseEvalVisualDraw() {
       ? phaseEvalVisualData.layers
       : [];
 
+  const renderContext =
+    (
+      typeof phaseF26CurrentRenderContext === "function"
+    )
+      ? phaseF26CurrentRenderContext()
+      : null;
+
   // Wrong-class is last so orange remains visible over red/blue.
   const order = [
     "reference_only",
@@ -814,7 +1064,43 @@ function phaseEvalVisualDraw() {
       phaseEvalVisualDrawLayer(
         frame.context,
         layer,
-        opacity
+        opacity,
+        renderContext
+      );
+    }
+  }
+
+  if (shouldProfile) {
+    const sample =
+      phaseEvalVisualPerfDrawSample
+      || { vertices: 0, rings: 0, layers: 0 };
+
+    window.__histoEvalVisualLastDrawProfile = {
+      drawMs: Number(
+        (phaseEvalVisualPerfNow() - drawStarted).toFixed(3)
+      ),
+      vertices: Number(sample.vertices || 0),
+      rings: Number(sample.rings || 0),
+      layers: Number(sample.layers || 0),
+    };
+
+    window.__histoEvalVisualPerfPendingDraw = false;
+    phaseEvalVisualPerfDrawSample = null;
+  } else if (monitorSlowDraw) {
+    const elapsed = phaseEvalVisualPerfNow() - drawStarted;
+    const lastWarn = Number(
+      window.__histoEvalVisualLastSlowDrawWarnAt || 0
+    );
+    const now = phaseEvalVisualPerfNow();
+    if (elapsed >= 40 && now - lastWarn >= 1000) {
+      window.__histoEvalVisualLastSlowDrawWarnAt = now;
+      console.warn(
+        "[VisualReview RENDER PERF] slow redraw",
+        {
+          drawMs: Number(elapsed.toFixed(3)),
+          targetClass: phaseEvalVisualCurrentClass(),
+          reviewScale: phaseEvalVisualGetReviewScale(),
+        }
       );
     }
   }
@@ -1216,6 +1502,58 @@ function phaseEvalVisualStepRegion(
 }
 
 
+function phaseEvalVisualSetNavigationOverlayHidden(
+  hidden
+) {
+  const canvas =
+    document.getElementById(
+      "phaseEvalVisualCanvas"
+    );
+
+  if (!canvas) {
+    return;
+  }
+
+  const shouldHide =
+    Boolean(hidden);
+
+  if (
+    phaseEvalVisualNavigationOverlayHidden
+      === shouldHide
+  ) {
+    return;
+  }
+
+  phaseEvalVisualNavigationOverlayHidden =
+    shouldHide;
+
+  canvas.style.visibility =
+    shouldHide
+      ? "hidden"
+      : "";
+}
+
+
+function phaseEvalVisualNavigationFrame() {
+  if (!phaseEvalVisualData) {
+    return;
+  }
+
+  phaseEvalVisualSetNavigationOverlayHidden(
+    true
+  );
+}
+
+
+function phaseEvalVisualDrawAfterNavigation() {
+  phaseEvalVisualSetNavigationOverlayHidden(
+    false
+  );
+
+  phaseEvalVisualDraw();
+}
+
+
 function phaseEvalVisualBindViewer() {
   if (
     phaseEvalVisualViewerHandlersBound
@@ -1224,9 +1562,17 @@ function phaseEvalVisualBindViewer() {
     return;
   }
 
+  // Keep image navigation responsive: do not rebuild ~100k+ overlay vertices
+  // on every OpenSeadragon animation frame. Hide the derived overlay briefly
+  // and redraw once when navigation settles.
   viewer.addHandler(
     "animation",
-    phaseEvalVisualDraw
+    phaseEvalVisualNavigationFrame
+  );
+
+  viewer.addHandler(
+    "animation-finish",
+    phaseEvalVisualDrawAfterNavigation
   );
 
   viewer.addHandler(
@@ -1261,7 +1607,12 @@ function phaseEvalVisualUnbindViewer() {
   ) {
     viewer.removeHandler(
       "animation",
-      phaseEvalVisualDraw
+      phaseEvalVisualNavigationFrame
+    );
+
+    viewer.removeHandler(
+      "animation-finish",
+      phaseEvalVisualDrawAfterNavigation
     );
 
     viewer.removeHandler(
@@ -1278,6 +1629,10 @@ function phaseEvalVisualUnbindViewer() {
   window.removeEventListener(
     "resize",
     phaseEvalVisualDraw
+  );
+
+  phaseEvalVisualSetNavigationOverlayHidden(
+    false
   );
 
   phaseEvalVisualViewerHandlersBound =
@@ -1306,6 +1661,9 @@ async function phaseEvalVisualLoadClass() {
   phaseEvalVisualSetStatus(
     `Calculating spatial review for ${targetClass}…`
   );
+
+  const perfRequestStarted =
+    phaseEvalVisualPerfNow();
 
   try {
     const response =
@@ -1338,6 +1696,12 @@ async function phaseEvalVisualLoadClass() {
                   ?.referenceMapping
                 || {},
 
+              reviewScale:
+                phaseEvalVisualGetReviewScale(),
+
+              profilePerformance:
+                true,
+
               targetClass,
 
               maxRegions:
@@ -1349,8 +1713,14 @@ async function phaseEvalVisualLoadClass() {
         }
       );
 
+    const perfResponseReceived =
+      phaseEvalVisualPerfNow();
+
     const payload =
       await response.json();
+
+    const perfPayloadParsed =
+      phaseEvalVisualPerfNow();
 
     if (!response.ok) {
       throw new Error(
@@ -1372,9 +1742,53 @@ async function phaseEvalVisualLoadClass() {
     phaseEvalVisualRegionIndex =
       -1;
 
+    const perfUiStarted =
+      phaseEvalVisualPerfNow();
+
     phaseEvalVisualRenderSummary();
     phaseEvalVisualRenderRegion();
+
+    window.__histoEvalVisualPerfPendingDraw =
+      true;
+    window.__histoEvalVisualLastDrawProfile =
+      null;
+
     phaseEvalVisualDraw();
+
+    const perfFinished =
+      phaseEvalVisualPerfNow();
+
+    const frontendProfile = {
+      targetClass,
+      reviewScale:
+        phaseEvalVisualGetReviewScale(),
+      requestUntilHeadersMs: Number(
+        (perfResponseReceived - perfRequestStarted).toFixed(3)
+      ),
+      jsonParseMs: Number(
+        (perfPayloadParsed - perfResponseReceived).toFixed(3)
+      ),
+      summaryAndDrawMs: Number(
+        (perfFinished - perfUiStarted).toFixed(3)
+      ),
+      frontendTotalMs: Number(
+        (perfFinished - perfRequestStarted).toFixed(3)
+      ),
+      draw:
+        window.__histoEvalVisualLastDrawProfile,
+      tiles:
+        phaseEvalVisualPerfTileSnapshot(),
+      backend:
+        payload.performanceProfile || null,
+    };
+
+    window.__histoEvalVisualLastPerf =
+      frontendProfile;
+
+    console.info(
+      "[VisualReview PERF FRONTEND]",
+      frontendProfile
+    );
 
     const regionNote =
       payload.regionsTruncated
@@ -1411,6 +1825,54 @@ async function phaseEvalVisualLoadClass() {
 
 async function phaseEvalVisualOpen() {
   phaseEvalVisualEnsureUi();
+
+  window.__histoEvalVisualPerfSession = {
+    startedAt: phaseEvalVisualPerfNow(),
+    tileLoaded: 0,
+    tileFailed: 0,
+    failures: [],
+  };
+
+  // phaseEvalVisualDefaultMoveMode
+  // Visual Review is navigation-first.
+  if (
+    typeof setMode
+      === "function"
+  ) {
+    setMode(
+      "move"
+    );
+  }
+
+  // Visual Review defaults to Move and starts from whole-image view.
+  phaseEvalVisualPreviousToolMode = mode;
+  setMode("navigate");
+
+  if (viewer?.imageLoader) {
+    phaseEvalVisualPreviousImageTimeout =
+      Number(viewer.imageLoader.timeout) || 30000;
+    viewer.imageLoader.timeout = Math.max(
+      60000,
+      phaseEvalVisualPreviousImageTimeout
+    );
+  }
+
+  try {
+    viewer?.viewport?.goHome(true);
+  } catch (_) {
+    // Image may still be opening; do not reopen the source.
+  }
+
+  // Visual evaluation starts in Move mode.
+  setMode(
+    "navigate"
+  );
+
+  window.__histoEvalVisualReviewActive =
+    true;
+
+  window.__histoEvalVisualTileFailureTimes =
+    [];
 
   const rows =
     phaseEvalVisualAvailableRows();
@@ -1529,6 +1991,22 @@ function phaseEvalVisualRestoreAnnotations() {
 function phaseEvalVisualClose() {
   ++phaseEvalVisualLoadingSequence;
 
+  if (window.__histoEvalVisualPerfSession) {
+    console.info(
+      "[VisualReview TILE PERF] session summary",
+      phaseEvalVisualPerfTileSnapshot()
+    );
+  }
+
+  window.__histoEvalVisualPerfSession =
+    null;
+
+  window.__histoEvalVisualReviewActive =
+    false;
+
+  window.__histoEvalVisualTileFailureTimes =
+    [];
+
   phaseEvalVisualData =
     null;
 
@@ -1569,6 +2047,20 @@ function phaseEvalVisualClose() {
 
   phaseEvalVisualRestoreAnnotations();
   phaseEvalVisualUnbindViewer();
+
+  if (
+    viewer?.imageLoader
+    && Number.isFinite(Number(phaseEvalVisualPreviousImageTimeout))
+  ) {
+    viewer.imageLoader.timeout =
+      Number(phaseEvalVisualPreviousImageTimeout);
+  }
+  phaseEvalVisualPreviousImageTimeout = null;
+
+  if (phaseEvalVisualPreviousToolMode) {
+    setMode(phaseEvalVisualPreviousToolMode);
+  }
+  phaseEvalVisualPreviousToolMode = null;
 }
 
 

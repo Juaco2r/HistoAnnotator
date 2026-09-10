@@ -7255,12 +7255,348 @@ if (!geometry) {
     ctx.setLineDash([]);
   }
 
+  // ======================================================================
+  // Phase F2.6.4 - Adaptive visual LOD for large annotation sets
+  //
+  // DISPLAY ONLY:
+  // - stored GeoJSON / level-0 coordinates are never replaced or simplified;
+  // - selection/editing always uses original geometry;
+  // - Visual Review has its own renderer and is not modified here.
+  // ======================================================================
+
+  const PHASE_F264_LOD_MIN_FEATURES = 1000;
+  const PHASE_F264_LOD_MIN_IMAGE_TOLERANCE_PX = 2;
+  const PHASE_F264_LOD_MAX_IMAGE_TOLERANCE_PX = 256;
+
+  let phaseF264RingCache = new WeakMap();
+  let phaseF264FrameContext = null;
+  let phaseF264FrameStats = null;
+
+  function phaseF264ResetCache() {
+    phaseF264RingCache = new WeakMap();
+  }
+
+  function phaseF264FeatureCount() {
+    const features = featureCollection?.features;
+    return Array.isArray(features) ? features.length : 0;
+  }
+
+  function phaseF264QuantizedTolerance(rawTolerance) {
+    if (
+      !Number.isFinite(rawTolerance)
+      || rawTolerance < PHASE_F264_LOD_MIN_IMAGE_TOLERANCE_PX
+    ) {
+      return 0;
+    }
+
+    const exponent = Math.floor(Math.log2(rawTolerance));
+
+    return Math.max(
+      PHASE_F264_LOD_MIN_IMAGE_TOLERANCE_PX,
+      Math.min(
+        PHASE_F264_LOD_MAX_IMAGE_TOLERANCE_PX,
+        2 ** exponent
+      )
+    );
+  }
+
+  function phaseF264ComputeFrameLodContext() {
+    const featureCount = phaseF264FeatureCount();
+
+    if (mode !== "navigate") {
+      return {
+        enabled: false,
+        reason: "editing-mode",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    if (featureCount < PHASE_F264_LOD_MIN_FEATURES) {
+      return {
+        enabled: false,
+        reason: "small-file",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    const p0 = screenPointFromImage([0, 0]);
+    const p1 = screenPointFromImage([1, 0]);
+
+    if (!p0 || !p1) {
+      return {
+        enabled: false,
+        reason: "viewer-transform-unavailable",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    const screenPixelsPerImagePixel = Math.hypot(
+      p1.x - p0.x,
+      p1.y - p0.y
+    );
+
+    if (
+      !Number.isFinite(screenPixelsPerImagePixel)
+      || screenPixelsPerImagePixel <= 0
+    ) {
+      return {
+        enabled: false,
+        reason: "viewer-transform-invalid",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    const imagePixelsPerScreenPixel =
+      1 / screenPixelsPerImagePixel;
+
+    const toleranceImagePx =
+      phaseF264QuantizedTolerance(
+        imagePixelsPerScreenPixel * 0.8
+      );
+
+    if (toleranceImagePx <= 0) {
+      return {
+        enabled: false,
+        reason: "close-zoom-full-detail",
+        featureCount,
+        imagePixelsPerScreenPixel,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    return {
+      enabled: true,
+      reason: "adaptive-lod",
+      featureCount,
+      imagePixelsPerScreenPixel,
+      toleranceImagePx,
+      lodKey: `tol:${toleranceImagePx}`,
+    };
+  }
+
+  function phaseF264BeginRenderFrame() {
+    phaseF264FrameContext =
+      phaseF264ComputeFrameLodContext();
+
+    phaseF264FrameStats = {
+      enabled: Boolean(phaseF264FrameContext.enabled),
+      reason: phaseF264FrameContext.reason,
+      featureCount: phaseF264FrameContext.featureCount,
+      imagePixelsPerScreenPixel:
+        Number.isFinite(
+          phaseF264FrameContext.imagePixelsPerScreenPixel
+        )
+          ? Number(
+              phaseF264FrameContext
+                .imagePixelsPerScreenPixel
+                .toFixed(3)
+            )
+          : null,
+      toleranceImagePx:
+        phaseF264FrameContext.toleranceImagePx || 0,
+      lodKey: phaseF264FrameContext.lodKey,
+      ringsVisited: 0,
+      ringsSimplified: 0,
+      inputVertices: 0,
+      outputVertices: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      reductionPct: 0,
+    };
+
+    window.__histoannotatorF264LodStats =
+      phaseF264FrameStats;
+  }
+
+  function phaseF264UpdateReductionStats() {
+    if (!phaseF264FrameStats) return;
+
+    const input =
+      Number(phaseF264FrameStats.inputVertices || 0);
+    const output =
+      Number(phaseF264FrameStats.outputVertices || 0);
+
+    phaseF264FrameStats.reductionPct =
+      input > 0
+        ? Number(
+            (100 * (1 - output / input)).toFixed(1)
+          )
+        : 0;
+  }
+
+  function phaseF264DecimateClosedRing(
+    ring,
+    toleranceImagePx
+  ) {
+    if (
+      !Array.isArray(ring)
+      || ring.length < 6
+      || toleranceImagePx <= 0
+    ) {
+      return ring;
+    }
+
+    const first = ring[0];
+
+    if (
+      !Array.isArray(first)
+      || first.length < 2
+    ) {
+      return ring;
+    }
+
+    const tolerance2 =
+      toleranceImagePx * toleranceImagePx;
+
+    const lastIndex = ring.length - 1;
+    const last = ring[lastIndex];
+
+    const explicitlyClosed =
+      Array.isArray(last)
+      && Number(last[0]) === Number(first[0])
+      && Number(last[1]) === Number(first[1]);
+
+    const limit =
+      explicitlyClosed ? lastIndex : ring.length;
+
+    const output = [first];
+    let previous = first;
+
+    for (
+      let index = 1;
+      index < limit;
+      index += 1
+    ) {
+      const point = ring[index];
+
+      if (
+        !Array.isArray(point)
+        || point.length < 2
+      ) {
+        continue;
+      }
+
+      const dx =
+        Number(point[0]) - Number(previous[0]);
+      const dy =
+        Number(point[1]) - Number(previous[1]);
+
+      if (
+        !Number.isFinite(dx)
+        || !Number.isFinite(dy)
+      ) {
+        continue;
+      }
+
+      if ((dx * dx + dy * dy) >= tolerance2) {
+        output.push(point);
+        previous = point;
+      }
+    }
+
+    if (output.length < 3) return ring;
+
+    const tail = output[output.length - 1];
+
+    if (
+      Number(tail[0]) !== Number(first[0])
+      || Number(tail[1]) !== Number(first[1])
+    ) {
+      output.push(first);
+    }
+
+    return output.length >= 4 ? output : ring;
+  }
+
+  function phaseF264DisplayRing(
+    ring,
+    selected = false
+  ) {
+    if (!Array.isArray(ring)) return ring;
+
+    if (
+      !phaseF264FrameContext
+      || !phaseF264FrameStats
+    ) {
+      phaseF264BeginRenderFrame();
+    }
+
+    phaseF264FrameStats.ringsVisited += 1;
+    phaseF264FrameStats.inputVertices +=
+      ring.length;
+
+    if (
+      selected
+      || !phaseF264FrameContext.enabled
+    ) {
+      phaseF264FrameStats.outputVertices +=
+        ring.length;
+      phaseF264UpdateReductionStats();
+      return ring;
+    }
+
+    let cache = phaseF264RingCache.get(ring);
+
+    if (!cache) {
+      cache = new Map();
+      phaseF264RingCache.set(ring, cache);
+    }
+
+    const key =
+      phaseF264FrameContext.lodKey;
+
+    if (cache.has(key)) {
+      const cached = cache.get(key);
+
+      phaseF264FrameStats.cacheHits += 1;
+      phaseF264FrameStats.outputVertices +=
+        cached.length;
+
+      if (cached !== ring) {
+        phaseF264FrameStats.ringsSimplified += 1;
+      }
+
+      phaseF264UpdateReductionStats();
+      return cached;
+    }
+
+    phaseF264FrameStats.cacheMisses += 1;
+
+    const displayRing =
+      phaseF264DecimateClosedRing(
+        ring,
+        phaseF264FrameContext.toleranceImagePx
+      );
+
+    cache.set(key, displayRing);
+
+    phaseF264FrameStats.outputVertices +=
+      displayRing.length;
+
+    if (displayRing !== ring) {
+      phaseF264FrameStats.ringsSimplified += 1;
+    }
+
+    phaseF264UpdateReductionStats();
+    return displayRing;
+  }
+
   function drawPolygonRings(rings, color, selected = false) {
     if (!Array.isArray(rings) || !rings.length) return;
     ctx.beginPath();
     let hasPath = false;
     for (const ring of rings) {
-      const points = (ring || []).map(screenPointFromImage).filter(Boolean);
+      const displayRing = phaseF264DisplayRing(ring, selected);
+      const points = (displayRing || []).map(screenPointFromImage).filter(Boolean);
       if (points.length < 2) continue;
       hasPath = true;
       ctx.moveTo(points[0].x, points[0].y);

@@ -20,6 +20,7 @@ PARTS = [
     "56_evaluation_visual_review.part.js",
     "57_evaluation_review_cache.part.js",
     "58_visual_review_workflow.part.js",
+    "59_evaluation_offline_package.part.js",
     "60_interactive_learning.part.js",
     "70_event_bindings.part.js",
     "80_anthracosis_frontend.part.js",
@@ -30,6 +31,8 @@ PARTS = [
     "89_capture_note_modes.part.js",
     "89_android_report_notes_refinements.part.js",
     "89_geojson_import_workspace.part.js",
+    "89_cellular_annotation_core.part.js",
+    "89_cellular_nucleus_tools.part.js",
     "90_bootstrap.part.js"
 ]
 

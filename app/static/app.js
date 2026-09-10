@@ -5742,7 +5742,9 @@
 
     ["open", "animation", "update-viewport", "resize"].forEach((eventName) => {
       viewer.addHandler(eventName, () => {
-        phaseF26ScheduleDraw();
+        phaseF26HandleViewportDrawEvent(
+          eventName
+        );
         updateDiagnostics();
         updateScaleBar();
         updateCalibrationBadge();
@@ -5753,17 +5755,86 @@
       });
     });
 
-    viewer.addHandler("animation-finish", () => { if (currentImage) saveViewportState(); });
+    viewer.addHandler("animation-finish", () => {
+      phaseF26FinishNavigationDraw();
+      if (currentImage) saveViewportState();
+    });
 
-    viewer.addHandler("tile-loaded", () => {
+    viewer.addHandler("tile-loaded", (event) => {
       tileStats.loaded += 1;
+
+      if (window.__histoEvalVisualPerfSession) {
+        window.__histoEvalVisualPerfSession.tileLoaded =
+          Number(window.__histoEvalVisualPerfSession.tileLoaded || 0) + 1;
+      }
+
       updateDiagnostics();
     });
 
     viewer.addHandler("tile-load-failed", (event) => {
       tileStats.failed += 1;
       const message = event?.message || event?.tile?.url || "unknown tile";
-      setStatus(`Tile error: ${String(message).slice(0, 90)}`, "error");
+
+      if (window.__histoEvalVisualPerfSession) {
+        const session = window.__histoEvalVisualPerfSession;
+        session.tileFailed = Number(session.tileFailed || 0) + 1;
+
+        const tile = event?.tile || {};
+        const failure = {
+          elapsedSinceReviewOpenMs: Number(
+            (
+              (typeof performance !== "undefined" && performance.now)
+                ? performance.now()
+                : Date.now()
+            ) - Number(session.startedAt || 0)
+          ),
+          level: tile.level ?? null,
+          x: tile.x ?? null,
+          y: tile.y ?? null,
+          url: String(tile.url || "").slice(0, 240),
+          message: String(message).slice(0, 240),
+          imageLoaderTimeoutMs:
+            Number(viewer?.imageLoader?.timeout || 0) || null,
+        };
+
+        if (!Array.isArray(session.failures)) {
+          session.failures = [];
+        }
+        session.failures.push(failure);
+        if (session.failures.length > 20) {
+          session.failures = session.failures.slice(-20);
+        }
+
+        console.warn(
+          "[VisualReview TILE PERF]",
+          failure
+        );
+      }
+
+      if (window.__histoEvalVisualReviewActive) {
+        const now = Date.now();
+        const recent = (
+          Array.isArray(window.__histoEvalVisualTileFailureTimes)
+            ? window.__histoEvalVisualTileFailureTimes
+            : []
+        ).filter(
+          (timestamp) => now - Number(timestamp) <= 6000
+        );
+        recent.push(now);
+        window.__histoEvalVisualTileFailureTimes = recent;
+
+        // A single timeout may recover. Keep it in diagnostics and only
+        // interrupt review when failures repeat.
+        if (recent.length >= 3) {
+          setStatus(
+            `Repeated tile error: ${String(message).slice(0, 82)}`,
+            "error"
+          );
+        }
+      } else {
+        setStatus(`Tile error: ${String(message).slice(0, 90)}`, "error");
+      }
+
       updateDiagnostics();
     });
 
@@ -13187,12 +13258,348 @@ if (!geometry) {
     ctx.setLineDash([]);
   }
 
+  // ======================================================================
+  // Phase F2.6.4 - Adaptive visual LOD for large annotation sets
+  //
+  // DISPLAY ONLY:
+  // - stored GeoJSON / level-0 coordinates are never replaced or simplified;
+  // - selection/editing always uses original geometry;
+  // - Visual Review has its own renderer and is not modified here.
+  // ======================================================================
+
+  const PHASE_F264_LOD_MIN_FEATURES = 1000;
+  const PHASE_F264_LOD_MIN_IMAGE_TOLERANCE_PX = 2;
+  const PHASE_F264_LOD_MAX_IMAGE_TOLERANCE_PX = 256;
+
+  let phaseF264RingCache = new WeakMap();
+  let phaseF264FrameContext = null;
+  let phaseF264FrameStats = null;
+
+  function phaseF264ResetCache() {
+    phaseF264RingCache = new WeakMap();
+  }
+
+  function phaseF264FeatureCount() {
+    const features = featureCollection?.features;
+    return Array.isArray(features) ? features.length : 0;
+  }
+
+  function phaseF264QuantizedTolerance(rawTolerance) {
+    if (
+      !Number.isFinite(rawTolerance)
+      || rawTolerance < PHASE_F264_LOD_MIN_IMAGE_TOLERANCE_PX
+    ) {
+      return 0;
+    }
+
+    const exponent = Math.floor(Math.log2(rawTolerance));
+
+    return Math.max(
+      PHASE_F264_LOD_MIN_IMAGE_TOLERANCE_PX,
+      Math.min(
+        PHASE_F264_LOD_MAX_IMAGE_TOLERANCE_PX,
+        2 ** exponent
+      )
+    );
+  }
+
+  function phaseF264ComputeFrameLodContext() {
+    const featureCount = phaseF264FeatureCount();
+
+    if (mode !== "navigate") {
+      return {
+        enabled: false,
+        reason: "editing-mode",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    if (featureCount < PHASE_F264_LOD_MIN_FEATURES) {
+      return {
+        enabled: false,
+        reason: "small-file",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    const p0 = screenPointFromImage([0, 0]);
+    const p1 = screenPointFromImage([1, 0]);
+
+    if (!p0 || !p1) {
+      return {
+        enabled: false,
+        reason: "viewer-transform-unavailable",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    const screenPixelsPerImagePixel = Math.hypot(
+      p1.x - p0.x,
+      p1.y - p0.y
+    );
+
+    if (
+      !Number.isFinite(screenPixelsPerImagePixel)
+      || screenPixelsPerImagePixel <= 0
+    ) {
+      return {
+        enabled: false,
+        reason: "viewer-transform-invalid",
+        featureCount,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    const imagePixelsPerScreenPixel =
+      1 / screenPixelsPerImagePixel;
+
+    const toleranceImagePx =
+      phaseF264QuantizedTolerance(
+        imagePixelsPerScreenPixel * 0.8
+      );
+
+    if (toleranceImagePx <= 0) {
+      return {
+        enabled: false,
+        reason: "close-zoom-full-detail",
+        featureCount,
+        imagePixelsPerScreenPixel,
+        toleranceImagePx: 0,
+        lodKey: "full",
+      };
+    }
+
+    return {
+      enabled: true,
+      reason: "adaptive-lod",
+      featureCount,
+      imagePixelsPerScreenPixel,
+      toleranceImagePx,
+      lodKey: `tol:${toleranceImagePx}`,
+    };
+  }
+
+  function phaseF264BeginRenderFrame() {
+    phaseF264FrameContext =
+      phaseF264ComputeFrameLodContext();
+
+    phaseF264FrameStats = {
+      enabled: Boolean(phaseF264FrameContext.enabled),
+      reason: phaseF264FrameContext.reason,
+      featureCount: phaseF264FrameContext.featureCount,
+      imagePixelsPerScreenPixel:
+        Number.isFinite(
+          phaseF264FrameContext.imagePixelsPerScreenPixel
+        )
+          ? Number(
+              phaseF264FrameContext
+                .imagePixelsPerScreenPixel
+                .toFixed(3)
+            )
+          : null,
+      toleranceImagePx:
+        phaseF264FrameContext.toleranceImagePx || 0,
+      lodKey: phaseF264FrameContext.lodKey,
+      ringsVisited: 0,
+      ringsSimplified: 0,
+      inputVertices: 0,
+      outputVertices: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      reductionPct: 0,
+    };
+
+    window.__histoannotatorF264LodStats =
+      phaseF264FrameStats;
+  }
+
+  function phaseF264UpdateReductionStats() {
+    if (!phaseF264FrameStats) return;
+
+    const input =
+      Number(phaseF264FrameStats.inputVertices || 0);
+    const output =
+      Number(phaseF264FrameStats.outputVertices || 0);
+
+    phaseF264FrameStats.reductionPct =
+      input > 0
+        ? Number(
+            (100 * (1 - output / input)).toFixed(1)
+          )
+        : 0;
+  }
+
+  function phaseF264DecimateClosedRing(
+    ring,
+    toleranceImagePx
+  ) {
+    if (
+      !Array.isArray(ring)
+      || ring.length < 6
+      || toleranceImagePx <= 0
+    ) {
+      return ring;
+    }
+
+    const first = ring[0];
+
+    if (
+      !Array.isArray(first)
+      || first.length < 2
+    ) {
+      return ring;
+    }
+
+    const tolerance2 =
+      toleranceImagePx * toleranceImagePx;
+
+    const lastIndex = ring.length - 1;
+    const last = ring[lastIndex];
+
+    const explicitlyClosed =
+      Array.isArray(last)
+      && Number(last[0]) === Number(first[0])
+      && Number(last[1]) === Number(first[1]);
+
+    const limit =
+      explicitlyClosed ? lastIndex : ring.length;
+
+    const output = [first];
+    let previous = first;
+
+    for (
+      let index = 1;
+      index < limit;
+      index += 1
+    ) {
+      const point = ring[index];
+
+      if (
+        !Array.isArray(point)
+        || point.length < 2
+      ) {
+        continue;
+      }
+
+      const dx =
+        Number(point[0]) - Number(previous[0]);
+      const dy =
+        Number(point[1]) - Number(previous[1]);
+
+      if (
+        !Number.isFinite(dx)
+        || !Number.isFinite(dy)
+      ) {
+        continue;
+      }
+
+      if ((dx * dx + dy * dy) >= tolerance2) {
+        output.push(point);
+        previous = point;
+      }
+    }
+
+    if (output.length < 3) return ring;
+
+    const tail = output[output.length - 1];
+
+    if (
+      Number(tail[0]) !== Number(first[0])
+      || Number(tail[1]) !== Number(first[1])
+    ) {
+      output.push(first);
+    }
+
+    return output.length >= 4 ? output : ring;
+  }
+
+  function phaseF264DisplayRing(
+    ring,
+    selected = false
+  ) {
+    if (!Array.isArray(ring)) return ring;
+
+    if (
+      !phaseF264FrameContext
+      || !phaseF264FrameStats
+    ) {
+      phaseF264BeginRenderFrame();
+    }
+
+    phaseF264FrameStats.ringsVisited += 1;
+    phaseF264FrameStats.inputVertices +=
+      ring.length;
+
+    if (
+      selected
+      || !phaseF264FrameContext.enabled
+    ) {
+      phaseF264FrameStats.outputVertices +=
+        ring.length;
+      phaseF264UpdateReductionStats();
+      return ring;
+    }
+
+    let cache = phaseF264RingCache.get(ring);
+
+    if (!cache) {
+      cache = new Map();
+      phaseF264RingCache.set(ring, cache);
+    }
+
+    const key =
+      phaseF264FrameContext.lodKey;
+
+    if (cache.has(key)) {
+      const cached = cache.get(key);
+
+      phaseF264FrameStats.cacheHits += 1;
+      phaseF264FrameStats.outputVertices +=
+        cached.length;
+
+      if (cached !== ring) {
+        phaseF264FrameStats.ringsSimplified += 1;
+      }
+
+      phaseF264UpdateReductionStats();
+      return cached;
+    }
+
+    phaseF264FrameStats.cacheMisses += 1;
+
+    const displayRing =
+      phaseF264DecimateClosedRing(
+        ring,
+        phaseF264FrameContext.toleranceImagePx
+      );
+
+    cache.set(key, displayRing);
+
+    phaseF264FrameStats.outputVertices +=
+      displayRing.length;
+
+    if (displayRing !== ring) {
+      phaseF264FrameStats.ringsSimplified += 1;
+    }
+
+    phaseF264UpdateReductionStats();
+    return displayRing;
+  }
+
   function drawPolygonRings(rings, color, selected = false) {
     if (!Array.isArray(rings) || !rings.length) return;
     ctx.beginPath();
     let hasPath = false;
     for (const ring of rings) {
-      const points = (ring || []).map(screenPointFromImage).filter(Boolean);
+      const displayRing = phaseF264DisplayRing(ring, selected);
+      const points = (displayRing || []).map(screenPointFromImage).filter(Boolean);
       if (points.length < 2) continue;
       hasPath = true;
       ctx.moveTo(points[0].x, points[0].y);
@@ -13279,6 +13686,20 @@ if (!geometry) {
   const PHASE_F26_MIN_SCREEN_COMPONENT_PX =
     0.6;
 
+  // Phase F2.6.3 - viewport-scale annotation rendering.
+  // Display-only: stored GeoJSON and scientific calculations remain level-0.
+  const PHASE_F26_FEATURE_CULL_MIN_FEATURES =
+    400;
+
+  const PHASE_F26_NAVIGATION_DEFER_MIN_FEATURES =
+    800;
+
+  let phaseF26NavigationDeferred =
+    false;
+
+  let phaseF26NavigationOverlayHidden =
+    false;
+
   let phaseF26PolygonBoundsCache =
     new WeakMap();
 
@@ -13292,6 +13713,7 @@ if (!geometry) {
     [];
 
   function phaseF26InvalidateGeometryCaches() {
+    phaseF264ResetCache();
     phaseF26PolygonBoundsCache =
       new WeakMap();
 
@@ -13300,6 +13722,7 @@ if (!geometry) {
   }
 
   function phaseF26BeginRenderFrame() {
+    phaseF264BeginRenderFrame();
     phaseF26RenderStats =
       [];
 
@@ -13816,6 +14239,304 @@ if (!geometry) {
     }
   }
 
+  function phaseF26UseFeatureViewportCulling(
+    features
+  ) {
+    return Boolean(
+      Array.isArray(features)
+      && features.length
+        >= PHASE_F26_FEATURE_CULL_MIN_FEATURES
+      && !reviewState.active
+    );
+  }
+
+  function phaseF26FeatureVisible(
+    feature,
+    context
+  ) {
+    if (!context) {
+      return true;
+    }
+
+    const geometry =
+      feature?.geometry;
+
+    if (
+      !geometry
+      || (
+        geometry.type !== "Polygon"
+        && geometry.type !== "MultiPolygon"
+      )
+    ) {
+      return true;
+    }
+
+    const bounds =
+      phaseF26GeometryBounds(
+        geometry
+      );
+
+    return (
+      !bounds
+      || phaseF26BoundsIntersect(
+        bounds,
+        context.viewport
+      )
+    );
+  }
+
+  function phaseF26HeavyNavigationEligible() {
+    const features =
+      featureCollection?.features;
+
+    return Boolean(
+      mode === "navigate"
+      && annotationsVisible
+      && Array.isArray(features)
+      && features.length
+        >= PHASE_F26_NAVIGATION_DEFER_MIN_FEATURES
+      && !phaseF261InteractiveDraftActive()
+      && !reviewState.active
+    );
+  }
+
+  function phaseF26SetAnnotationOverlayNavigationHidden(
+    hidden
+  ) {
+    const canvas =
+      ctx?.canvas;
+
+    if (!canvas) {
+      return;
+    }
+
+    const shouldHide =
+      Boolean(hidden);
+
+    if (
+      phaseF26NavigationOverlayHidden
+        === shouldHide
+    ) {
+      return;
+    }
+
+    phaseF26NavigationOverlayHidden =
+      shouldHide;
+
+    canvas.style.visibility =
+      shouldHide
+        ? "hidden"
+        : "";
+  }
+
+  // ======================================================================
+  // Phase F2.6.5 - Throttled annotation redraw during pan / zoom
+  //
+  // Navigation remains responsive by limiting overlay redraws to ~10 FPS.
+  // Each redraw still uses the existing viewport culling + adaptive visual LOD.
+  // Stored geometry, level-0 coordinates, editing, save/export, and evaluation
+  // are not modified by this display-only scheduling policy.
+  // ======================================================================
+
+  // Android WebView gets a slightly more conservative cadence because
+  // long annotation frames can otherwise keep the UI thread continuously busy.
+  // Desktop keeps the validated ~10 FPS navigation overlay cadence.
+  const PHASE_F26_ANDROID_NAVIGATION =
+    typeof navigator !== "undefined"
+    && /Android/i.test(
+      String(navigator.userAgent || "")
+    );
+
+  const PHASE_F26_NAVIGATION_THROTTLE_MS =
+    PHASE_F26_ANDROID_NAVIGATION
+      ? 150
+      : 100;
+
+  let phaseF26NavigationThrottleTimer =
+    null;
+
+  let phaseF26NavigationLastDrawAt =
+    0;
+
+  let phaseF26NavigationThrottleStats = {
+    throttleMs: PHASE_F26_NAVIGATION_THROTTLE_MS,
+    requests: 0,
+    throttledDraws: 0,
+    finalDraws: 0,
+    pending: false,
+    lastEventName: null,
+  };
+
+  function phaseF26NavigationClockMs() {
+    if (
+      typeof performance !== "undefined"
+      && typeof performance.now === "function"
+    ) {
+      return performance.now();
+    }
+
+    return Date.now();
+  }
+
+  function phaseF26PublishNavigationThrottleStats() {
+    phaseF26NavigationThrottleStats.pending =
+      Boolean(phaseF26NavigationThrottleTimer);
+
+    window.__histoannotatorF26NavigationThrottleStats = {
+      ...phaseF26NavigationThrottleStats,
+    };
+  }
+
+  function phaseF26CancelNavigationThrottleTimer() {
+    if (phaseF26NavigationThrottleTimer) {
+      clearTimeout(
+        phaseF26NavigationThrottleTimer
+      );
+
+      phaseF26NavigationThrottleTimer =
+        null;
+    }
+
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26RunNavigationThrottleDraw() {
+    phaseF26NavigationThrottleTimer =
+      null;
+
+    if (
+      !phaseF26NavigationDeferred
+      || !phaseF26HeavyNavigationEligible()
+    ) {
+      phaseF26PublishNavigationThrottleStats();
+      return;
+    }
+
+    phaseF26NavigationLastDrawAt =
+      phaseF26NavigationClockMs();
+
+    phaseF26NavigationThrottleStats
+      .throttledDraws += 1;
+
+    phaseF26SetAnnotationOverlayNavigationHidden(
+      false
+    );
+
+    phaseF26ScheduleDraw();
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26ScheduleNavigationThrottleDraw() {
+    phaseF26NavigationThrottleStats.requests += 1;
+
+    if (phaseF26NavigationThrottleTimer) {
+      phaseF26PublishNavigationThrottleStats();
+      return;
+    }
+
+    const now =
+      phaseF26NavigationClockMs();
+
+    const elapsed =
+      Math.max(
+        0,
+        now - phaseF26NavigationLastDrawAt
+      );
+
+    if (
+      !phaseF26NavigationLastDrawAt
+      || elapsed >= PHASE_F26_NAVIGATION_THROTTLE_MS
+    ) {
+      phaseF26RunNavigationThrottleDraw();
+      return;
+    }
+
+    const waitMs =
+      Math.max(
+        0,
+        PHASE_F26_NAVIGATION_THROTTLE_MS
+          - elapsed
+      );
+
+    phaseF26NavigationThrottleTimer =
+      setTimeout(
+        phaseF26RunNavigationThrottleDraw,
+        waitMs
+      );
+
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26HandleViewportDrawEvent(
+    eventName
+  ) {
+    phaseF26NavigationThrottleStats.lastEventName =
+      eventName;
+
+    if (
+      (
+        eventName === "animation"
+        || eventName === "update-viewport"
+      )
+      && phaseF26HeavyNavigationEligible()
+    ) {
+      phaseF26NavigationDeferred =
+        true;
+
+      phaseF26SetAnnotationOverlayNavigationHidden(
+        false
+      );
+
+      phaseF26ScheduleNavigationThrottleDraw();
+      return;
+    }
+
+    phaseF26CancelNavigationThrottleTimer();
+
+    phaseF26NavigationDeferred =
+      false;
+
+    phaseF26SetAnnotationOverlayNavigationHidden(
+      false
+    );
+
+    phaseF26NavigationLastDrawAt =
+      phaseF26NavigationClockMs();
+
+    phaseF26ScheduleDraw();
+    phaseF26PublishNavigationThrottleStats();
+  }
+
+  function phaseF26FinishNavigationDraw() {
+    const hadNavigationWork =
+      Boolean(
+        phaseF26NavigationDeferred
+        || phaseF26NavigationOverlayHidden
+        || phaseF26NavigationThrottleTimer
+      );
+
+    if (!hadNavigationWork) {
+      return;
+    }
+
+    phaseF26CancelNavigationThrottleTimer();
+
+    phaseF26NavigationDeferred =
+      false;
+
+    phaseF26SetAnnotationOverlayNavigationHidden(
+      false
+    );
+
+    phaseF26NavigationLastDrawAt =
+      phaseF26NavigationClockMs();
+
+    phaseF26NavigationThrottleStats.finalDraws += 1;
+
+    phaseF26ScheduleDraw();
+    phaseF26PublishNavigationThrottleStats();
+  }
+
   function phaseF26PolygonVisible(
     polygon,
     context
@@ -14081,9 +14802,45 @@ if (!geometry) {
     phaseF26BeginRenderFrame();
 
     if (annotationsVisible) {
-      const drawableFeatures = reviewState.active
+      const drawableSourceFeatures = reviewState.active
         ? (reviewState.currentId ? [findFeature(reviewState.currentId)].filter(Boolean) : [])
         : featureCollection.features;
+
+      const featureCullContext =
+        phaseF26UseFeatureViewportCulling(
+          drawableSourceFeatures
+        )
+          ? phaseF26CurrentRenderContext()
+          : null;
+
+      let featureCullCount =
+        0;
+
+      const drawableFeatures =
+        featureCullContext
+          ? drawableSourceFeatures.filter(
+              (feature) => {
+                const visible =
+                  phaseF26FeatureVisible(
+                    feature,
+                    featureCullContext
+                  );
+
+                if (!visible) {
+                  featureCullCount += 1;
+                }
+
+                return visible;
+              }
+            )
+          : drawableSourceFeatures;
+
+      window.__histoannotatorF26FeatureCullStats = {
+        enabled: Boolean(featureCullContext),
+        totalFeatures: drawableSourceFeatures.length,
+        drawnFeatures: drawableFeatures.length,
+        culledFeatures: featureCullCount,
+      };
 
       drawableFeatures.forEach((feature) => {
         if (!phaseDIsTissueRoi(feature)) {
@@ -16013,14 +16770,504 @@ function phaseReviewTileRectBounds(
 }
 
 
+// ------------------------------------------------------------------------
+// Cellular Tile Review ownership v1
+//
+// Tissue ROI defines the review grid but is never itself a review target.
+// In Cellular Annotation, a biological cell belongs to exactly one tile,
+// using the nucleus centroid when available and otherwise the cellular
+// geometry centroid. Persistent coordinates remain untouched.
+// ------------------------------------------------------------------------
+
+let phaseReviewTileCellOwnerPointMap =
+  null;
+
+
+function phaseReviewTileCellularActive() {
+  return Boolean(
+    typeof phaseCellDocumentIsCellular
+      === "function"
+    && phaseCellDocumentIsCellular()
+  );
+}
+
+
+function phaseReviewTileCellId(
+  feature
+) {
+  const histo =
+    feature?.properties
+      ?.histoannotator
+    || {};
+
+  const cell =
+    histo.cell
+    || {};
+
+  return String(
+    cell.cellId
+    ?? histo.cellId
+    ?? feature?.properties?.cellId
+    ?? feature?.cellId
+    ?? ""
+  );
+}
+
+
+function phaseReviewTileEmbeddedNucleusGeometry(
+  feature
+) {
+  return (
+    feature?.nucleusGeometry
+    || feature?.properties
+      ?.nucleusGeometry
+    || feature?.properties
+      ?.histoannotator
+      ?.cell
+      ?.nucleusGeometry
+    || null
+  );
+}
+
+
+function phaseReviewTileGeometryCentroid(
+  geometry
+) {
+  if (
+    !geometry
+    || typeof geometry !== "object"
+  ) {
+    return null;
+  }
+
+  const polygons =
+    geometry.type === "Polygon"
+      ? [geometry.coordinates]
+      : (
+          geometry.type === "MultiPolygon"
+            ? geometry.coordinates
+            : []
+        );
+
+  let best =
+    null;
+
+  let bestArea =
+    -1;
+
+  for (
+    const polygon
+    of polygons
+  ) {
+    const ring =
+      Array.isArray(polygon)
+        ? polygon[0]
+        : null;
+
+    if (
+      !Array.isArray(ring)
+      || ring.length < 3
+    ) {
+      continue;
+    }
+
+    let twiceArea =
+      0;
+
+    let weightedX =
+      0;
+
+    let weightedY =
+      0;
+
+    let fallbackX =
+      0;
+
+    let fallbackY =
+      0;
+
+    let fallbackCount =
+      0;
+
+    for (
+      let index = 0;
+      index < ring.length;
+      index += 1
+    ) {
+      const current =
+        ring[index];
+
+      const next =
+        ring[
+          (index + 1)
+          % ring.length
+        ];
+
+      if (
+        !Array.isArray(current)
+        || current.length < 2
+      ) {
+        continue;
+      }
+
+      const x =
+        Number(current[0]);
+
+      const y =
+        Number(current[1]);
+
+      if (
+        Number.isFinite(x)
+        && Number.isFinite(y)
+      ) {
+        fallbackX += x;
+        fallbackY += y;
+        fallbackCount += 1;
+      }
+
+      if (
+        !Array.isArray(next)
+        || next.length < 2
+      ) {
+        continue;
+      }
+
+      const nx =
+        Number(next[0]);
+
+      const ny =
+        Number(next[1]);
+
+      if (
+        !Number.isFinite(x)
+        || !Number.isFinite(y)
+        || !Number.isFinite(nx)
+        || !Number.isFinite(ny)
+      ) {
+        continue;
+      }
+
+      const cross =
+        x * ny
+        - nx * y;
+
+      twiceArea += cross;
+
+      weightedX +=
+        (x + nx)
+        * cross;
+
+      weightedY +=
+        (y + ny)
+        * cross;
+    }
+
+    const absoluteArea =
+      Math.abs(
+        twiceArea
+      );
+
+    let point =
+      null;
+
+    if (
+      absoluteArea > 1e-9
+    ) {
+      point = {
+        x:
+          weightedX
+          / (3 * twiceArea),
+
+        y:
+          weightedY
+          / (3 * twiceArea),
+      };
+
+    } else if (
+      fallbackCount
+    ) {
+      point = {
+        x:
+          fallbackX
+          / fallbackCount,
+
+        y:
+          fallbackY
+          / fallbackCount,
+      };
+    }
+
+    if (
+      point
+      && Number.isFinite(point.x)
+      && Number.isFinite(point.y)
+      && absoluteArea > bestArea
+    ) {
+      best =
+        point;
+
+      bestArea =
+        absoluteArea;
+    }
+  }
+
+  return best;
+}
+
+
+function phaseReviewTileCellRepresentativeScore(
+  feature
+) {
+  if (
+    phaseReviewTileEmbeddedNucleusGeometry(
+      feature
+    )
+  ) {
+    return 4;
+  }
+
+  const cell =
+    feature?.properties
+      ?.histoannotator
+      ?.cell
+    || {};
+
+  const descriptor =
+    [
+      cell.geometryRole,
+      cell.role,
+      cell.part,
+      cell.objectType,
+      feature?.properties
+        ?.objectType,
+      feature?.properties
+        ?.name,
+      featureId(
+        feature
+      ),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+  if (
+    descriptor.includes(
+      "nucleus"
+    )
+    || descriptor.includes(
+      "nuclei"
+    )
+  ) {
+    return 3;
+  }
+
+  if (
+    descriptor.includes(
+      "body"
+    )
+  ) {
+    return 1;
+  }
+
+  return 2;
+}
+
+
+function phaseReviewTileBuildCellOwnerPointMap() {
+  const chosen =
+    new Map();
+
+  for (
+    const feature
+    of (
+      featureCollection.features
+      || []
+    )
+  ) {
+    if (
+      !phaseCellIsCellularFeature(
+        feature
+      )
+    ) {
+      continue;
+    }
+
+    const cellId =
+      phaseReviewTileCellId(
+        feature
+      );
+
+    const key =
+      cellId
+        ? `cell:${cellId}`
+        : `feature:${String(
+            featureId(
+              feature
+            )
+            || ""
+          )}`;
+
+    const nucleusGeometry =
+      phaseReviewTileEmbeddedNucleusGeometry(
+        feature
+      );
+
+    const geometry =
+      nucleusGeometry
+      || feature.geometry;
+
+    const point =
+      phaseReviewTileGeometryCentroid(
+        geometry
+      );
+
+    if (!point) {
+      continue;
+    }
+
+    const score =
+      phaseReviewTileCellRepresentativeScore(
+        feature
+      );
+
+    const previous =
+      chosen.get(
+        key
+      );
+
+    if (
+      !previous
+      || score > previous.score
+    ) {
+      chosen.set(
+        key,
+        {
+          point,
+          score,
+        }
+      );
+    }
+  }
+
+  const result =
+    new Map();
+
+  for (
+    const [key, value]
+    of chosen.entries()
+  ) {
+    result.set(
+      key,
+      value.point
+    );
+  }
+
+  return result;
+}
+
+
+function phaseReviewTileCellOwnerPoint(
+  feature
+) {
+  const cellId =
+    phaseReviewTileCellId(
+      feature
+    );
+
+  const key =
+    cellId
+      ? `cell:${cellId}`
+      : `feature:${String(
+          featureId(
+            feature
+          )
+          || ""
+        )}`;
+
+  const cached =
+    phaseReviewTileCellOwnerPointMap
+      ?.get(
+        key
+      );
+
+  if (cached) {
+    return cached;
+  }
+
+  const geometry =
+    phaseReviewTileEmbeddedNucleusGeometry(
+      feature
+    )
+    || feature.geometry;
+
+  return phaseReviewTileGeometryCentroid(
+    geometry
+  );
+}
+
+
+function phaseReviewTilePointInTile(
+  point,
+  tile
+) {
+  if (
+    !point
+    || !tile
+  ) {
+    return false;
+  }
+
+  const bounds =
+    phaseReviewTileRectBounds(
+      tile
+    );
+
+  if (!bounds) {
+    return false;
+  }
+
+  return (
+    Number.isFinite(point.x)
+    && Number.isFinite(point.y)
+    && point.x >= bounds.minX
+    && point.x < bounds.maxX
+    && point.y >= bounds.minY
+    && point.y < bounds.maxY
+  );
+}
+
+
+
 function phaseReviewTileFeatureInTile(
   feature,
   tile =
     phaseReviewTileCurrent()
 ) {
+  if (!tile) {
+    return false;
+  }
+
   if (
-    !tile
-    || !phaseDIsAnnotationFeature(
+    phaseReviewTileCellularActive()
+  ) {
+    if (
+      !phaseCellIsCellularFeature(
+        feature
+      )
+    ) {
+      return false;
+    }
+
+    return phaseReviewTilePointInTile(
+      phaseReviewTileCellOwnerPoint(
+        feature
+      ),
+      tile
+    );
+  }
+
+  if (
+    !phaseDIsAnnotationFeature(
       feature
     )
   ) {
@@ -16071,16 +17318,33 @@ function phaseReviewTileFeatures(
     return [];
   }
 
-  return (
-    featureCollection.features
-    || []
-  ).filter(
-    (feature) =>
-      phaseReviewTileFeatureInTile(
-        feature,
-        tile
-      )
-  );
+  const cellular =
+    phaseReviewTileCellularActive();
+
+  const previousOwnerPointMap =
+    phaseReviewTileCellOwnerPointMap;
+
+  if (cellular) {
+    phaseReviewTileCellOwnerPointMap =
+      phaseReviewTileBuildCellOwnerPointMap();
+  }
+
+  try {
+    return (
+      featureCollection.features
+      || []
+    ).filter(
+      (feature) =>
+        phaseReviewTileFeatureInTile(
+          feature,
+          tile
+        )
+    );
+
+  } finally {
+    phaseReviewTileCellOwnerPointMap =
+      previousOwnerPointMap;
+  }
 }
 
 
@@ -16787,7 +18051,7 @@ function phaseReviewEnsureTilePanel() {
     </div>
 
     <div class="phase-review-tile-selection-head">
-      <strong>Annotations in this tile</strong>
+      <strong>Tile objects</strong>
 
       <div>
         <button id="phaseReviewSelectPending"
@@ -16820,7 +18084,7 @@ function phaseReviewEnsureTilePanel() {
 
     <p class="review-help">
       Select mode: tap an annotation to toggle it.
-      Colors remain visible for all annotations in the current tile.
+      
     </p>
   `;
 
@@ -18674,6 +19938,688 @@ els.reviewScopeSelect
     "change",
     phaseReviewTileSetupVisible
   );
+
+// ========================================================================
+// Tile Review session persistence v1
+//
+// Local/browser-only workflow state. This does not alter annotation geometry,
+// scientific metrics, ROI geometry, or level-0 coordinates.
+//
+// Stored per image/document + tile size + effective ROI signature:
+//   - current tile
+//   - reviewed tile ids
+//
+// On re-entering "By tiles..." the user can resume the previous location or
+// start from Tile 1. Starting from Tile 1 intentionally keeps annotation
+// reviewStatus values already saved in the document.
+// ========================================================================
+
+const PHASE_REVIEW_TILE_SESSION_STORAGE_VERSION =
+  1;
+
+const PHASE_REVIEW_TILE_SESSION_STORAGE_PREFIX =
+  "histoannotator:tile-review-session:v1:";
+
+
+function phaseReviewTileSessionHash(
+  value
+) {
+  const text =
+    String(
+      value
+      || ""
+    );
+
+  let hash =
+    2166136261;
+
+  for (
+    let index = 0;
+    index < text.length;
+    index += 1
+  ) {
+    hash ^=
+      text.charCodeAt(
+        index
+      );
+
+    hash =
+      Math.imul(
+        hash,
+        16777619
+      );
+  }
+
+  return (
+    hash >>> 0
+  ).toString(16);
+}
+
+
+function phaseReviewTileSessionImageIdentity() {
+  const image =
+    currentImage
+    || {};
+
+  const info =
+    currentInfo
+    || {};
+
+  const primary =
+    image.id
+    ?? image.imageId
+    ?? image.path
+    ?? image.url
+    ?? image.src
+    ?? image.name
+    ?? image.filename
+    ?? info.id
+    ?? info.imageId
+    ?? info.path
+    ?? info.name
+    ?? "";
+
+  const parts = [
+    String(primary || ""),
+    String(
+      info.width
+      ?? ""
+    ),
+    String(
+      info.height
+      ?? ""
+    ),
+    String(
+      image.localNative
+        ? "local"
+        : "remote"
+    ),
+  ];
+
+  return parts.join("|");
+}
+
+
+function phaseReviewTileSessionEffectiveRoiSignature() {
+  const roiPayload =
+    (
+      featureCollection.features
+      || []
+    )
+      .filter(
+        (feature) =>
+          typeof phaseDIsTissueRoi
+            === "function"
+          && phaseDIsTissueRoi(
+            feature
+          )
+      )
+      .map(
+        (roi) => {
+          const effective =
+            typeof phaseDEffectivePreviewForRoi
+              === "function"
+              ? phaseDEffectivePreviewForRoi(
+                  roi
+                )
+              : null;
+
+          return {
+            id:
+              String(
+                featureId(
+                  roi
+                )
+                || ""
+              ),
+
+            geometry:
+              effective?.geometry
+              || roi.geometry
+              || null,
+          };
+        }
+      );
+
+  return phaseReviewTileSessionHash(
+    JSON.stringify(
+      roiPayload
+    )
+  );
+}
+
+
+function phaseReviewTileSessionStorageKey() {
+  const identity =
+    phaseReviewTileSessionImageIdentity();
+
+  if (!identity) {
+    return null;
+  }
+
+  return (
+    PHASE_REVIEW_TILE_SESSION_STORAGE_PREFIX
+    + phaseReviewTileSessionHash(
+        identity
+      )
+  );
+}
+
+
+function phaseReviewTileSessionRead() {
+  const key =
+    phaseReviewTileSessionStorageKey();
+
+  if (!key) {
+    return null;
+  }
+
+  try {
+    const payload =
+      JSON.parse(
+        localStorage.getItem(
+          key
+        )
+        || "null"
+      );
+
+    if (
+      !payload
+      || Number(
+        payload.version
+      )
+        !== PHASE_REVIEW_TILE_SESSION_STORAGE_VERSION
+    ) {
+      return null;
+    }
+
+    return payload;
+
+  } catch (error) {
+    console.warn(
+      "Could not read Tile Review session",
+      error
+    );
+
+    return null;
+  }
+}
+
+
+function phaseReviewTileSessionClear() {
+  const key =
+    phaseReviewTileSessionStorageKey();
+
+  if (!key) {
+    return;
+  }
+
+  try {
+    localStorage.removeItem(
+      key
+    );
+  } catch (error) {
+    console.warn(
+      "Could not clear Tile Review session",
+      error
+    );
+  }
+}
+
+
+function phaseReviewTileSessionWrite() {
+  if (
+    !phaseReviewTileState.active
+    || !phaseReviewTileState
+      .tiles.length
+  ) {
+    return;
+  }
+
+  const key =
+    phaseReviewTileSessionStorageKey();
+
+  if (!key) {
+    return;
+  }
+
+  const currentTile =
+    phaseReviewTileCurrent();
+
+  const payload = {
+    version:
+      PHASE_REVIEW_TILE_SESSION_STORAGE_VERSION,
+
+    savedAt:
+      Date.now(),
+
+    imageIdentity:
+      phaseReviewTileSessionImageIdentity(),
+
+    roiSignature:
+      phaseReviewTileSessionEffectiveRoiSignature(),
+
+    tileSizePx:
+      Number(
+        phaseReviewTileState
+          .tileSizePx
+        || 0
+      ),
+
+    tileLabel:
+      String(
+        phaseReviewTileState
+          .tileLabel
+        || ""
+      ),
+
+    tileCount:
+      phaseReviewTileState
+        .tiles.length,
+
+    currentIndex:
+      Number(
+        phaseReviewTileState
+          .currentIndex
+        || 0
+      ),
+
+    currentTileId:
+      String(
+        currentTile?.id
+        || ""
+      ),
+
+    reviewedTileIds: [
+      ...phaseReviewTileState
+        .reviewedTileIds
+    ].map(String),
+  };
+
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify(
+        payload
+      )
+    );
+
+  } catch (error) {
+    console.warn(
+      "Could not persist Tile Review session",
+      error
+    );
+  }
+}
+
+
+function phaseReviewTileSessionMatchesCurrentGrid(
+  saved
+) {
+  if (
+    !saved
+    || !phaseReviewTileState
+      .tiles.length
+  ) {
+    return false;
+  }
+
+  const currentTileSize =
+    Number(
+      phaseReviewTileState
+        .tileSizePx
+      || 0
+    );
+
+  const savedTileSize =
+    Number(
+      saved.tileSizePx
+      || 0
+    );
+
+  const sizeTolerance =
+    Math.max(
+      0.01,
+      Math.abs(
+        currentTileSize
+      )
+      * 1e-6
+    );
+
+  return (
+    String(
+      saved.imageIdentity
+      || ""
+    )
+      === phaseReviewTileSessionImageIdentity()
+    && String(
+      saved.roiSignature
+      || ""
+    )
+      === phaseReviewTileSessionEffectiveRoiSignature()
+    && Number(
+      saved.tileCount
+    )
+      === phaseReviewTileState
+        .tiles.length
+    && Math.abs(
+      savedTileSize
+      - currentTileSize
+    )
+      <= sizeTolerance
+  );
+}
+
+
+function phaseReviewTileSessionRestore(
+  saved
+) {
+  if (
+    !phaseReviewTileSessionMatchesCurrentGrid(
+      saved
+    )
+  ) {
+    return false;
+  }
+
+  const savedTileId =
+    String(
+      saved.currentTileId
+      || ""
+    );
+
+  let index =
+    -1;
+
+  if (savedTileId) {
+    index =
+      phaseReviewTileState
+        .tiles
+        .findIndex(
+          (tile) =>
+            String(
+              tile?.id
+              || ""
+            )
+              === savedTileId
+        );
+  }
+
+  if (index < 0) {
+    index =
+      Math.max(
+        0,
+        Math.min(
+          phaseReviewTileState
+            .tiles.length
+            - 1,
+          Number(
+            saved.currentIndex
+          )
+          || 0
+        )
+      );
+  }
+
+  phaseReviewTileState.currentIndex =
+    index;
+
+  phaseReviewTileState.reviewedTileIds =
+    new Set(
+      (
+        saved.reviewedTileIds
+        || []
+      ).map(String)
+    );
+
+  clearSelectedFeatures(
+    false
+  );
+
+  phaseReviewRenderTilePanel();
+  phaseReviewZoomToCurrentTile();
+
+  return true;
+}
+
+
+function phaseReviewTileSessionOfferResume() {
+  const saved =
+    phaseReviewTileSessionRead();
+
+  if (
+    !phaseReviewTileSessionMatchesCurrentGrid(
+      saved
+    )
+  ) {
+    if (saved) {
+      phaseReviewTileSessionClear();
+    }
+
+    phaseReviewTileSessionWrite();
+    return;
+  }
+
+  const savedIndex =
+    Math.max(
+      0,
+      Math.min(
+        phaseReviewTileState
+          .tiles.length
+          - 1,
+        Number(
+          saved.currentIndex
+        )
+        || 0
+      )
+    );
+
+  const reviewedCount =
+    Array.isArray(
+      saved.reviewedTileIds
+    )
+      ? saved.reviewedTileIds.length
+      : 0;
+
+  const hasProgress =
+    savedIndex > 0
+    || reviewedCount > 0;
+
+  if (!hasProgress) {
+    phaseReviewTileSessionWrite();
+    return;
+  }
+
+  const resume =
+    window.confirm(
+      (
+        `Resume previous Tile Review at Tile ${
+          savedIndex + 1
+        } / ${
+          phaseReviewTileState.tiles.length
+        }?\n\n`
+        + `Reviewed tiles saved: ${reviewedCount}\n\n`
+        + "OK = Resume\n"
+        + "Cancel = Start from Tile 1 "
+        + "(keeps accepted annotation statuses)"
+      )
+    );
+
+  if (resume) {
+    const restored =
+      phaseReviewTileSessionRestore(
+        saved
+      );
+
+    if (restored) {
+      setStatus(
+        (
+          `Resumed Tile Review at Tile ${
+            phaseReviewTileState
+              .currentIndex + 1
+          }`
+        ),
+        "saved"
+      );
+    }
+
+    phaseReviewTileSessionWrite();
+    return;
+  }
+
+  phaseReviewTileState.currentIndex =
+    0;
+
+  phaseReviewTileState.reviewedTileIds =
+    new Set();
+
+  clearSelectedFeatures(
+    false
+  );
+
+  phaseReviewRenderTilePanel();
+  phaseReviewZoomToCurrentTile();
+  phaseReviewTileSessionWrite();
+
+  setStatus(
+    (
+      "Started Tile Review from Tile 1. "
+      + "Previously accepted annotation statuses were kept."
+    ),
+    "local"
+  );
+}
+
+
+const phaseReviewTileSessionBaseMoveTile =
+  phaseReviewMoveTile;
+
+phaseReviewMoveTile =
+  function phaseReviewTileSessionMoveTile(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseMoveTile(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseAcceptSelected =
+  phaseReviewAcceptSelectedTile;
+
+phaseReviewAcceptSelectedTile =
+  function phaseReviewTileSessionAcceptSelected(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseAcceptSelected(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseAcceptAll =
+  phaseReviewAcceptAllTile;
+
+phaseReviewAcceptAllTile =
+  function phaseReviewTileSessionAcceptAll(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseAcceptAll(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseUndoAction =
+  phaseReviewUndoAction;
+
+phaseReviewUndoAction =
+  function phaseReviewTileSessionUndoAction(
+    ...args
+  ) {
+    const result =
+      phaseReviewTileSessionBaseUndoAction(
+        ...args
+      );
+
+    phaseReviewTileSessionWrite();
+
+    return result;
+  };
+
+
+const phaseReviewTileSessionBaseStartTileMode =
+  phaseReviewStartTileMode;
+
+phaseReviewStartTileMode =
+  async function phaseReviewTileSessionStartTileMode(
+    ...args
+  ) {
+    const result =
+      await phaseReviewTileSessionBaseStartTileMode(
+        ...args
+      );
+
+    if (
+      phaseReviewTileState.active
+      && phaseReviewTileState
+        .tiles.length
+    ) {
+      phaseReviewTileSessionOfferResume();
+    }
+
+    return result;
+  };
+
+
+if (
+  typeof window
+  !== "undefined"
+) {
+  window.addEventListener(
+    "beforeunload",
+    phaseReviewTileSessionWrite
+  );
+
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (
+        document.visibilityState
+          === "hidden"
+      ) {
+        phaseReviewTileSessionWrite();
+      }
+    }
+  );
+
+  window.__histoannotatorTileReviewSession = {
+    read:
+      phaseReviewTileSessionRead,
+
+    save:
+      phaseReviewTileSessionWrite,
+
+    clear:
+      phaseReviewTileSessionClear,
+  };
+}
+
   // Reuses the proven F1/Anthracosis transient preview renderer.
   // =========================================================
 
@@ -30287,6 +32233,49 @@ let phaseEvalVisualRegionIndex = -1;
 let phaseEvalVisualViewerHandlersBound = false;
 let phaseEvalVisualPreviousAnnotationVisibility = "";
 let phaseEvalVisualLoadingSequence = 0;
+let phaseEvalVisualPreviousToolMode = null;
+let phaseEvalVisualPreviousImageTimeout = null;
+let phaseEvalVisualPerfDrawSample = null;
+let phaseEvalVisualNavigationOverlayHidden = false;
+
+function phaseEvalVisualPerfNow() {
+  return (
+    typeof performance !== "undefined"
+    && typeof performance.now === "function"
+  )
+    ? performance.now()
+    : Date.now();
+}
+
+function phaseEvalVisualPerfTileSnapshot() {
+  const session = window.__histoEvalVisualPerfSession;
+  if (!session || typeof session !== "object") {
+    return null;
+  }
+  return {
+    loaded: Number(session.tileLoaded || 0),
+    failed: Number(session.tileFailed || 0),
+    failures: Array.isArray(session.failures)
+      ? session.failures.slice(-8)
+      : [],
+  };
+}
+
+// Fast Visual Review scale v1
+//
+// Scientific Dice/IoU/etc. remain level-0. This controls only derived
+// Visual Review overlays and navigable mismatch geometries.
+const PHASE_EVAL_VISUAL_DEFAULT_REVIEW_SCALE =
+  0.0625;
+
+const PHASE_EVAL_VISUAL_ALLOWED_REVIEW_SCALES =
+  [
+    1,
+    0.5,
+    0.25,
+    0.125,
+    0.0625,
+  ];
 
 const PHASE_EVAL_VISUAL_DEFAULTS = {
   agreement: true,
@@ -30295,6 +32284,50 @@ const PHASE_EVAL_VISUAL_DEFAULTS = {
   wrong_class: true,
 };
 
+
+function phaseEvalVisualNormalizeReviewScale(
+  value
+) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0.0625;
+  for (const allowed of [1, 0.5, 0.25, 0.125, 0.0625]) {
+    if (Math.abs(allowed - numeric) < 1e-9) return allowed;
+  }
+  return 0.0625;
+}
+
+
+function phaseEvalVisualGetReviewScale() {
+  const select =
+    document.getElementById(
+      "phaseEvalVisualReviewScale"
+    );
+
+  return phaseEvalVisualNormalizeReviewScale(
+    select?.value
+    ?? PHASE_EVAL_VISUAL_DEFAULT_REVIEW_SCALE
+  );
+}
+
+
+function phaseEvalVisualCachedReviewScale(
+  visual
+) {
+  // Cached payloads created before this feature were full-resolution.
+  if (
+    !visual
+    || visual.reviewScale
+      === undefined
+    || visual.reviewScale
+      === null
+  ) {
+    return 1;
+  }
+
+  return phaseEvalVisualNormalizeReviewScale(
+    visual.reviewScale
+  );
+}
 
 function phaseEvalVisualEnsureUi() {
   const refs = phaseEvalRefs();
@@ -30410,6 +32443,30 @@ function phaseEvalVisualEnsureUi() {
         <select id="phaseEvalVisualClass"></select>
       </label>
 
+      <label class="phase-eval-visual-class-field">
+        <span>Review quality</span>
+        <select id="phaseEvalVisualReviewScale">
+          <option value="0.0625" selected>
+            Ultra fast — 1/16 resolution
+          </option>
+          <option value="0.125">
+            Fast — 1/8 resolution
+          </option>
+          <option value="0.25">
+            Balanced — 1/4 resolution
+          </option>
+          <option value="0.5">
+            High quality — 1/2 resolution
+          </option>
+          <option value="1">
+            Full resolution
+          </option>
+        </select>
+        <small>
+          Visual overlays only · scientific metrics stay full resolution
+        </small>
+      </label>
+
       <div class="phase-eval-visual-legend">
         <label>
           <input type="checkbox"
@@ -30513,6 +32570,27 @@ function phaseEvalVisualEnsureUi() {
     );
 
     document.getElementById(
+      "phaseEvalVisualReviewScale"
+    )?.addEventListener(
+      "change",
+      () => {
+        phaseEvalVisualData =
+          null;
+
+        phaseEvalVisualRegionIndex =
+          -1;
+
+        phaseEvalVisualDraw();
+
+        phaseEvalVisualSetStatus(
+          "Review quality changed. Reloading this class…"
+        );
+
+        void phaseEvalVisualLoadClass();
+      }
+    );
+
+    document.getElementById(
       "phaseEvalVisualOpacity"
     )?.addEventListener(
       "input",
@@ -30591,6 +32669,37 @@ function phaseEvalVisualAvailableRows() {
 }
 
 
+function phaseEvalVisualRowArea(
+  row
+) {
+  const referenceArea =
+    Number(
+      row?.referenceAreaPx2
+    );
+
+  if (
+    Number.isFinite(
+      referenceArea
+    )
+  ) {
+    return referenceArea;
+  }
+
+  const candidateArea =
+    Number(
+      row?.candidateAreaPx2
+    );
+
+  return (
+    Number.isFinite(
+      candidateArea
+    )
+      ? candidateArea
+      : 0
+  );
+}
+
+
 function phaseEvalVisualPopulateClasses() {
   const select =
     document.getElementById(
@@ -30605,31 +32714,17 @@ function phaseEvalVisualPopulateClasses() {
     [...phaseEvalVisualAvailableRows()]
       .sort(
         (left, right) => {
-          const leftDice =
-            Number(
-              left?.dice
-            );
-
-          const rightDice =
-            Number(
-              right?.dice
-            );
-
-          if (
-            Number.isFinite(leftDice)
-            && Number.isFinite(rightDice)
-          ) {
-            return leftDice - rightDice;
-          }
-
-          return String(
-            left?.className
-            || ""
-          ).localeCompare(
-            String(
-              right?.className
-              || ""
-            )
+          const leftReference = Number(left?.referenceAreaPx2);
+          const rightReference = Number(right?.referenceAreaPx2);
+          const leftArea = Number.isFinite(leftReference)
+            ? leftReference
+            : Number(left?.candidateAreaPx2 || 0);
+          const rightArea = Number.isFinite(rightReference)
+            ? rightReference
+            : Number(right?.candidateAreaPx2 || 0);
+          if (rightArea !== leftArea) return rightArea - leftArea;
+          return String(left?.className || "").localeCompare(
+            String(right?.className || "")
           );
         }
       );
@@ -30662,6 +32757,47 @@ function phaseEvalVisualPopulateClasses() {
       option
     );
   }
+  // phaseEvalVisualLargestReferenceAreaDefault
+  // Ground Truth is the fixed target, so reference area defines the default.
+  const largestAreaRow =
+    rows.reduce(
+      (
+        best,
+        row
+      ) => {
+        const rowArea =
+          Number(
+            row?.referenceAreaPx2
+            ?? row?.candidateAreaPx2
+            ?? 0
+          );
+
+        const bestArea =
+          Number(
+            best?.referenceAreaPx2
+            ?? best?.candidateAreaPx2
+            ?? -1
+          );
+
+        return (
+          rowArea > bestArea
+            ? row
+            : best
+        );
+      },
+      null
+    );
+
+  if (
+    largestAreaRow
+  ) {
+    select.value =
+      String(
+        largestAreaRow.className
+        || ""
+      );
+  }
+
 }
 
 
@@ -30836,6 +32972,11 @@ function phaseEvalVisualPathRing(
   let started =
     false;
 
+  if (phaseEvalVisualPerfDrawSample) {
+    phaseEvalVisualPerfDrawSample.vertices += ring.length;
+    phaseEvalVisualPerfDrawSample.rings += 1;
+  }
+
   for (
     const point
     of ring
@@ -30885,7 +33026,8 @@ function phaseEvalVisualPathRing(
 
 function phaseEvalVisualGeometryPath(
   context,
-  geometry
+  geometry,
+  renderContext = null
 ) {
   if (
     !geometry
@@ -30902,6 +33044,17 @@ function phaseEvalVisualGeometryPath(
     geometry.type
       === "Polygon"
   ) {
+    if (
+      renderContext
+      && typeof phaseF26PolygonVisible === "function"
+      && !phaseF26PolygonVisible(
+        geometry.coordinates,
+        renderContext
+      )
+    ) {
+      return false;
+    }
+
     for (
       const ring
       of geometry.coordinates
@@ -30927,6 +33080,17 @@ function phaseEvalVisualGeometryPath(
       of geometry.coordinates
         || []
     ) {
+      if (
+        renderContext
+        && typeof phaseF26PolygonVisible === "function"
+        && !phaseF26PolygonVisible(
+          polygon,
+          renderContext
+        )
+      ) {
+        continue;
+      }
+
       for (
         const ring
         of polygon
@@ -30956,7 +33120,8 @@ function phaseEvalVisualGeometryPath(
       drawn =
         phaseEvalVisualGeometryPath(
           context,
-          child
+          child,
+          renderContext
         )
         || drawn;
     }
@@ -30969,7 +33134,8 @@ function phaseEvalVisualGeometryPath(
 function phaseEvalVisualDrawLayer(
   context,
   layer,
-  opacity
+  opacity,
+  renderContext = null
 ) {
   if (
     !layer?.geometry
@@ -30980,6 +33146,10 @@ function phaseEvalVisualDrawLayer(
     return;
   }
 
+  if (phaseEvalVisualPerfDrawSample) {
+    phaseEvalVisualPerfDrawSample.layers += 1;
+  }
+
   context.save();
 
   context.beginPath();
@@ -30987,7 +33157,8 @@ function phaseEvalVisualDrawLayer(
   const hasPath =
     phaseEvalVisualGeometryPath(
       context,
-      layer.geometry
+      layer.geometry,
+      renderContext
     );
 
   if (hasPath) {
@@ -31031,6 +33202,24 @@ function phaseEvalVisualDrawLayer(
 
 
 function phaseEvalVisualDraw() {
+  const shouldProfile = Boolean(
+    window.__histoEvalVisualPerfPendingDraw
+  );
+  const monitorSlowDraw = Boolean(
+    window.__histoEvalVisualPerfSession
+  );
+  const drawStarted = (shouldProfile || monitorSlowDraw)
+    ? phaseEvalVisualPerfNow()
+    : 0;
+
+  if (shouldProfile) {
+    phaseEvalVisualPerfDrawSample = {
+      vertices: 0,
+      rings: 0,
+      layers: 0,
+    };
+  }
+
   const frame =
     phaseEvalVisualCanvasContext();
 
@@ -31068,6 +33257,13 @@ function phaseEvalVisualDraw() {
       ? phaseEvalVisualData.layers
       : [];
 
+  const renderContext =
+    (
+      typeof phaseF26CurrentRenderContext === "function"
+    )
+      ? phaseF26CurrentRenderContext()
+      : null;
+
   // Wrong-class is last so orange remains visible over red/blue.
   const order = [
     "reference_only",
@@ -31091,7 +33287,43 @@ function phaseEvalVisualDraw() {
       phaseEvalVisualDrawLayer(
         frame.context,
         layer,
-        opacity
+        opacity,
+        renderContext
+      );
+    }
+  }
+
+  if (shouldProfile) {
+    const sample =
+      phaseEvalVisualPerfDrawSample
+      || { vertices: 0, rings: 0, layers: 0 };
+
+    window.__histoEvalVisualLastDrawProfile = {
+      drawMs: Number(
+        (phaseEvalVisualPerfNow() - drawStarted).toFixed(3)
+      ),
+      vertices: Number(sample.vertices || 0),
+      rings: Number(sample.rings || 0),
+      layers: Number(sample.layers || 0),
+    };
+
+    window.__histoEvalVisualPerfPendingDraw = false;
+    phaseEvalVisualPerfDrawSample = null;
+  } else if (monitorSlowDraw) {
+    const elapsed = phaseEvalVisualPerfNow() - drawStarted;
+    const lastWarn = Number(
+      window.__histoEvalVisualLastSlowDrawWarnAt || 0
+    );
+    const now = phaseEvalVisualPerfNow();
+    if (elapsed >= 40 && now - lastWarn >= 1000) {
+      window.__histoEvalVisualLastSlowDrawWarnAt = now;
+      console.warn(
+        "[VisualReview RENDER PERF] slow redraw",
+        {
+          drawMs: Number(elapsed.toFixed(3)),
+          targetClass: phaseEvalVisualCurrentClass(),
+          reviewScale: phaseEvalVisualGetReviewScale(),
+        }
       );
     }
   }
@@ -31493,6 +33725,58 @@ function phaseEvalVisualStepRegion(
 }
 
 
+function phaseEvalVisualSetNavigationOverlayHidden(
+  hidden
+) {
+  const canvas =
+    document.getElementById(
+      "phaseEvalVisualCanvas"
+    );
+
+  if (!canvas) {
+    return;
+  }
+
+  const shouldHide =
+    Boolean(hidden);
+
+  if (
+    phaseEvalVisualNavigationOverlayHidden
+      === shouldHide
+  ) {
+    return;
+  }
+
+  phaseEvalVisualNavigationOverlayHidden =
+    shouldHide;
+
+  canvas.style.visibility =
+    shouldHide
+      ? "hidden"
+      : "";
+}
+
+
+function phaseEvalVisualNavigationFrame() {
+  if (!phaseEvalVisualData) {
+    return;
+  }
+
+  phaseEvalVisualSetNavigationOverlayHidden(
+    true
+  );
+}
+
+
+function phaseEvalVisualDrawAfterNavigation() {
+  phaseEvalVisualSetNavigationOverlayHidden(
+    false
+  );
+
+  phaseEvalVisualDraw();
+}
+
+
 function phaseEvalVisualBindViewer() {
   if (
     phaseEvalVisualViewerHandlersBound
@@ -31501,9 +33785,17 @@ function phaseEvalVisualBindViewer() {
     return;
   }
 
+  // Keep image navigation responsive: do not rebuild ~100k+ overlay vertices
+  // on every OpenSeadragon animation frame. Hide the derived overlay briefly
+  // and redraw once when navigation settles.
   viewer.addHandler(
     "animation",
-    phaseEvalVisualDraw
+    phaseEvalVisualNavigationFrame
+  );
+
+  viewer.addHandler(
+    "animation-finish",
+    phaseEvalVisualDrawAfterNavigation
   );
 
   viewer.addHandler(
@@ -31538,7 +33830,12 @@ function phaseEvalVisualUnbindViewer() {
   ) {
     viewer.removeHandler(
       "animation",
-      phaseEvalVisualDraw
+      phaseEvalVisualNavigationFrame
+    );
+
+    viewer.removeHandler(
+      "animation-finish",
+      phaseEvalVisualDrawAfterNavigation
     );
 
     viewer.removeHandler(
@@ -31555,6 +33852,10 @@ function phaseEvalVisualUnbindViewer() {
   window.removeEventListener(
     "resize",
     phaseEvalVisualDraw
+  );
+
+  phaseEvalVisualSetNavigationOverlayHidden(
+    false
   );
 
   phaseEvalVisualViewerHandlersBound =
@@ -31583,6 +33884,9 @@ async function phaseEvalVisualLoadClass() {
   phaseEvalVisualSetStatus(
     `Calculating spatial review for ${targetClass}…`
   );
+
+  const perfRequestStarted =
+    phaseEvalVisualPerfNow();
 
   try {
     const response =
@@ -31615,6 +33919,12 @@ async function phaseEvalVisualLoadClass() {
                   ?.referenceMapping
                 || {},
 
+              reviewScale:
+                phaseEvalVisualGetReviewScale(),
+
+              profilePerformance:
+                true,
+
               targetClass,
 
               maxRegions:
@@ -31626,8 +33936,14 @@ async function phaseEvalVisualLoadClass() {
         }
       );
 
+    const perfResponseReceived =
+      phaseEvalVisualPerfNow();
+
     const payload =
       await response.json();
+
+    const perfPayloadParsed =
+      phaseEvalVisualPerfNow();
 
     if (!response.ok) {
       throw new Error(
@@ -31649,9 +33965,53 @@ async function phaseEvalVisualLoadClass() {
     phaseEvalVisualRegionIndex =
       -1;
 
+    const perfUiStarted =
+      phaseEvalVisualPerfNow();
+
     phaseEvalVisualRenderSummary();
     phaseEvalVisualRenderRegion();
+
+    window.__histoEvalVisualPerfPendingDraw =
+      true;
+    window.__histoEvalVisualLastDrawProfile =
+      null;
+
     phaseEvalVisualDraw();
+
+    const perfFinished =
+      phaseEvalVisualPerfNow();
+
+    const frontendProfile = {
+      targetClass,
+      reviewScale:
+        phaseEvalVisualGetReviewScale(),
+      requestUntilHeadersMs: Number(
+        (perfResponseReceived - perfRequestStarted).toFixed(3)
+      ),
+      jsonParseMs: Number(
+        (perfPayloadParsed - perfResponseReceived).toFixed(3)
+      ),
+      summaryAndDrawMs: Number(
+        (perfFinished - perfUiStarted).toFixed(3)
+      ),
+      frontendTotalMs: Number(
+        (perfFinished - perfRequestStarted).toFixed(3)
+      ),
+      draw:
+        window.__histoEvalVisualLastDrawProfile,
+      tiles:
+        phaseEvalVisualPerfTileSnapshot(),
+      backend:
+        payload.performanceProfile || null,
+    };
+
+    window.__histoEvalVisualLastPerf =
+      frontendProfile;
+
+    console.info(
+      "[VisualReview PERF FRONTEND]",
+      frontendProfile
+    );
 
     const regionNote =
       payload.regionsTruncated
@@ -31688,6 +34048,54 @@ async function phaseEvalVisualLoadClass() {
 
 async function phaseEvalVisualOpen() {
   phaseEvalVisualEnsureUi();
+
+  window.__histoEvalVisualPerfSession = {
+    startedAt: phaseEvalVisualPerfNow(),
+    tileLoaded: 0,
+    tileFailed: 0,
+    failures: [],
+  };
+
+  // phaseEvalVisualDefaultMoveMode
+  // Visual Review is navigation-first.
+  if (
+    typeof setMode
+      === "function"
+  ) {
+    setMode(
+      "move"
+    );
+  }
+
+  // Visual Review defaults to Move and starts from whole-image view.
+  phaseEvalVisualPreviousToolMode = mode;
+  setMode("navigate");
+
+  if (viewer?.imageLoader) {
+    phaseEvalVisualPreviousImageTimeout =
+      Number(viewer.imageLoader.timeout) || 30000;
+    viewer.imageLoader.timeout = Math.max(
+      60000,
+      phaseEvalVisualPreviousImageTimeout
+    );
+  }
+
+  try {
+    viewer?.viewport?.goHome(true);
+  } catch (_) {
+    // Image may still be opening; do not reopen the source.
+  }
+
+  // Visual evaluation starts in Move mode.
+  setMode(
+    "navigate"
+  );
+
+  window.__histoEvalVisualReviewActive =
+    true;
+
+  window.__histoEvalVisualTileFailureTimes =
+    [];
 
   const rows =
     phaseEvalVisualAvailableRows();
@@ -31806,6 +34214,22 @@ function phaseEvalVisualRestoreAnnotations() {
 function phaseEvalVisualClose() {
   ++phaseEvalVisualLoadingSequence;
 
+  if (window.__histoEvalVisualPerfSession) {
+    console.info(
+      "[VisualReview TILE PERF] session summary",
+      phaseEvalVisualPerfTileSnapshot()
+    );
+  }
+
+  window.__histoEvalVisualPerfSession =
+    null;
+
+  window.__histoEvalVisualReviewActive =
+    false;
+
+  window.__histoEvalVisualTileFailureTimes =
+    [];
+
   phaseEvalVisualData =
     null;
 
@@ -31846,6 +34270,20 @@ function phaseEvalVisualClose() {
 
   phaseEvalVisualRestoreAnnotations();
   phaseEvalVisualUnbindViewer();
+
+  if (
+    viewer?.imageLoader
+    && Number.isFinite(Number(phaseEvalVisualPreviousImageTimeout))
+  ) {
+    viewer.imageLoader.timeout =
+      Number(phaseEvalVisualPreviousImageTimeout);
+  }
+  phaseEvalVisualPreviousImageTimeout = null;
+
+  if (phaseEvalVisualPreviousToolMode) {
+    setMode(phaseEvalVisualPreviousToolMode);
+  }
+  phaseEvalVisualPreviousToolMode = null;
 }
 
 
@@ -33103,6 +35541,12 @@ phaseEvalVisualLoadClass =
       && record.visualByClass[
         targetClass
       ]
+      && phaseEvalVisualCachedReviewScale(
+        record.visualByClass[
+          targetClass
+        ]
+      )
+        === phaseEvalVisualGetReviewScale()
       && (
         !Array.isArray(
           record.visualByClass[
@@ -34803,6 +37247,1148 @@ phaseEvalVisualStepRegion =
 
 
 phaseEvalReviewV4EnsureUi();
+// ========================================================================
+// Evaluation Offline Package v1
+//
+// Adds explicit full offline preparation and portable evaluation packages.
+// Scientific evaluation is unchanged.
+// ========================================================================
+
+const PHASE_EVAL_OFFLINE_SCHEMA_VERSION = 1;
+const PHASE_EVAL_OFFLINE_KIND = "histoannotator-evaluation-package";
+
+
+function phaseEvalOfflineClasses(result = phaseEvalLastResult) {
+  const rows =
+    Array.isArray(result?.rows)
+      ? result.rows
+      : [];
+
+  return [
+    ...new Set(
+      rows
+        .map(
+          (row) =>
+            String(
+              row?.className
+              || ""
+            ).trim()
+        )
+        .filter(Boolean)
+    ),
+  ];
+}
+
+
+function phaseEvalOfflineVisualIsComplete(visual) {
+  if (
+    !visual
+    || typeof visual !== "object"
+  ) {
+    return false;
+  }
+
+  if (!Array.isArray(visual.regions)) {
+    return true;
+  }
+
+  return visual.regions.every(
+    (region) =>
+      !region
+      || !region.geometry
+      || typeof region.geometry === "object"
+  );
+}
+
+
+function phaseEvalOfflineState(record = phaseEvalCacheCurrentRecord) {
+  if (
+    !record
+    || !record.result
+  ) {
+    return {
+      total: 0,
+      cached: 0,
+      complete: false,
+      classes: [],
+    };
+  }
+
+  const classes =
+    phaseEvalOfflineClasses(
+      record.result
+    );
+
+  const visualByClass =
+    (
+      record.visualByClass
+      && typeof record.visualByClass === "object"
+    )
+      ? record.visualByClass
+      : {};
+
+  const cached =
+    classes.filter(
+      (className) =>
+        phaseEvalOfflineVisualIsComplete(
+          visualByClass[className]
+        )
+    ).length;
+
+  return {
+    total:
+      classes.length,
+
+    cached,
+
+    complete:
+      Boolean(
+        classes.length
+        && cached === classes.length
+      ),
+
+    classes,
+  };
+}
+
+
+function phaseEvalOfflineEnsureUi() {
+  phaseEvalCacheEnsureUi();
+
+  const parent =
+    document.getElementById(
+      "phaseEvalPreviousPanel"
+    );
+
+  if (
+    !parent
+    || document.getElementById(
+      "phaseEvalOfflinePanel"
+    )
+  ) {
+    return;
+  }
+
+  const panel =
+    document.createElement(
+      "div"
+    );
+
+  panel.id =
+    "phaseEvalOfflinePanel";
+
+  panel.className =
+    "phase-eval-offline-panel";
+
+  panel.innerHTML = `
+    <div class="phase-eval-offline-head">
+      <div>
+        <strong>Offline evaluation</strong>
+        <small id="phaseEvalOfflineState">
+          Open or calculate an evaluation first.
+        </small>
+      </div>
+
+      <span id="phaseEvalOfflineBadge"
+            class="phase-eval-offline-badge">
+        Not saved
+      </span>
+    </div>
+
+    <div class="phase-eval-offline-actions">
+      <button id="phaseEvalSaveOfflineButton"
+              type="button">
+        Save for offline
+      </button>
+
+      <button id="phaseEvalDownloadPackageButton"
+              type="button">
+        Download package
+      </button>
+
+      <button id="phaseEvalImportPackageButton"
+              type="button">
+        Import package
+      </button>
+    </div>
+
+    <input id="phaseEvalImportPackageInput"
+           type="file"
+           accept=".json,.histo-eval.json,application/json"
+           hidden>
+
+    <div id="phaseEvalOfflineProgress"
+         class="phase-eval-offline-progress"
+         hidden>
+      <div>
+        <span id="phaseEvalOfflineProgressText"></span>
+        <strong id="phaseEvalOfflineProgressCount"></strong>
+      </div>
+
+      <div class="phase-eval-offline-progress-track">
+        <div id="phaseEvalOfflineProgressFill"></div>
+      </div>
+    </div>
+
+    <small class="phase-eval-offline-note">
+      Save for offline pre-computes every Visual Review class and stores it
+      locally. Download package makes a portable backup for another device.
+    </small>
+  `;
+
+  parent.append(
+    panel
+  );
+
+  document.getElementById(
+    "phaseEvalSaveOfflineButton"
+  )?.addEventListener(
+    "click",
+    () => {
+      void phaseEvalOfflineSaveAll();
+    }
+  );
+
+  document.getElementById(
+    "phaseEvalDownloadPackageButton"
+  )?.addEventListener(
+    "click",
+    () => {
+      void phaseEvalOfflineDownloadPackage();
+    }
+  );
+
+  document.getElementById(
+    "phaseEvalImportPackageButton"
+  )?.addEventListener(
+    "click",
+    () => {
+      document.getElementById(
+        "phaseEvalImportPackageInput"
+      )?.click();
+    }
+  );
+
+  document.getElementById(
+    "phaseEvalImportPackageInput"
+  )?.addEventListener(
+    "change",
+    (event) => {
+      const file =
+        event.target?.files?.[0];
+
+      if (file) {
+        void phaseEvalOfflineImportPackage(
+          file
+        );
+      }
+
+      event.target.value =
+        "";
+    }
+  );
+
+  phaseEvalOfflineRenderState();
+}
+
+
+function phaseEvalOfflineRenderState(message = "") {
+  const stateElement =
+    document.getElementById(
+      "phaseEvalOfflineState"
+    );
+
+  const badge =
+    document.getElementById(
+      "phaseEvalOfflineBadge"
+    );
+
+  const saveButton =
+    document.getElementById(
+      "phaseEvalSaveOfflineButton"
+    );
+
+  const downloadButton =
+    document.getElementById(
+      "phaseEvalDownloadPackageButton"
+    );
+
+  if (
+    !stateElement
+    || !badge
+  ) {
+    return;
+  }
+
+  const record =
+    phaseEvalCacheCurrentRecord;
+
+  const state =
+    phaseEvalOfflineState(
+      record
+    );
+
+  if (
+    !record
+    || !record.result
+  ) {
+    stateElement.textContent =
+      message
+      || "Open or calculate an evaluation first.";
+
+    badge.textContent =
+      "Not saved";
+
+    badge.classList.remove(
+      "complete"
+    );
+
+    if (saveButton) {
+      saveButton.disabled =
+        true;
+    }
+
+    if (downloadButton) {
+      downloadButton.disabled =
+        true;
+    }
+
+    return;
+  }
+
+  stateElement.textContent =
+    message
+    || (
+      `${state.cached} / ${state.total} Visual Review classes cached locally`
+    );
+
+  badge.textContent =
+    state.complete
+      ? "Offline ready"
+      : `${state.cached}/${state.total}`;
+
+  badge.classList.toggle(
+    "complete",
+    state.complete
+  );
+
+  if (saveButton) {
+    saveButton.disabled =
+      !state.total;
+  }
+
+  if (downloadButton) {
+    downloadButton.disabled =
+      false;
+  }
+}
+
+
+function phaseEvalOfflineProgress(current, total, label) {
+  const box =
+    document.getElementById(
+      "phaseEvalOfflineProgress"
+    );
+
+  const text =
+    document.getElementById(
+      "phaseEvalOfflineProgressText"
+    );
+
+  const count =
+    document.getElementById(
+      "phaseEvalOfflineProgressCount"
+    );
+
+  const fill =
+    document.getElementById(
+      "phaseEvalOfflineProgressFill"
+    );
+
+  if (!box) {
+    return;
+  }
+
+  box.hidden =
+    false;
+
+  if (text) {
+    text.textContent =
+      String(
+        label
+        || "Saving…"
+      );
+  }
+
+  if (count) {
+    count.textContent =
+      `${current}/${total}`;
+  }
+
+  if (fill) {
+    fill.style.width =
+      `${
+        total
+          ? Math.max(
+              0,
+              Math.min(
+                100,
+                100 * current / total
+              )
+            )
+          : 0
+      }%`;
+  }
+}
+
+
+function phaseEvalOfflineHideProgress() {
+  const box =
+    document.getElementById(
+      "phaseEvalOfflineProgress"
+    );
+
+  if (box) {
+    box.hidden =
+      true;
+  }
+}
+
+
+async function phaseEvalOfflineRequestPersistentStorage() {
+  try {
+    if (
+      navigator.storage?.persist
+    ) {
+      return Boolean(
+        await navigator.storage.persist()
+      );
+    }
+  } catch (_) {}
+
+  return false;
+}
+
+
+async function phaseEvalOfflineFetchVisual(result, targetClass) {
+  if (
+    !currentImage
+    || !result
+    || !targetClass
+  ) {
+    throw new Error(
+      "Evaluation context is incomplete"
+    );
+  }
+
+  const response =
+    await apiFetch(
+      `${API}/annotations/${currentImage.id}/evaluation-visual`,
+      {
+        method:
+          "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+
+        body:
+          JSON.stringify({
+            candidateFile:
+              result.candidateFile,
+
+            referenceFile:
+              result.referenceFile,
+
+            candidateMapping:
+              result.mapping
+                ?.candidateMapping
+              || {},
+
+            referenceMapping:
+              result.mapping
+                ?.referenceMapping
+              || {},
+
+            reviewScale:
+              phaseEvalVisualGetReviewScale(),
+
+            targetClass,
+
+            maxRegions:
+              500,
+          }),
+
+        timeoutMs:
+          180000,
+      }
+    );
+
+  const payload =
+    await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      payload.detail
+      || `HTTP ${response.status}`
+    );
+  }
+
+  return payload;
+}
+
+
+async function phaseEvalOfflineEnsureCurrentRecord() {
+  if (!phaseEvalLastResult) {
+    return null;
+  }
+
+  let record =
+    phaseEvalCacheCurrentRecord;
+
+  if (
+    !phaseEvalCacheRecordMatchesResult(
+      record,
+      phaseEvalLastResult
+    )
+  ) {
+    record =
+      await phaseEvalCacheSaveResult(
+        phaseEvalLastResult
+      );
+  }
+
+  return record;
+}
+
+
+async function phaseEvalOfflineSaveAll() {
+  const result =
+    phaseEvalLastResult
+    || phaseEvalCacheCurrentRecord?.result
+    || null;
+
+  if (
+    !result
+    || !currentImage
+  ) {
+    phaseEvalSetStatus(
+      "Calculate or open an evaluation before saving it offline.",
+      "error"
+    );
+
+    return;
+  }
+
+  const classes =
+    phaseEvalOfflineClasses(
+      result
+    );
+
+  if (!classes.length) {
+    phaseEvalSetStatus(
+      "This evaluation has no mapped classes to cache.",
+      "error"
+    );
+
+    return;
+  }
+
+  const button =
+    document.getElementById(
+      "phaseEvalSaveOfflineButton"
+    );
+
+  if (button) {
+    button.disabled =
+      true;
+  }
+
+  const persisted =
+    await phaseEvalOfflineRequestPersistentStorage();
+
+  try {
+    if (!phaseEvalLastResult) {
+      phaseEvalLastResult =
+        phaseEvalCacheClone(
+          result
+        );
+    }
+
+    let record =
+      await phaseEvalOfflineEnsureCurrentRecord();
+
+    if (!record) {
+      throw new Error(
+        "Could not create local evaluation record"
+      );
+    }
+
+    record.visualByClass =
+      (
+        record.visualByClass
+        && typeof record.visualByClass === "object"
+      )
+        ? record.visualByClass
+        : {};
+
+    record.reviewDecisions =
+      (
+        record.reviewDecisions
+        && typeof record.reviewDecisions === "object"
+      )
+        ? record.reviewDecisions
+        : {};
+
+    let done =
+      0;
+
+    for (
+      const targetClass
+      of classes
+    ) {
+      const existing =
+        record.visualByClass[
+          targetClass
+        ];
+
+      if (
+        phaseEvalOfflineVisualIsComplete(
+          existing
+        )
+      ) {
+        done += 1;
+
+        phaseEvalOfflineProgress(
+          done,
+          classes.length,
+          `${targetClass} · already cached`
+        );
+
+        continue;
+      }
+
+      phaseEvalOfflineProgress(
+        done,
+        classes.length,
+        `Calculating ${targetClass}…`
+      );
+
+      phaseEvalSetStatus(
+        (
+          `Saving evaluation offline · ${targetClass}`
+          + ` · ${done + 1}/${classes.length}`
+        ),
+        "local"
+      );
+
+      const visual =
+        await phaseEvalOfflineFetchVisual(
+          result,
+          targetClass
+        );
+
+      record.visualByClass[
+        targetClass
+      ] =
+        phaseEvalCacheClone(
+          visual
+        );
+
+      record.savedAt =
+        new Date()
+          .toISOString();
+
+      await phaseEvalCachePut(
+        record
+      );
+
+      phaseEvalCacheCurrentRecord =
+        record;
+
+      done += 1;
+
+      phaseEvalOfflineProgress(
+        done,
+        classes.length,
+        `${targetClass} · saved`
+      );
+    }
+
+    record.offlineSchemaVersion =
+      PHASE_EVAL_OFFLINE_SCHEMA_VERSION;
+
+    record.offlineComplete =
+      true;
+
+    record.offlineClasses =
+      [
+        ...classes,
+      ];
+
+    record.offlineSavedAt =
+      new Date()
+        .toISOString();
+
+    record.persistentStorageGranted =
+      Boolean(
+        persisted
+      );
+
+    await phaseEvalCachePut(
+      record
+    );
+
+    phaseEvalCacheCurrentRecord =
+      record;
+
+    phaseEvalCacheRenderPanel(
+      record,
+      (
+        `Offline ready · ${classes.length}/${classes.length} visual classes`
+      )
+    );
+
+    phaseEvalOfflineRenderState(
+      (
+        `All ${classes.length} Visual Review classes are available offline`
+      )
+    );
+
+    phaseEvalSetStatus(
+      (
+        `Evaluation saved for offline use · ${classes.length}/${classes.length} visual classes`
+      ),
+      "saved"
+    );
+
+  } catch (error) {
+    phaseEvalOfflineRenderState(
+      `Offline save stopped: ${error.message}`
+    );
+
+    phaseEvalSetStatus(
+      `Could not finish offline evaluation: ${error.message}`,
+      "error"
+    );
+
+  } finally {
+    phaseEvalOfflineHideProgress();
+
+    if (button) {
+      button.disabled =
+        false;
+    }
+  }
+}
+
+
+function phaseEvalOfflineSafeName(value) {
+  return String(
+    value
+    || "evaluation"
+  )
+    .replace(
+      /[^A-Za-z0-9._-]+/g,
+      "_"
+    )
+    .replace(
+      /^_+|_+$/g,
+      ""
+    )
+    .slice(
+      0,
+      70
+    )
+    || "evaluation";
+}
+
+
+function phaseEvalOfflinePackageFromRecord(record) {
+  if (
+    !record
+    || !record.result
+  ) {
+    throw new Error(
+      "No cached evaluation is available"
+    );
+  }
+
+  const state =
+    phaseEvalOfflineState(
+      record
+    );
+
+  return {
+    kind:
+      PHASE_EVAL_OFFLINE_KIND,
+
+    schemaVersion:
+      PHASE_EVAL_OFFLINE_SCHEMA_VERSION,
+
+    exportedAt:
+      new Date()
+        .toISOString(),
+
+    app:
+      "HistoAnnotator",
+
+    complete:
+      state.complete,
+
+    classCount:
+      state.total,
+
+    cachedClassCount:
+      state.cached,
+
+    record:
+      phaseEvalCacheClone(
+        record
+      ),
+  };
+}
+
+
+async function phaseEvalOfflineDownloadPackage() {
+  const record =
+    phaseEvalCacheCurrentRecord;
+
+  if (
+    !record
+    || !record.result
+  ) {
+    phaseEvalSetStatus(
+      "Open a cached evaluation before downloading a package.",
+      "error"
+    );
+
+    return;
+  }
+
+  try {
+    const packagePayload =
+      phaseEvalOfflinePackageFromRecord(
+        record
+      );
+
+    const blob =
+      new Blob(
+        [
+          JSON.stringify(
+            packagePayload
+          ),
+        ],
+        {
+          type:
+            "application/json",
+        }
+      );
+
+    const filename =
+      (
+        `${phaseEvalOfflineSafeName(record.imageId)}`
+        + `__${phaseEvalOfflineSafeName(record.candidateFile)}`
+        + `__vs__${phaseEvalOfflineSafeName(record.referenceFile)}`
+        + ".histo-eval.json"
+      );
+
+    const url =
+      URL.createObjectURL(
+        blob
+      );
+
+    const anchor =
+      document.createElement(
+        "a"
+      );
+
+    anchor.href =
+      url;
+
+    anchor.download =
+      filename;
+
+    anchor.style.display =
+      "none";
+
+    document.body.append(
+      anchor
+    );
+
+    anchor.click();
+    anchor.remove();
+
+    setTimeout(
+      () => {
+        URL.revokeObjectURL(
+          url
+        );
+      },
+      1500
+    );
+
+    const state =
+      phaseEvalOfflineState(
+        record
+      );
+
+    phaseEvalSetStatus(
+      (
+        `Evaluation package downloaded · ${state.cached}/${state.total} visual classes`
+      ),
+      "saved"
+    );
+
+  } catch (error) {
+    phaseEvalSetStatus(
+      `Could not download evaluation package: ${error.message}`,
+      "error"
+    );
+  }
+}
+
+
+function phaseEvalOfflineValidatePackage(payload) {
+  if (
+    !payload
+    || typeof payload !== "object"
+    || payload.kind !== PHASE_EVAL_OFFLINE_KIND
+    || Number(payload.schemaVersion)
+      !== PHASE_EVAL_OFFLINE_SCHEMA_VERSION
+    || !payload.record
+    || typeof payload.record !== "object"
+    || !payload.record.result
+  ) {
+    throw new Error(
+      "This is not a supported HistoAnnotator evaluation package"
+    );
+  }
+
+  return payload.record;
+}
+
+
+async function phaseEvalOfflineImportPackage(file) {
+  if (!file) {
+    return;
+  }
+
+  try {
+    const payload =
+      JSON.parse(
+        await file.text()
+      );
+
+    const record =
+      phaseEvalOfflineValidatePackage(
+        payload
+      );
+
+    if (!currentImage) {
+      throw new Error(
+        "Open the corresponding image before importing the evaluation package"
+      );
+    }
+
+    if (
+      String(record.imageId)
+      !== String(currentImage.id)
+    ) {
+      throw new Error(
+        (
+          `Package image is "${record.imageId}", `
+          + `but current image is "${currentImage.id}"`
+        )
+      );
+    }
+
+    record.cacheId =
+      String(
+        record.cacheId
+        || phaseEvalCacheIdFromResult(
+          record.result
+        )
+      );
+
+    record.importedAt =
+      new Date()
+        .toISOString();
+
+    record.visualByClass =
+      (
+        record.visualByClass
+        && typeof record.visualByClass === "object"
+      )
+        ? record.visualByClass
+        : {};
+
+    record.reviewDecisions =
+      (
+        record.reviewDecisions
+        && typeof record.reviewDecisions === "object"
+      )
+        ? record.reviewDecisions
+        : {};
+
+    await phaseEvalCachePut(
+      record
+    );
+
+    phaseEvalCacheCurrentRecord =
+      record;
+
+    phaseEvalLastResult =
+      phaseEvalCacheClone(
+        record.result
+      );
+
+    const refs =
+      phaseEvalRefs();
+
+    if (refs.candidate) {
+      refs.candidate.value =
+        record.candidateFile;
+    }
+
+    if (refs.reference) {
+      refs.reference.value =
+        record.referenceFile;
+    }
+
+    phaseEvalRenderResults(
+      phaseEvalLastResult
+    );
+
+    if (refs.exportCsv) {
+      refs.exportCsv.disabled =
+        !phaseEvalLastResult?.rows?.length;
+    }
+
+    const state =
+      phaseEvalOfflineState(
+        record
+      );
+
+    phaseEvalCacheRenderPanel(
+      record,
+      (
+        `Imported package · ${state.cached}/${state.total} visual classes`
+      )
+    );
+
+    phaseEvalOfflineRenderState(
+      (
+        `${state.cached}/${state.total} Visual Review classes available locally`
+      )
+    );
+
+    phaseEvalSetStatus(
+      (
+        `Evaluation package imported · ${state.cached}/${state.total} visual classes`
+      ),
+      "saved"
+    );
+
+  } catch (error) {
+    phaseEvalSetStatus(
+      `Could not import evaluation package: ${error.message}`,
+      "error"
+    );
+  }
+}
+
+
+// Preserve review decisions/offline metadata if the same evaluation result
+// is re-saved into the existing IndexedDB cache record.
+const phaseEvalOfflineBaseCacheSaveResult =
+  phaseEvalCacheSaveResult;
+
+phaseEvalCacheSaveResult =
+  async function phaseEvalOfflineCacheSaveResult(result) {
+    const previousRecord =
+      phaseEvalCacheCurrentRecord;
+
+    const record =
+      await phaseEvalOfflineBaseCacheSaveResult(
+        result
+      );
+
+    if (
+      record
+      && previousRecord
+      && phaseEvalCacheRecordMatchesResult(
+        previousRecord,
+        result
+      )
+    ) {
+      if (
+        previousRecord.reviewDecisions
+        && typeof previousRecord.reviewDecisions === "object"
+      ) {
+        record.reviewDecisions =
+          phaseEvalCacheClone(
+            previousRecord.reviewDecisions
+          );
+      }
+
+      for (
+        const key
+        of [
+          "offlineSchemaVersion",
+          "offlineComplete",
+          "offlineClasses",
+          "offlineSavedAt",
+          "persistentStorageGranted",
+        ]
+      ) {
+        if (
+          previousRecord[key]
+          !== undefined
+        ) {
+          record[key] =
+            phaseEvalCacheClone(
+              previousRecord[key]
+            );
+        }
+      }
+
+      await phaseEvalCachePut(
+        record
+      );
+
+      phaseEvalCacheCurrentRecord =
+        record;
+    }
+
+    phaseEvalOfflineEnsureUi();
+    phaseEvalOfflineRenderState();
+
+    return record;
+  };
+
+
+const phaseEvalOfflineBaseCacheRenderPanel =
+  phaseEvalCacheRenderPanel;
+
+phaseEvalCacheRenderPanel =
+  function phaseEvalOfflineCacheRenderPanel(
+    record,
+    stateText = ""
+  ) {
+    phaseEvalOfflineBaseCacheRenderPanel(
+      record,
+      stateText
+    );
+
+    phaseEvalOfflineEnsureUi();
+    phaseEvalOfflineRenderState();
+  };
+
+
+phaseEvalOfflineEnsureUi();
+phaseEvalOfflineRenderState();
 // Suggestions stay outside featureCollection until Accept/Edit.
 // Therefore Review, Statistics, GeoJSON and sync remain unchanged.
 // ========================================================================
@@ -56672,6 +60258,34 @@ importGeoJson =
         );
       }
 
+
+      // Cellular GeoJSON bypasses the tissue import workspace.
+      //
+      // This check belongs in the workspace import callback itself because
+      // this module currently owns Import GeoJSON… and would otherwise open
+      // the tissue Class mapping UI first.
+      if (
+        typeof phaseCellPayloadLooksCellular
+          === "function"
+        && typeof phaseCellImportPayload
+          === "function"
+        && phaseCellPayloadLooksCellular(
+          payload
+        )
+      ) {
+        await phaseCellImportPayload(
+          file,
+          payload
+        );
+
+        if (els.importInput) {
+          els.importInput.value =
+            "";
+        }
+
+        return;
+      }
+
       const collection =
         phaseImportWorkspaceNormalizeExternalCollection(
           payload
@@ -56729,6 +60343,3950 @@ function phaseImportWorkspaceUpdateMenuLabel() {
 
 phaseImportWorkspaceEnsureUi();
 phaseImportWorkspaceUpdateMenuLabel();
+// ========================================================================
+// Cellular Annotation Core v1
+//
+// Separate cellular annotation documents from tissue annotation documents.
+// QuPath cell GeoJSON is auto-detected during normal GeoJSON import.
+//
+// Independent cellular axes:
+//   Cell type:
+//     Unassigned | Tumor | Immune | Macrophage | Fibroblast | Endothelial
+//   Marker status:
+//     Unclassified | Positive | Negative
+//
+// IMPORTANT:
+//   Positive/Negative are marker status, never cell type.
+//   Missing cell class => Unassigned.
+//   Missing marker status => Unclassified.
+// ========================================================================
+
+const PHASE_CELL_SCHEMA_VERSION =
+  1;
+
+const PHASE_CELL_TYPES = [
+  {
+    value: "unassigned",
+    label: "Unassigned",
+    color: "#9ca3af",
+  },
+  {
+    value: "tumor",
+    label: "Tumor",
+    color: "#ef4444",
+  },
+  {
+    value: "immune",
+    label: "Immune",
+    color: "#a855f7",
+  },
+  {
+    value: "macrophage",
+    label: "Macrophage",
+    color: "#f59e0b",
+  },
+  {
+    value: "fibroblast",
+    label: "Fibroblast",
+    color: "#22c55e",
+  },
+  {
+    value: "endothelial",
+    label: "Endothelial",
+    color: "#06b6d4",
+  },
+];
+
+const PHASE_CELL_MARKER_STATUSES = [
+  {
+    value: "unclassified",
+    label: "Unclassified",
+    color: "#9ca3af",
+  },
+  {
+    value: "positive",
+    label: "Positive",
+    color: "#ef4444",
+  },
+  {
+    value: "negative",
+    label: "Negative",
+    color: "#3b82f6",
+  },
+];
+
+let phaseCellDisplayState = {
+  showCells:
+    true,
+
+  colorBy:
+    "markerStatus",
+
+  markerFilter:
+    "all",
+
+  cellTypeFilter:
+    "all",
+};
+
+
+function phaseCellCanonicalCellType(
+  value
+) {
+  const text =
+    String(
+      value
+      || ""
+    )
+      .trim()
+      .toLowerCase()
+      .replaceAll(
+        "_",
+        " "
+      )
+      .replaceAll(
+        "-",
+        " "
+      )
+      .replace(
+        /\s+/g,
+        " "
+      );
+
+  const aliases = {
+    "tumor":
+      "tumor",
+
+    "tumour":
+      "tumor",
+
+    "tumor cell":
+      "tumor",
+
+    "tumour cell":
+      "tumor",
+
+    "immune":
+      "immune",
+
+    "immune cell":
+      "immune",
+
+    "immunitary":
+      "immune",
+
+    "immunitary cell":
+      "immune",
+
+    "macrophage":
+      "macrophage",
+
+    "macrophague":
+      "macrophage",
+
+    "fibroblast":
+      "fibroblast",
+
+    "endothelial":
+      "endothelial",
+
+    "endothelial cell":
+      "endothelial",
+
+    "unassigned":
+      "unassigned",
+
+    "unclassified":
+      "unassigned",
+
+    "unknown":
+      "unassigned",
+  };
+
+  return (
+    aliases[text]
+    || "unassigned"
+  );
+}
+
+
+function phaseCellCanonicalMarkerStatus(
+  value
+) {
+  const text =
+    String(
+      value
+      || ""
+    )
+      .trim()
+      .toLowerCase()
+      .replaceAll(
+        "_",
+        " "
+      )
+      .replaceAll(
+        "-",
+        " "
+      )
+      .replace(
+        /\s+/g,
+        " "
+      );
+
+  if (
+    text === "positive"
+    || text.startsWith(
+      "positive "
+    )
+  ) {
+    return "positive";
+  }
+
+  if (
+    text === "negative"
+    || text.startsWith(
+      "negative "
+    )
+  ) {
+    return "negative";
+  }
+
+  if (
+    text === "unclassified"
+    || text === "unassigned"
+    || text === "unknown"
+    || !text
+  ) {
+    return "unclassified";
+  }
+
+  return "unclassified";
+}
+
+
+function phaseCellTypeDefinition(
+  value
+) {
+  const canonical =
+    phaseCellCanonicalCellType(
+      value
+    );
+
+  return (
+    PHASE_CELL_TYPES.find(
+      (item) =>
+        item.value
+          === canonical
+    )
+    || PHASE_CELL_TYPES[0]
+  );
+}
+
+
+function phaseCellMarkerDefinition(
+  value
+) {
+  const canonical =
+    phaseCellCanonicalMarkerStatus(
+      value
+    );
+
+  return (
+    PHASE_CELL_MARKER_STATUSES.find(
+      (item) =>
+        item.value
+          === canonical
+    )
+    || PHASE_CELL_MARKER_STATUSES[0]
+  );
+}
+
+
+function phaseCellFeatureObjectType(
+  feature
+) {
+  return String(
+    feature
+      ?.properties
+      ?.objectType
+    || feature
+      ?.properties
+      ?.object_type
+    || ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+
+function phaseCellFeatureMetadata(
+  feature
+) {
+  const histo =
+    feature
+      ?.properties
+      ?.histoannotator;
+
+  return (
+    histo
+    && typeof histo
+      === "object"
+    && histo.cell
+    && typeof histo.cell
+      === "object"
+  )
+    ? histo.cell
+    : {};
+}
+
+
+function phaseCellIsCellularFeature(
+  feature
+) {
+  const histo =
+    feature
+      ?.properties
+      ?.histoannotator;
+
+  if (
+    String(
+      histo?.level
+      || ""
+    )
+      .trim()
+      .toLowerCase()
+      === "cellular"
+  ) {
+    return true;
+  }
+
+  const objectType =
+    phaseCellFeatureObjectType(
+      feature
+    );
+
+  return [
+    "cell",
+    "nucleus",
+    "cell nucleus",
+  ].includes(
+    objectType
+  );
+}
+
+
+function phaseCellDocumentIsCellular() {
+  return (
+    featureCollection
+      ?.features
+      || []
+  ).some(
+    phaseCellIsCellularFeature
+  );
+}
+
+
+function phaseCellSourceClassification(
+  feature
+) {
+  return String(
+    feature
+      ?.properties
+      ?.classification
+      ?.name
+    || ""
+  ).trim();
+}
+
+
+function phaseCellMarkerStatus(
+  feature
+) {
+  const cell =
+    phaseCellFeatureMetadata(
+      feature
+    );
+
+  const explicit =
+    cell.markerStatus
+    ?? feature
+      ?.properties
+      ?.markerStatus
+    ?? feature
+      ?.properties
+      ?.marker_status;
+
+  if (
+    explicit !== undefined
+    && explicit !== null
+    && String(explicit).trim()
+  ) {
+    return phaseCellCanonicalMarkerStatus(
+      explicit
+    );
+  }
+
+  const classification =
+    phaseCellSourceClassification(
+      feature
+    );
+
+  return phaseCellCanonicalMarkerStatus(
+    classification
+  );
+}
+
+
+function phaseCellType(
+  feature
+) {
+  const cell =
+    phaseCellFeatureMetadata(
+      feature
+    );
+
+  const explicit =
+    cell.cellType
+    ?? feature
+      ?.properties
+      ?.cellType
+    ?? feature
+      ?.properties
+      ?.cell_type;
+
+  if (
+    explicit !== undefined
+    && explicit !== null
+    && String(explicit).trim()
+  ) {
+    return phaseCellCanonicalCellType(
+      explicit
+    );
+  }
+
+  const classification =
+    phaseCellSourceClassification(
+      feature
+    );
+
+  const normalized =
+    phaseCellCanonicalCellType(
+      classification
+    );
+
+  const raw =
+    String(
+      classification
+      || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const classificationIsKnownCellType =
+    [
+      "tumor",
+      "tumour",
+      "tumor cell",
+      "tumour cell",
+      "immune",
+      "immune cell",
+      "immunitary",
+      "immunitary cell",
+      "macrophage",
+      "macrophague",
+      "fibroblast",
+      "endothelial",
+      "endothelial cell",
+    ].includes(
+      raw
+    );
+
+  return (
+    classificationIsKnownCellType
+      ? normalized
+      : "unassigned"
+  );
+}
+
+
+function phaseCellPart(
+  feature
+) {
+  const cell =
+    phaseCellFeatureMetadata(
+      feature
+    );
+
+  const explicit =
+    String(
+      cell.part
+      || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    [
+      "cell",
+      "nucleus",
+      "body",
+    ].includes(
+      explicit
+    )
+  ) {
+    return (
+      explicit === "body"
+        ? "cell"
+        : explicit
+    );
+  }
+
+  const objectType =
+    phaseCellFeatureObjectType(
+      feature
+    );
+
+  return (
+    objectType.includes(
+      "nucleus"
+    )
+      ? "nucleus"
+      : "cell"
+  );
+}
+
+
+function phaseCellImportedFeature(
+  sourceFeature
+) {
+  const sourceProperties =
+    sourceFeature
+      ?.properties
+    && typeof sourceFeature
+      .properties === "object"
+      ? sourceFeature.properties
+      : {};
+
+  const sourceHisto =
+    sourceProperties
+      .histoannotator
+    && typeof sourceProperties
+      .histoannotator
+      === "object"
+      ? deepClone(
+          sourceProperties
+            .histoannotator
+        )
+      : {};
+
+  const sourceClassification =
+    sourceProperties
+      .classification
+    && typeof sourceProperties
+      .classification
+      === "object"
+      ? deepClone(
+          sourceProperties
+            .classification
+        )
+      : {};
+
+  const markerStatus =
+    phaseCellMarkerStatus(
+      sourceFeature
+    );
+
+  const cellType =
+    phaseCellType(
+      sourceFeature
+    );
+
+  const part =
+    phaseCellPart(
+      sourceFeature
+    );
+
+  const sourceObjectId =
+    String(
+      sourceFeature?.id
+      || uid()
+    );
+
+  const sourceObjectType =
+    String(
+      sourceProperties
+        .objectType
+      || sourceProperties
+        .object_type
+      || "cell"
+    );
+
+  const now =
+    new Date()
+      .toISOString();
+
+  const baseMetadata =
+    phaseCCreateMetadata();
+
+  const histo = {
+    ...baseMetadata,
+    ...sourceHisto,
+
+    schemaVersion:
+      PHASE_C_SCHEMA_VERSION,
+
+    role:
+      "annotation",
+
+    level:
+      "cellular",
+
+    cell: {
+      ...(
+        sourceHisto.cell
+        && typeof sourceHisto.cell
+          === "object"
+          ? deepClone(
+              sourceHisto.cell
+            )
+          : {}
+      ),
+
+      schemaVersion:
+        PHASE_CELL_SCHEMA_VERSION,
+
+      cellId:
+        String(
+          sourceHisto
+            ?.cell
+            ?.cellId
+          || sourceObjectId
+        ),
+
+      part,
+
+      markerStatus,
+
+      cellType,
+
+      source:
+        String(
+          sourceHisto
+            ?.cell
+            ?.source
+          || "qupath"
+        ),
+
+      sourceObjectId,
+
+      sourceObjectType,
+
+      sourceClassification:
+        String(
+          sourceClassification
+            ?.name
+          || ""
+        )
+        || null,
+    },
+
+    provenance: {
+      ...(
+        baseMetadata
+          .provenance
+        || {}
+      ),
+      ...(
+        sourceHisto
+          .provenance
+        || {}
+      ),
+
+      importedAt:
+        now,
+
+      importSource:
+        "qupath-cell-geojson",
+    },
+  };
+
+  const markerDefinition =
+    phaseCellMarkerDefinition(
+      markerStatus
+    );
+
+  const classification = {
+    ...sourceClassification,
+
+    name:
+      markerDefinition.label,
+  };
+
+  if (
+    !Array.isArray(
+      classification.color
+    )
+    && classification.colorRGB
+      === undefined
+  ) {
+    classification.color =
+      hexToRgbArray(
+        markerDefinition.color
+      );
+  }
+
+  const properties = {
+    objectType:
+      "cell",
+
+    isLocked:
+      false,
+
+    classification,
+
+    histoannotator:
+      histo,
+  };
+
+  for (
+    const key
+    of [
+      "name",
+      "description",
+      "measurements",
+    ]
+  ) {
+    if (
+      key
+      in sourceProperties
+    ) {
+      properties[key] =
+        deepClone(
+          sourceProperties[
+            key
+          ]
+        );
+    }
+  }
+
+  return {
+    type:
+      "Feature",
+
+    id:
+      sourceObjectId,
+
+    geometry:
+      deepClone(
+        sourceFeature.geometry
+      ),
+
+    properties,
+  };
+}
+
+
+// QuPath nucleusGeometry expansion v2
+//
+// QuPath PathCellObject exports may contain:
+//   geometry         -> cell-body contour
+//   nucleusGeometry  -> nucleus contour
+//
+// HistoAnnotator expands them into two editable GeoJSON features sharing
+// the same biological cellId.
+function phaseCellValidGeometryPayload(
+  geometry
+) {
+  return Boolean(
+    geometry
+    && typeof geometry
+      === "object"
+    && (
+      geometry.type
+        === "Polygon"
+      || geometry.type
+        === "MultiPolygon"
+    )
+    && Array.isArray(
+      geometry.coordinates
+    )
+    && geometry.coordinates.length
+  );
+}
+
+
+function phaseCellImportedFeatures(
+  sourceFeature
+) {
+  const body =
+    phaseCellImportedFeature(
+      sourceFeature
+    );
+
+  const bodyCell =
+    body
+      ?.properties
+      ?.histoannotator
+      ?.cell;
+
+  if (
+    bodyCell
+    && typeof bodyCell
+      === "object"
+  ) {
+    bodyCell.part =
+      "cell";
+  }
+
+  body.properties.objectType =
+    "cell";
+
+  const nucleusGeometry =
+    sourceFeature
+      ?.nucleusGeometry;
+
+  if (
+    !phaseCellValidGeometryPayload(
+      nucleusGeometry
+    )
+  ) {
+    return [
+      body,
+    ];
+  }
+
+  const cellId =
+    String(
+      bodyCell?.cellId
+      || body.id
+    );
+
+  const nucleusId =
+    `${String(body.id)}::nucleus`;
+
+  const nucleusHisto =
+    deepClone(
+      body.properties
+        .histoannotator
+    );
+
+  nucleusHisto.level =
+    "cellular";
+
+  nucleusHisto.role =
+    "annotation";
+
+  nucleusHisto.cell = {
+    ...(
+      nucleusHisto.cell
+      || {}
+    ),
+
+    schemaVersion:
+      PHASE_CELL_SCHEMA_VERSION,
+
+    cellId,
+
+    part:
+      "nucleus",
+
+    parentBodyId:
+      String(
+        body.id
+      ),
+
+    source:
+      "qupath",
+
+    sourceObjectId:
+      String(
+        body.id
+      ),
+
+    sourceObjectType:
+      "nucleusGeometry",
+  };
+
+  const nucleusProperties = {
+    objectType:
+      "nucleus",
+
+    isLocked:
+      false,
+
+    classification:
+      deepClone(
+        body.properties
+          .classification
+      ),
+
+    histoannotator:
+      nucleusHisto,
+  };
+
+  const nucleus = {
+    type:
+      "Feature",
+
+    id:
+      nucleusId,
+
+    geometry:
+      deepClone(
+        nucleusGeometry
+      ),
+
+    properties:
+      nucleusProperties,
+  };
+
+  return [
+    body,
+    nucleus,
+  ];
+}
+
+
+function phaseCellPayloadCellFeatures(
+  payload
+) {
+  if (
+    payload?.type
+      !== "FeatureCollection"
+    || !Array.isArray(
+      payload.features
+    )
+  ) {
+    return [];
+  }
+
+  return payload.features.filter(
+    (feature) =>
+      feature?.type
+        === "Feature"
+      && feature.geometry
+      && phaseCellIsCellularFeature(
+        feature
+      )
+  );
+}
+
+
+function phaseCellPayloadLooksCellular(
+  payload
+) {
+  return (
+    phaseCellPayloadCellFeatures(
+      payload
+    ).length > 0
+  );
+}
+
+
+function phaseCellSuggestedFileName(
+  file
+) {
+  const raw =
+    String(
+      file?.name
+      || "Cellular Annotation"
+    )
+      .replace(
+        /\.geojson$/i,
+        ""
+      )
+      .replace(
+        /\.json$/i,
+        ""
+      )
+      .trim();
+
+  const clean =
+    raw
+      .replace(
+        /[^A-Za-z0-9 _.-]+/g,
+        "_"
+      )
+      .slice(
+        0,
+        70
+      )
+      .trim()
+    || "Cellular Annotation";
+
+  const base =
+    clean.toLowerCase()
+      .includes(
+        "cell"
+      )
+      ? clean
+      : `${clean} Cells`;
+
+  if (
+    !annotationFiles.includes(
+      base
+    )
+  ) {
+    return base;
+  }
+
+  for (
+    let index = 2;
+    index < 1000;
+    index += 1
+  ) {
+    const suffix =
+      ` ${index}`;
+
+    const candidate =
+      (
+        base.slice(
+          0,
+          Math.max(
+            1,
+            80
+              - suffix.length
+          )
+        )
+        + suffix
+      );
+
+    if (
+      !annotationFiles.includes(
+        candidate
+      )
+    ) {
+      return candidate;
+    }
+  }
+
+  return (
+    `Cells ${Date.now()}`
+      .slice(
+        0,
+        80
+      )
+  );
+}
+
+
+function phaseCellImportSummary(
+  cellFeatures
+) {
+  const summary = {
+    total:
+      cellFeatures.length,
+
+    positive:
+      0,
+
+    negative:
+      0,
+
+    unclassified:
+      0,
+
+    unassigned:
+      0,
+
+    nucleusGeometries:
+      0,
+  };
+
+  for (
+    const feature
+    of cellFeatures
+  ) {
+    if (
+      phaseCellValidGeometryPayload(
+        feature?.nucleusGeometry
+      )
+    ) {
+      summary.nucleusGeometries +=
+        1;
+    }
+    const marker =
+      phaseCellMarkerStatus(
+        feature
+      );
+
+    const type =
+      phaseCellType(
+        feature
+      );
+
+    if (
+      marker
+      === "positive"
+    ) {
+      summary.positive += 1;
+
+    } else if (
+      marker
+      === "negative"
+    ) {
+      summary.negative += 1;
+
+    } else {
+      summary.unclassified += 1;
+    }
+
+    if (
+      type
+      === "unassigned"
+    ) {
+      summary.unassigned += 1;
+    }
+  }
+
+  return summary;
+}
+
+
+async function phaseCellImportPayload(
+  file,
+  payload
+) {
+  if (!currentImage) {
+    throw new Error(
+      "Open an image before importing cellular annotations"
+    );
+  }
+
+  const sourceCells =
+    phaseCellPayloadCellFeatures(
+      payload
+    );
+
+  if (!sourceCells.length) {
+    throw new Error(
+      "No cellular objects were detected"
+    );
+  }
+
+  const summary =
+    phaseCellImportSummary(
+      sourceCells
+    );
+
+  const skipped =
+    Math.max(
+      0,
+      Number(
+        payload.features
+          ?.length
+        || 0
+      )
+      - sourceCells.length
+    );
+
+  const proceed =
+    window.confirm(
+      (
+        "QuPath cellular annotation detected.\n\n"
+        + `Cells: ${summary.total.toLocaleString()}\n`
+        + `Positive: ${summary.positive.toLocaleString()}\n`
+        + `Negative: ${summary.negative.toLocaleString()}\n`
+        + `Marker Unclassified: ${summary.unclassified.toLocaleString()}\n`
+        + `Cell type Unassigned: ${summary.unassigned.toLocaleString()}\n`
+        + `Nucleus geometries: ${summary.nucleusGeometries.toLocaleString()}\n`
+        + (
+          skipped
+            ? `Non-cell objects skipped: ${skipped.toLocaleString()}\n`
+            : ""
+        )
+        + "\nImport as a separate Cellular Annotation file?"
+      )
+    );
+
+  if (!proceed) {
+    return;
+  }
+
+  const suggested =
+    phaseCellSuggestedFileName(
+      file
+    );
+
+  const rawName =
+    window.prompt(
+      "Cellular annotation file name",
+      suggested
+    );
+
+  if (
+    rawName === null
+  ) {
+    return;
+  }
+
+  const name =
+    String(
+      rawName
+    ).trim();
+
+  if (
+    !name
+    || !/^[A-Za-z0-9 _.-]{1,80}$/.test(
+      name
+    )
+    || name === "."
+    || name === ".."
+  ) {
+    throw new Error(
+      "Invalid annotation file name"
+    );
+  }
+
+  if (
+    annotationFiles.includes(
+      name
+    )
+  ) {
+    throw new Error(
+      (
+        `Annotation file "${name}" already exists. `
+        + "Choose another name."
+      )
+    );
+  }
+
+  if (dirty) {
+    await saveAnnotations(
+      false
+    );
+  }
+
+  const normalizedCells =
+    sourceCells.flatMap(
+      phaseCellImportedFeatures
+    );
+
+  annotationFiles.push(
+    name
+  );
+
+  currentAnnotationFile =
+    name;
+
+  await putMeta(
+    `files:${currentImage.id}`,
+    annotationFiles
+  );
+
+  renderAnnotationFileOptions();
+
+  featureCollection =
+    normalizeFeatureCollectionClient({
+      type:
+        "FeatureCollection",
+
+      features:
+        normalizedCells,
+    });
+
+  featureCollection.features
+    .forEach(
+      featureId
+    );
+
+  clearSelectedFeatures(
+    false
+  );
+
+  undoStack =
+    [];
+
+  redoStack =
+    [];
+
+  pathologistDraft =
+    null;
+
+  activeDraft =
+    null;
+
+  pointerState =
+    null;
+
+  currentLocalRevision =
+    0;
+
+  currentLastSyncedRevision =
+    0;
+
+  currentPendingChangeCount =
+    0;
+
+  dirty =
+    false;
+
+  localDraftState =
+    "New cellular annotation";
+
+  await persistLocalDraft(
+    false,
+    currentImage,
+    featureCollection
+  );
+
+  markChanged();
+
+  await saveAnnotations(
+    false
+  );
+
+  renderAnnotationFileOptions();
+  phaseCellRenderPanel();
+  updateControls();
+  updateDiagnostics();
+  drawAnnotations();
+
+  setStatus(
+    (
+      `Imported ${sourceCells.length.toLocaleString()} cells`
+      + ` · ${summary.nucleusGeometries.toLocaleString()} nuclei`
+      + ` · ${name}`
+      + " · saved locally first"
+    ),
+    "saved"
+  );
+}
+
+
+function phaseCellFeatureMatchesFilters(
+  feature
+) {
+  if (
+    !phaseCellIsCellularFeature(
+      feature
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    !phaseCellDisplayState
+      .showCells
+  ) {
+    return false;
+  }
+
+  const marker =
+    phaseCellMarkerStatus(
+      feature
+    );
+
+  const cellType =
+    phaseCellType(
+      feature
+    );
+
+  if (
+    phaseCellDisplayState
+      .markerFilter
+      !== "all"
+    && marker
+      !== phaseCellDisplayState
+        .markerFilter
+  ) {
+    return false;
+  }
+
+  if (
+    phaseCellDisplayState
+      .cellTypeFilter
+      !== "all"
+    && cellType
+      !== phaseCellDisplayState
+        .cellTypeFilter
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+function phaseCellColor(
+  feature
+) {
+  if (
+    phaseCellDisplayState
+      .colorBy
+      === "cellType"
+  ) {
+    return phaseCellTypeDefinition(
+      phaseCellType(
+        feature
+      )
+    ).color;
+  }
+
+  return phaseCellMarkerDefinition(
+    phaseCellMarkerStatus(
+      feature
+    )
+  ).color;
+}
+
+
+function phaseCellSelectedFeatures() {
+  return (
+    featureCollection
+      ?.features
+      || []
+  ).filter(
+    (feature) =>
+      phaseCellIsCellularFeature(
+        feature
+      )
+      && selectedIds.has(
+        String(
+          featureId(
+            feature
+          )
+        )
+      )
+  );
+}
+
+
+function phaseCellCounts() {
+  const counts = {
+    total:
+      0,
+
+    marker: {
+      positive:
+        0,
+      negative:
+        0,
+      unclassified:
+        0,
+    },
+
+    cellType:
+      Object.fromEntries(
+        PHASE_CELL_TYPES.map(
+          (item) => [
+            item.value,
+            0,
+          ]
+        )
+      ),
+
+    part: {
+      cell:
+        0,
+      nucleus:
+        0,
+    },
+  };
+
+  for (
+    const feature
+    of (
+      featureCollection
+        ?.features
+      || []
+    )
+  ) {
+    if (
+      !phaseCellIsCellularFeature(
+        feature
+      )
+    ) {
+      continue;
+    }
+
+    counts.total += 1;
+
+    const marker =
+      phaseCellMarkerStatus(
+        feature
+      );
+
+    const cellType =
+      phaseCellType(
+        feature
+      );
+
+    const part =
+      phaseCellPart(
+        feature
+      );
+
+    counts.marker[
+      marker
+    ] = (
+      counts.marker[
+        marker
+      ]
+      || 0
+    ) + 1;
+
+    counts.cellType[
+      cellType
+    ] = (
+      counts.cellType[
+        cellType
+      ]
+      || 0
+    ) + 1;
+
+    counts.part[
+      part
+    ] = (
+      counts.part[
+        part
+      ]
+      || 0
+    ) + 1;
+  }
+
+  return counts;
+}
+
+
+function phaseCellPercent(
+  count,
+  total
+) {
+  if (!total) {
+    return "0.0%";
+  }
+
+  return (
+    (
+      100
+      * Number(count)
+      / Number(total)
+    ).toFixed(
+      1
+    )
+    + "%"
+  );
+}
+
+
+function phaseCellEnsurePanel() {
+  if (
+    document.getElementById(
+      "phaseCellPanel"
+    )
+  ) {
+    return;
+  }
+
+  const classPanel =
+    document.getElementById(
+      "classPanel"
+    );
+
+  const classSection =
+    classPanel
+      ?.querySelector(
+        ".class-section"
+      );
+
+  if (
+    !classPanel
+    || !classSection
+  ) {
+    return;
+  }
+
+  const section =
+    document.createElement(
+      "section"
+    );
+
+  section.id =
+    "phaseCellPanel";
+
+  section.className =
+    "phase-cell-panel";
+
+  section.hidden =
+    true;
+
+  section.innerHTML = `
+    <div class="phase-cell-heading">
+      <div>
+        <h2>Cellular Annotation</h2>
+        <span id="phaseCellDocumentSummary">
+          0 cells
+        </span>
+      </div>
+
+      <label class="phase-cell-visible-toggle">
+        <input id="phaseCellVisible"
+               type="checkbox"
+               checked>
+        <span>Show cells</span>
+      </label>
+    </div>
+
+    <div class="phase-cell-controls-grid">
+      <label>
+        <span>Color by</span>
+        <select id="phaseCellColorBy">
+          <option value="markerStatus">
+            Marker status
+          </option>
+          <option value="cellType">
+            Cell type
+          </option>
+        </select>
+      </label>
+
+      <label>
+        <span>Marker filter</span>
+        <select id="phaseCellMarkerFilter">
+          <option value="all">All</option>
+          <option value="positive">Positive</option>
+          <option value="negative">Negative</option>
+          <option value="unclassified">Unclassified</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Cell type filter</span>
+        <select id="phaseCellTypeFilter">
+          <option value="all">All</option>
+          <option value="unassigned">Unassigned</option>
+          <option value="tumor">Tumor</option>
+          <option value="immune">Immune</option>
+          <option value="macrophage">Macrophage</option>
+          <option value="fibroblast">Fibroblast</option>
+          <option value="endothelial">Endothelial</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="phase-cell-edit-card">
+      <div class="phase-cell-edit-head">
+        <strong>Edit selected cells</strong>
+        <span id="phaseCellSelectedCount">
+          0 selected
+        </span>
+      </div>
+
+      <div class="phase-cell-edit-row">
+        <select id="phaseCellEditType"
+                aria-label="Cell type">
+          <option value="unassigned">Unassigned</option>
+          <option value="tumor">Tumor</option>
+          <option value="immune">Immune</option>
+          <option value="macrophage">Macrophage</option>
+          <option value="fibroblast">Fibroblast</option>
+          <option value="endothelial">Endothelial</option>
+        </select>
+
+        <button id="phaseCellApplyType"
+                type="button">
+          Apply cell type
+        </button>
+      </div>
+
+      <div class="phase-cell-edit-row">
+        <select id="phaseCellEditMarker"
+                aria-label="Marker status">
+          <option value="unclassified">Unclassified</option>
+          <option value="positive">Positive</option>
+          <option value="negative">Negative</option>
+        </select>
+
+        <button id="phaseCellApplyMarker"
+                type="button">
+          Apply marker
+        </button>
+      </div>
+    </div>
+
+    <div class="phase-cell-stats">
+      <div class="phase-cell-stats-title">
+        Cellular summary
+      </div>
+
+      <div id="phaseCellMarkerStats"
+           class="phase-cell-stat-list">
+      </div>
+
+      <details class="phase-cell-type-details">
+        <summary>Counts by cell type</summary>
+        <div id="phaseCellTypeStats"
+             class="phase-cell-stat-list">
+        </div>
+      </details>
+    </div>
+
+    <p class="phase-cell-note">
+      
+      
+      
+    </p>
+  `;
+
+  classSection.insertAdjacentElement(
+    "beforebegin",
+    section
+  );
+
+  document.getElementById(
+    "phaseCellVisible"
+  )?.addEventListener(
+    "change",
+    (event) => {
+      phaseCellDisplayState
+        .showCells =
+        Boolean(
+          event.target.checked
+        );
+
+      drawAnnotations();
+    }
+  );
+
+  document.getElementById(
+    "phaseCellColorBy"
+  )?.addEventListener(
+    "change",
+    (event) => {
+      phaseCellDisplayState
+        .colorBy =
+        String(
+          event.target.value
+          || "markerStatus"
+        );
+
+      drawAnnotations();
+    }
+  );
+
+  document.getElementById(
+    "phaseCellMarkerFilter"
+  )?.addEventListener(
+    "change",
+    (event) => {
+      phaseCellDisplayState
+        .markerFilter =
+        String(
+          event.target.value
+          || "all"
+        );
+
+      drawAnnotations();
+      phaseCellRenderPanel();
+    }
+  );
+
+  document.getElementById(
+    "phaseCellTypeFilter"
+  )?.addEventListener(
+    "change",
+    (event) => {
+      phaseCellDisplayState
+        .cellTypeFilter =
+        String(
+          event.target.value
+          || "all"
+        );
+
+      drawAnnotations();
+      phaseCellRenderPanel();
+    }
+  );
+
+  document.getElementById(
+    "phaseCellApplyType"
+  )?.addEventListener(
+    "click",
+    phaseCellApplySelectedType
+  );
+
+  document.getElementById(
+    "phaseCellApplyMarker"
+  )?.addEventListener(
+    "click",
+    phaseCellApplySelectedMarker
+  );
+}
+
+
+function phaseCellRenderPanel() {
+  phaseCellEnsurePanel();
+
+  const panel =
+    document.getElementById(
+      "phaseCellPanel"
+    );
+
+  const classSection =
+    document
+      .getElementById(
+        "classPanel"
+      )
+      ?.querySelector(
+        ".class-section"
+      );
+
+  if (!panel) {
+    return;
+  }
+
+  const cellular =
+    phaseCellDocumentIsCellular();
+
+  panel.hidden =
+    !cellular;
+
+  if (classSection) {
+    classSection.hidden =
+      cellular;
+  }
+
+  if (!cellular) {
+    return;
+  }
+
+  const counts =
+    phaseCellCounts();
+
+  const selected =
+    phaseCellSelectedFeatures();
+
+  const selectedCount =
+    document.getElementById(
+      "phaseCellSelectedCount"
+    );
+
+  if (selectedCount) {
+    selectedCount.textContent =
+      (
+        `${selected.length.toLocaleString()} selected`
+      );
+  }
+
+  const summary =
+    document.getElementById(
+      "phaseCellDocumentSummary"
+    );
+
+  if (summary) {
+    summary.textContent =
+      (
+        `${counts.total.toLocaleString()} cellular object`
+        + `${counts.total === 1 ? "" : "s"}`
+      );
+  }
+
+  const markerStats =
+    document.getElementById(
+      "phaseCellMarkerStats"
+    );
+
+  if (markerStats) {
+    markerStats.innerHTML =
+      PHASE_CELL_MARKER_STATUSES.map(
+        (item) => {
+          const value =
+            Number(
+              counts.marker[
+                item.value
+              ]
+              || 0
+            );
+
+          return `
+            <div>
+              <span>
+                <i style="background:${item.color}"></i>
+                ${item.label}
+              </span>
+              <strong>
+                ${value.toLocaleString()}
+                <small>${phaseCellPercent(value, counts.total)}</small>
+              </strong>
+            </div>
+          `;
+        }
+      ).join("");
+  }
+
+  const typeStats =
+    document.getElementById(
+      "phaseCellTypeStats"
+    );
+
+  if (typeStats) {
+    typeStats.innerHTML =
+      PHASE_CELL_TYPES.map(
+        (item) => {
+          const value =
+            Number(
+              counts.cellType[
+                item.value
+              ]
+              || 0
+            );
+
+          return `
+            <div>
+              <span>
+                <i style="background:${item.color}"></i>
+                ${item.label}
+              </span>
+              <strong>
+                ${value.toLocaleString()}
+                <small>${phaseCellPercent(value, counts.total)}</small>
+              </strong>
+            </div>
+          `;
+        }
+      ).join("");
+  }
+
+  const visible =
+    document.getElementById(
+      "phaseCellVisible"
+    );
+
+  if (visible) {
+    visible.checked =
+      Boolean(
+        phaseCellDisplayState
+          .showCells
+      );
+  }
+
+  const colorBy =
+    document.getElementById(
+      "phaseCellColorBy"
+    );
+
+  if (colorBy) {
+    colorBy.value =
+      phaseCellDisplayState
+        .colorBy;
+  }
+
+  const markerFilter =
+    document.getElementById(
+      "phaseCellMarkerFilter"
+    );
+
+  if (markerFilter) {
+    markerFilter.value =
+      phaseCellDisplayState
+        .markerFilter;
+  }
+
+  const typeFilter =
+    document.getElementById(
+      "phaseCellTypeFilter"
+    );
+
+  if (typeFilter) {
+    typeFilter.value =
+      phaseCellDisplayState
+        .cellTypeFilter;
+  }
+
+  if (
+    selected.length
+      === 1
+  ) {
+    const editType =
+      document.getElementById(
+        "phaseCellEditType"
+      );
+
+    const editMarker =
+      document.getElementById(
+        "phaseCellEditMarker"
+      );
+
+    if (editType) {
+      editType.value =
+        phaseCellType(
+          selected[0]
+        );
+    }
+
+    if (editMarker) {
+      editMarker.value =
+        phaseCellMarkerStatus(
+          selected[0]
+        );
+    }
+  }
+}
+
+
+function phaseCellEnsureMetadata(
+  feature
+) {
+  feature.properties ||=
+    {};
+
+  const properties =
+    feature.properties;
+
+  properties.histoannotator =
+    phaseCNormalizeMetadata(
+      properties
+    );
+
+  const histo =
+    properties.histoannotator;
+
+  histo.role =
+    "annotation";
+
+  histo.level =
+    "cellular";
+
+  histo.cell =
+    (
+      histo.cell
+      && typeof histo.cell
+        === "object"
+    )
+      ? histo.cell
+      : {};
+
+  histo.cell.schemaVersion =
+    PHASE_CELL_SCHEMA_VERSION;
+
+  histo.cell.cellId =
+    String(
+      histo.cell.cellId
+      || featureId(
+          feature
+        )
+    );
+
+  histo.cell.part =
+    phaseCellPart(
+      feature
+    );
+
+  histo.cell.markerStatus =
+    phaseCellMarkerStatus(
+      feature
+    );
+
+  histo.cell.cellType =
+    phaseCellType(
+      feature
+    );
+
+  histo.cell.source =
+    String(
+      histo.cell.source
+      || "histoannotator"
+    );
+
+  return histo.cell;
+}
+
+
+function phaseCellApplySelectedType() {
+  const selected =
+    phaseCellSelectedFeatures();
+
+  if (!selected.length) {
+    setStatus(
+      "Select one or more cells first",
+      "error"
+    );
+    return;
+  }
+
+  const select =
+    document.getElementById(
+      "phaseCellEditType"
+    );
+
+  const cellType =
+    phaseCellCanonicalCellType(
+      select?.value
+    );
+
+  pushUndo();
+
+  for (
+    const feature
+    of selected
+  ) {
+    const cell =
+      phaseCellEnsureMetadata(
+        feature
+      );
+
+    cell.cellType =
+      cellType;
+  }
+
+  markChanged();
+  phaseCellRenderPanel();
+
+  setStatus(
+    (
+      `Cell type → ${
+        phaseCellTypeDefinition(
+          cellType
+        ).label
+      } · ${selected.length.toLocaleString()} cell`
+      + `${selected.length === 1 ? "" : "s"}`
+    ),
+    "saved"
+  );
+}
+
+
+function phaseCellApplySelectedMarker() {
+  const selected =
+    phaseCellSelectedFeatures();
+
+  if (!selected.length) {
+    setStatus(
+      "Select one or more cells first",
+      "error"
+    );
+    return;
+  }
+
+  const select =
+    document.getElementById(
+      "phaseCellEditMarker"
+    );
+
+  const markerStatus =
+    phaseCellCanonicalMarkerStatus(
+      select?.value
+    );
+
+  const marker =
+    phaseCellMarkerDefinition(
+      markerStatus
+    );
+
+  pushUndo();
+
+  for (
+    const feature
+    of selected
+  ) {
+    const cell =
+      phaseCellEnsureMetadata(
+        feature
+      );
+
+    cell.markerStatus =
+      markerStatus;
+
+    feature.properties ||=
+      {};
+
+    feature.properties.classification = {
+      ...(
+        feature.properties
+          .classification
+        || {}
+      ),
+
+      name:
+        marker.label,
+
+      color:
+        hexToRgbArray(
+          marker.color
+        ),
+    };
+  }
+
+  markChanged();
+  phaseCellRenderPanel();
+
+  setStatus(
+    (
+      `Marker status → ${marker.label}`
+      + ` · ${selected.length.toLocaleString()} cell`
+      + `${selected.length === 1 ? "" : "s"}`
+    ),
+    "saved"
+  );
+}
+
+
+// ------------------------------------------------------------------------
+// Normal GeoJSON import: automatically branch to cellular import.
+// ------------------------------------------------------------------------
+
+const phaseCellBaseImportGeoJson =
+  importGeoJson;
+
+importGeoJson =
+  async function phaseCellImportGeoJson(
+    file
+  ) {
+    if (
+      !file
+      || !currentImage
+    ) {
+      return;
+    }
+
+    let payload;
+
+    try {
+      payload =
+        JSON.parse(
+          await file.text()
+        );
+
+    } catch (_) {
+      return phaseCellBaseImportGeoJson(
+        file
+      );
+    }
+
+    if (
+      !phaseCellPayloadLooksCellular(
+        payload
+      )
+    ) {
+      return phaseCellBaseImportGeoJson(
+        file
+      );
+    }
+
+    try {
+      await phaseCellImportPayload(
+        file,
+        payload
+      );
+
+    } catch (error) {
+      setStatus(
+        (
+          `Cellular GeoJSON import failed: ${
+            error.message
+          }`
+        ),
+        "error"
+      );
+
+    } finally {
+      if (els.importInput) {
+        els.importInput.value =
+          "";
+      }
+    }
+  };
+
+
+// ------------------------------------------------------------------------
+// Cellular display overrides.
+// ------------------------------------------------------------------------
+
+const phaseCellBaseColorForFeature =
+  colorForFeature;
+
+colorForFeature =
+  function phaseCellColorForFeature(
+    feature
+  ) {
+    if (
+      phaseCellDocumentIsCellular()
+      && phaseCellIsCellularFeature(
+        feature
+      )
+    ) {
+      return phaseCellColor(
+        feature
+      );
+    }
+
+    return phaseCellBaseColorForFeature(
+      feature
+    );
+  };
+
+
+const phaseCellBaseDrawGeometry =
+  drawGeometry;
+
+drawGeometry =
+  function phaseCellDrawGeometry(
+    feature
+  ) {
+    if (
+      phaseCellDocumentIsCellular()
+    ) {
+      const isTissueRoi =
+        typeof phaseDIsTissueRoi
+          === "function"
+        && phaseDIsTissueRoi(
+          feature
+        );
+
+      if (
+        !isTissueRoi
+        && (
+          !phaseCellIsCellularFeature(
+            feature
+          )
+          || !phaseCellFeatureMatchesFilters(
+            feature
+          )
+        )
+      ) {
+        return;
+      }
+    }
+
+    return phaseCellBaseDrawGeometry(
+      feature
+    );
+  };
+
+
+const phaseCellBaseHitTest =
+  hitTest;
+
+hitTest =
+  function phaseCellHitTest(
+    point
+  ) {
+    const id =
+      phaseCellBaseHitTest(
+        point
+      );
+
+    if (
+      !id
+      || !phaseCellDocumentIsCellular()
+    ) {
+      return id;
+    }
+
+    const feature =
+      findFeature(
+        id
+      );
+
+    if (!feature) {
+      return null;
+    }
+
+    if (
+      typeof phaseDIsTissueRoi
+        === "function"
+      && phaseDIsTissueRoi(
+        feature
+      )
+    ) {
+      return id;
+    }
+
+    if (
+      !phaseCellIsCellularFeature(
+        feature
+      )
+      || !phaseCellFeatureMatchesFilters(
+        feature
+      )
+    ) {
+      return null;
+    }
+
+    return id;
+  };
+
+
+// ------------------------------------------------------------------------
+// Keep the cellular panel synchronized with file changes, selection and Undo.
+// ------------------------------------------------------------------------
+
+const phaseCellBaseUpdateControls =
+  updateControls;
+
+updateControls =
+  function phaseCellUpdateControls(
+    ...args
+  ) {
+    const result =
+      phaseCellBaseUpdateControls(
+        ...args
+      );
+
+    phaseCellRenderPanel();
+
+    return result;
+  };
+
+
+const phaseCellBaseLoadSelectedAnnotationFile =
+  loadSelectedAnnotationFile;
+
+loadSelectedAnnotationFile =
+  async function phaseCellLoadSelectedAnnotationFile(
+    name
+  ) {
+    const result =
+      await phaseCellBaseLoadSelectedAnnotationFile(
+        name
+      );
+
+    phaseCellDisplayState = {
+      showCells:
+        true,
+
+      colorBy:
+        "markerStatus",
+
+      markerFilter:
+        "all",
+
+      cellTypeFilter:
+        "all",
+    };
+
+    phaseCellRenderPanel();
+    drawAnnotations();
+
+    return result;
+  };
+
+
+phaseCellEnsurePanel();
+phaseCellRenderPanel();
+// ========================================================================
+// Cellular Nucleus Editing + compact sidebar UI v1
+//
+// Extends Cellular Annotation Core v1 with:
+//   - explicit Cell body / Nucleus geometry parts
+//   - Part filter (All / Cell bodies / Nuclei)
+//   - manual creation of missing nuclei/cell bodies
+//   - Add/Subtract/Delete editing for selected cellular geometry
+//   - nucleus -> selected parent cell linkage through shared cellId
+//   - biological counts deduplicated by cellId
+//   - clear nucleus geometry status
+//   - nucleus-first hit testing when filters are active
+//
+// QuPath note:
+// Nucleus measurements do NOT imply that a nucleus contour exists. A nucleus
+// is visible/editable only when a nucleus geometry is actually present.
+// ========================================================================
+
+// Cellular left-toolbar nucleus mode v2
+//
+// In a Cellular Annotation document, the existing left-side Annotation
+// drawing tools create nucleus geometry. The duplicate right-side geometry
+// toolbar is intentionally not used.
+let phaseCellCreationPart =
+  "nucleus";
+
+
+function phaseCellPartLabel(
+  part
+) {
+  return (
+    String(part)
+      === "nucleus"
+      ? "Nucleus"
+      : "Cell body"
+  );
+}
+
+
+function phaseCellCellId(
+  feature
+) {
+  const metadata =
+    phaseCellFeatureMetadata(
+      feature
+    );
+
+  return String(
+    metadata.cellId
+    || featureId(
+      feature
+    )
+  );
+}
+
+
+function phaseCellBodyForCellId(
+  cellId
+) {
+  const key =
+    String(
+      cellId
+      || ""
+    );
+
+  if (!key) {
+    return null;
+  }
+
+  return (
+    featureCollection
+      ?.features
+      || []
+  ).find(
+    (feature) =>
+      phaseCellIsCellularFeature(
+        feature
+      )
+      && phaseCellPart(
+        feature
+      )
+        === "cell"
+      && phaseCellCellId(
+        feature
+      )
+        === key
+  ) || null;
+}
+
+
+function phaseCellNucleiForCellId(
+  cellId
+) {
+  const key =
+    String(
+      cellId
+      || ""
+    );
+
+  if (!key) {
+    return [];
+  }
+
+  return (
+    featureCollection
+      ?.features
+      || []
+  ).filter(
+    (feature) =>
+      phaseCellIsCellularFeature(
+        feature
+      )
+      && phaseCellPart(
+        feature
+      )
+        === "nucleus"
+      && phaseCellCellId(
+        feature
+      )
+        === key
+  );
+}
+
+
+function phaseCellSelectedPrimary() {
+  if (
+    !selectedId
+  ) {
+    return null;
+  }
+
+  const feature =
+    findFeature(
+      selectedId
+    );
+
+  return (
+    feature
+    && phaseCellIsCellularFeature(
+      feature
+    )
+      ? feature
+      : null
+  );
+}
+
+
+function phaseCellSelectedBodyForLink() {
+  const selected =
+    phaseCellSelectedPrimary();
+
+  if (
+    selected
+    && phaseCellPart(
+      selected
+    )
+      === "cell"
+  ) {
+    return selected;
+  }
+
+  if (
+    selected
+    && phaseCellPart(
+      selected
+    )
+      === "nucleus"
+  ) {
+    return phaseCellBodyForCellId(
+      phaseCellCellId(
+        selected
+      )
+    );
+  }
+
+  return null;
+}
+
+
+function phaseCellUniqueBiologicalCounts() {
+  const byCellId =
+    new Map();
+
+  let geometryTotal =
+    0;
+
+  let bodyCount =
+    0;
+
+  let nucleusCount =
+    0;
+
+  for (
+    const feature
+    of (
+      featureCollection
+        ?.features
+      || []
+    )
+  ) {
+    if (
+      !phaseCellIsCellularFeature(
+        feature
+      )
+    ) {
+      continue;
+    }
+
+    geometryTotal += 1;
+
+    const part =
+      phaseCellPart(
+        feature
+      );
+
+    if (
+      part === "nucleus"
+    ) {
+      nucleusCount += 1;
+    } else {
+      bodyCount += 1;
+    }
+
+    const cellId =
+      phaseCellCellId(
+        feature
+      );
+
+    const current =
+      byCellId.get(
+        cellId
+      );
+
+    // Prefer cell-body metadata when both body and nucleus exist.
+    if (
+      !current
+      || (
+        part === "cell"
+        && current.part
+          !== "cell"
+      )
+    ) {
+      byCellId.set(
+        cellId,
+        {
+          feature,
+          part,
+        }
+      );
+    }
+  }
+
+  const marker = {
+    positive:
+      0,
+
+    negative:
+      0,
+
+    unclassified:
+      0,
+  };
+
+  const cellType =
+    Object.fromEntries(
+      PHASE_CELL_TYPES.map(
+        (item) => [
+          item.value,
+          0,
+        ]
+      )
+    );
+
+  for (
+    const item
+    of byCellId.values()
+  ) {
+    const markerStatus =
+      phaseCellMarkerStatus(
+        item.feature
+      );
+
+    const type =
+      phaseCellType(
+        item.feature
+      );
+
+    marker[
+      markerStatus
+    ] = (
+      marker[
+        markerStatus
+      ]
+      || 0
+    ) + 1;
+
+    cellType[
+      type
+    ] = (
+      cellType[
+        type
+      ]
+      || 0
+    ) + 1;
+  }
+
+  return {
+    total:
+      byCellId.size,
+
+    geometryTotal,
+
+    marker,
+
+    cellType,
+
+    part: {
+      cell:
+        bodyCount,
+
+      nucleus:
+        nucleusCount,
+    },
+  };
+}
+
+
+// ------------------------------------------------------------------------
+// Counts become biological-cell counts (deduplicated by shared cellId).
+// Geometry/body/nucleus counts remain available separately.
+// ------------------------------------------------------------------------
+
+const phaseCellNucleusBaseCounts =
+  phaseCellCounts;
+
+phaseCellCounts =
+  function phaseCellNucleusCounts() {
+    if (
+      !phaseCellDocumentIsCellular()
+    ) {
+      return phaseCellNucleusBaseCounts();
+    }
+
+    return phaseCellUniqueBiologicalCounts();
+  };
+
+
+// ------------------------------------------------------------------------
+// Part filter.
+// ------------------------------------------------------------------------
+
+const phaseCellNucleusBaseMatchesFilters =
+  phaseCellFeatureMatchesFilters;
+
+phaseCellFeatureMatchesFilters =
+  function phaseCellNucleusMatchesFilters(
+    feature
+  ) {
+    if (
+      !phaseCellNucleusBaseMatchesFilters(
+        feature
+      )
+    ) {
+      return false;
+    }
+
+    const partFilter =
+      String(
+        phaseCellDisplayState
+          .partFilter
+        || "all"
+      );
+
+    if (
+      partFilter === "all"
+    ) {
+      return true;
+    }
+
+    return (
+      phaseCellPart(
+        feature
+      )
+      === partFilter
+    );
+  };
+
+
+// ------------------------------------------------------------------------
+// Nucleus drawing style: same biological color, distinct dashed boundary.
+// ------------------------------------------------------------------------
+
+const phaseCellNucleusBaseDrawGeometry =
+  drawGeometry;
+
+drawGeometry =
+  function phaseCellNucleusDrawGeometry(
+    feature
+  ) {
+    if (
+      !phaseCellDocumentIsCellular()
+      || !phaseCellIsCellularFeature(
+        feature
+      )
+      || phaseCellPart(
+        feature
+      )
+        !== "nucleus"
+    ) {
+      return phaseCellNucleusBaseDrawGeometry(
+        feature
+      );
+    }
+
+    ctx.save();
+
+    ctx.setLineDash([
+      4,
+      2,
+    ]);
+
+    const previousFilled =
+      annotationsFilled;
+
+    // Keep nuclei visually distinct from cell bodies and avoid hiding
+    // the underlying nuclear morphology.
+    annotationsFilled =
+      false;
+
+    try {
+      return phaseCellNucleusBaseDrawGeometry(
+        feature
+      );
+
+    } finally {
+      annotationsFilled =
+        previousFilled;
+
+      ctx.restore();
+    }
+  };
+
+
+// ------------------------------------------------------------------------
+// Cellular hit test that respects the active part/marker/type filters.
+//
+// The original core wrapper validates only the first base hit. If a hidden
+// cell body sits above a visible nucleus, that can make the nucleus
+// impossible to select. Here we search visible cellular features directly.
+// ------------------------------------------------------------------------
+
+const phaseCellNucleusBaseHitTest =
+  hitTest;
+
+hitTest =
+  function phaseCellNucleusHitTest(
+    point
+  ) {
+    if (
+      !phaseCellDocumentIsCellular()
+    ) {
+      return phaseCellNucleusBaseHitTest(
+        point
+      );
+    }
+
+    const features =
+      featureCollection
+        ?.features
+      || [];
+
+    for (
+      let index =
+        features.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const feature =
+        features[
+          index
+        ];
+
+      if (
+        !phaseCellFeatureMatchesFilters(
+          feature
+        )
+      ) {
+        continue;
+      }
+
+      const geometry =
+        feature.geometry;
+
+      if (
+        !geometry
+      ) {
+        continue;
+      }
+
+      if (
+        geometry.type
+          === "Polygon"
+        && pointInPolygon(
+          point,
+          geometry.coordinates
+        )
+      ) {
+        return featureId(
+          feature
+        );
+      }
+
+      if (
+        geometry.type
+          === "MultiPolygon"
+      ) {
+        for (
+          const polygon
+          of geometry.coordinates
+            || []
+        ) {
+          if (
+            pointInPolygon(
+              point,
+              polygon
+            )
+          ) {
+            return featureId(
+              feature
+            );
+          }
+        }
+      }
+    }
+
+    return null;
+  };
+
+
+// ------------------------------------------------------------------------
+// Convert every newly drawn geometry in a cellular document into an
+// explicit cell-body or nucleus feature.
+// ------------------------------------------------------------------------
+
+function phaseCellNucleusSelectedDefaults() {
+  const typeSelect =
+    document.getElementById(
+      "phaseCellEditType"
+    );
+
+  const markerSelect =
+    document.getElementById(
+      "phaseCellEditMarker"
+    );
+
+  return {
+    cellType:
+      phaseCellCanonicalCellType(
+        typeSelect?.value
+        || "unassigned"
+      ),
+
+    markerStatus:
+      phaseCellCanonicalMarkerStatus(
+        markerSelect?.value
+        || "unclassified"
+      ),
+  };
+}
+
+
+function phaseCellNucleusUpdateCreatedUndo(
+  feature
+) {
+  const entry =
+    undoStack[
+      undoStack.length - 1
+    ];
+
+  if (
+    !entry
+    || !phaseF261IsCreatedUndoEntry(
+      entry
+    )
+  ) {
+    return;
+  }
+
+  if (
+    String(
+      featureId(
+        entry.feature
+      )
+    )
+      !== String(
+        featureId(
+          feature
+        )
+      )
+  ) {
+    return;
+  }
+
+  entry.feature =
+    phaseF261FastClone(
+      feature
+    );
+}
+
+
+function phaseCellNucleusConvertCreated(
+  feature,
+  part,
+  parentBody = null
+) {
+  if (
+    !feature
+  ) {
+    return;
+  }
+
+  const normalizedPart =
+    part === "nucleus"
+      ? "nucleus"
+      : "cell";
+
+  feature.properties ||=
+    {};
+
+  feature.properties.objectType =
+    normalizedPart === "nucleus"
+      ? "nucleus"
+      : "cell";
+
+  const defaults =
+    phaseCellNucleusSelectedDefaults();
+
+  const cell =
+    phaseCellEnsureMetadata(
+      feature
+    );
+
+  cell.part =
+    normalizedPart;
+
+  cell.source =
+    "manual";
+
+  cell.sourceObjectType =
+    feature.properties
+      .objectType;
+
+  cell.sourceObjectId =
+    String(
+      featureId(
+        feature
+      )
+    );
+
+  if (
+    normalizedPart
+      === "nucleus"
+    && parentBody
+  ) {
+    cell.cellId =
+      phaseCellCellId(
+        parentBody
+      );
+
+    cell.parentBodyId =
+      String(
+        featureId(
+          parentBody
+        )
+      );
+
+    cell.cellType =
+      phaseCellType(
+        parentBody
+      );
+
+    cell.markerStatus =
+      phaseCellMarkerStatus(
+        parentBody
+      );
+
+  } else {
+    cell.cellId =
+      String(
+        featureId(
+          feature
+        )
+      );
+
+    cell.parentBodyId =
+      null;
+
+    cell.cellType =
+      defaults.cellType;
+
+    cell.markerStatus =
+      defaults.markerStatus;
+  }
+
+  const marker =
+    phaseCellMarkerDefinition(
+      cell.markerStatus
+    );
+
+  feature.properties.classification = {
+    ...(
+      feature.properties
+        .classification
+      || {}
+    ),
+
+    name:
+      marker.label,
+
+    color:
+      hexToRgbArray(
+        marker.color
+      ),
+  };
+
+  feature.properties.isLocked =
+    false;
+
+  phaseCellNucleusUpdateCreatedUndo(
+    feature
+  );
+}
+
+
+function phaseCellNucleusBodyContainsPoint(
+  feature,
+  point
+) {
+  if (
+    !feature
+    || !Array.isArray(
+      point
+    )
+  ) {
+    return false;
+  }
+
+  const geometry =
+    feature.geometry;
+
+  if (
+    geometry?.type
+      === "Polygon"
+  ) {
+    return pointInPolygon(
+      point,
+      geometry.coordinates
+    );
+  }
+
+  if (
+    geometry?.type
+      === "MultiPolygon"
+  ) {
+    return (
+      geometry.coordinates
+      || []
+    ).some(
+      (polygon) =>
+        pointInPolygon(
+          point,
+          polygon
+        )
+    );
+  }
+
+  return false;
+}
+
+
+function phaseCellNucleusFindContainingBody(
+  nucleusGeometry
+) {
+  const bounds =
+    phaseF26GeometryBounds(
+      nucleusGeometry
+    );
+
+  if (!bounds) {
+    return null;
+  }
+
+  const center = [
+    (
+      Number(bounds.minX)
+      + Number(bounds.maxX)
+    ) / 2,
+
+    (
+      Number(bounds.minY)
+      + Number(bounds.maxY)
+    ) / 2,
+  ];
+
+  const candidates =
+    (
+      featureCollection
+        ?.features
+      || []
+    )
+      .filter(
+        (feature) =>
+          phaseCellIsCellularFeature(
+            feature
+          )
+          && phaseCellPart(
+            feature
+          )
+            === "cell"
+          && phaseCellNucleusBodyContainsPoint(
+            feature,
+            center
+          )
+      )
+      .map(
+        (feature) => {
+          const featureBounds =
+            phaseF26GeometryBounds(
+              feature.geometry
+            );
+
+          const area =
+            featureBounds
+              ? (
+                  Math.max(
+                    0,
+                    featureBounds.maxX
+                      - featureBounds.minX
+                  )
+                  * Math.max(
+                      0,
+                      featureBounds.maxY
+                        - featureBounds.minY
+                    )
+                )
+              : Number.POSITIVE_INFINITY;
+
+          return {
+            feature,
+            area,
+          };
+        }
+      )
+      .sort(
+        (left, right) =>
+          left.area
+          - right.area
+      );
+
+  return (
+    candidates[0]
+      ?.feature
+    || null
+  );
+}
+
+
+const phaseCellNucleusBaseCommitGeometry =
+  commitGeometry;
+
+commitGeometry =
+  async function phaseCellNucleusCommitGeometry(
+    geometry,
+    metadata = {},
+    operation = editOperation
+  ) {
+    const cellularNew =
+      Boolean(
+        phaseCellDocumentIsCellular()
+        && operation
+          === "new"
+        && phaseDActiveRole
+          === "annotation"
+      );
+
+    // In Cellular mode, normal Annotation New drawing means nucleus.
+    const requestedPart =
+      cellularNew
+        ? "nucleus"
+        : (
+            phaseCellCreationPart
+              === "nucleus"
+              ? "nucleus"
+              : "cell"
+          );
+
+    if (
+      cellularNew
+    ) {
+      phaseCellCreationPart =
+        "nucleus";
+    }
+
+    const parentBody =
+      (
+        cellularNew
+        && requestedPart
+          === "nucleus"
+      )
+        ? (
+            phaseCellSelectedBodyForLink()
+            || phaseCellNucleusFindContainingBody(
+                 geometry
+               )
+          )
+        : null;
+
+    const beforeIds =
+      cellularNew
+        ? new Set(
+            (
+              featureCollection
+                ?.features
+              || []
+            ).map(
+              (feature) =>
+                String(
+                  featureId(
+                    feature
+                  )
+                )
+            )
+          )
+        : null;
+
+    const result =
+      await phaseCellNucleusBaseCommitGeometry(
+        geometry,
+        metadata,
+        operation
+      );
+
+    if (
+      !result
+      || !cellularNew
+    ) {
+      return result;
+    }
+
+    const created =
+      (
+        featureCollection
+          ?.features
+        || []
+      ).find(
+        (feature) =>
+          !beforeIds.has(
+            String(
+              featureId(
+                feature
+              )
+            )
+          )
+      )
+      || (
+        selectedId
+          ? findFeature(
+              selectedId
+            )
+          : null
+      );
+
+    if (
+      !created
+    ) {
+      return result;
+    }
+
+    phaseCellNucleusConvertCreated(
+      created,
+      requestedPart,
+      parentBody
+    );
+
+    // The base commit already persisted the geometry. Persist again after
+    // attaching the cellular semantic metadata.
+    markChanged();
+
+    phaseCellRenderPanel();
+    drawAnnotations();
+
+    if (
+      requestedPart
+        === "nucleus"
+    ) {
+      setStatus(
+        parentBody
+          ? (
+              "Nucleus created and linked to selected cell body"
+            )
+          : (
+              "Nucleus-only cell created · Cell type Unassigned unless selected above"
+            ),
+        "saved"
+      );
+
+    } else {
+      setStatus(
+        "Cell body created",
+        "saved"
+      );
+    }
+
+    return result;
+  };
+
+
+// ------------------------------------------------------------------------
+// Explicit drawing/editing actions.
+// ------------------------------------------------------------------------
+
+function phaseCellNucleusPrepareAnnotationRole() {
+  if (
+    typeof phaseDSetActiveRole
+      === "function"
+  ) {
+    phaseDSetActiveRole(
+      "annotation",
+      false
+    );
+  }
+}
+
+
+function phaseCellNucleusStartDraw(
+  part,
+  tool = "freehand"
+) {
+  if (
+    !phaseCellDocumentIsCellular()
+  ) {
+    return;
+  }
+
+  phaseCellNucleusPrepareAnnotationRole();
+
+  phaseCellCreationPart =
+    part === "nucleus"
+      ? "nucleus"
+      : "cell";
+
+  setEditOperation(
+    "new"
+  );
+
+  setMode(
+    tool
+  );
+
+  const parent =
+    (
+      phaseCellCreationPart
+        === "nucleus"
+    )
+      ? phaseCellSelectedBodyForLink()
+      : null;
+
+  setStatus(
+    phaseCellCreationPart
+      === "nucleus"
+      ? (
+          parent
+            ? (
+                "Draw nucleus · it will be linked to the selected cell body"
+              )
+            : (
+                "Draw nucleus · select a cell body first if you want to link the nucleus to that cell"
+              )
+        )
+      : "Draw a new cell body",
+    "local"
+  );
+
+  phaseCellRenderPanel();
+}
+
+
+function phaseCellNucleusStartEdit(
+  operation
+) {
+  const selected =
+    phaseCellSelectedPrimary();
+
+  if (
+    !selected
+  ) {
+    setStatus(
+      "Select a cell body or nucleus first",
+      "error"
+    );
+    return;
+  }
+
+  phaseCellNucleusPrepareAnnotationRole();
+
+  setEditOperation(
+    operation
+  );
+
+  setMode(
+    "freehand"
+  );
+
+  setStatus(
+    (
+      `${operation === "add" ? "Add to" : "Subtract from"} `
+      + phaseCellPartLabel(
+          phaseCellPart(
+            selected
+          )
+        )
+      + " · draw the correction"
+    ),
+    "local"
+  );
+}
+
+
+function phaseCellNucleusDeleteSelected() {
+  const selected =
+    phaseCellSelectedFeatures();
+
+  if (
+    !selected.length
+  ) {
+    setStatus(
+      "Select a cell body or nucleus first",
+      "error"
+    );
+    return;
+  }
+
+  const nuclei =
+    selected.filter(
+      (feature) =>
+        phaseCellPart(
+          feature
+        )
+          === "nucleus"
+    ).length;
+
+  const bodies =
+    selected.length
+      - nuclei;
+
+  deleteSelectedAnnotations();
+
+  setStatus(
+    (
+      `Deleted ${selected.length.toLocaleString()} cellular geometr`
+      + `${selected.length === 1 ? "y" : "ies"}`
+      + (
+          nuclei || bodies
+            ? ` · ${bodies} bod${bodies === 1 ? "y" : "ies"}, ${nuclei} nucleus`
+            : ""
+        )
+    ),
+    "saved"
+  );
+
+  phaseCellRenderPanel();
+  drawAnnotations();
+}
+
+
+// ------------------------------------------------------------------------
+// Sidebar UI.
+// ------------------------------------------------------------------------
+
+function phaseCellNucleusEnsureUi() {
+  const panel =
+    document.getElementById(
+      "phaseCellPanel"
+    );
+
+  if (
+    !panel
+  ) {
+    return;
+  }
+
+  const visibleLabel =
+    panel.querySelector(
+      ".phase-cell-visible-toggle span"
+    );
+
+  if (
+    visibleLabel
+  ) {
+    visibleLabel.textContent =
+      "Show annotations";
+  }
+
+  if (
+    !document.getElementById(
+      "phaseCellGeometryStatus"
+    )
+  ) {
+    const heading =
+      panel.querySelector(
+        ".phase-cell-heading"
+      );
+
+    const status =
+      document.createElement(
+        "div"
+      );
+
+    status.id =
+      "phaseCellGeometryStatus";
+
+    status.className =
+      "phase-cell-geometry-status";
+
+    heading?.insertAdjacentElement(
+      "afterend",
+      status
+    );
+  }
+
+  if (
+    !document.getElementById(
+      "phaseCellPartFilter"
+    )
+  ) {
+    const grid =
+      panel.querySelector(
+        ".phase-cell-controls-grid"
+      );
+
+    const field =
+      document.createElement(
+        "label"
+      );
+
+    field.innerHTML = `
+      <span>Geometry</span>
+      <select id="phaseCellPartFilter">
+        <option value="all">All geometries</option>
+        <option value="cell">Cell bodies</option>
+        <option value="nucleus">Nuclei</option>
+      </select>
+    `;
+
+    grid?.append(
+      field
+    );
+
+    document.getElementById(
+      "phaseCellPartFilter"
+    )?.addEventListener(
+      "change",
+      (event) => {
+        phaseCellDisplayState
+          .partFilter =
+          String(
+            event.target.value
+            || "all"
+          );
+
+        clearSelectedFeatures(
+          false
+        );
+
+        updateControls();
+        drawAnnotations();
+        phaseCellRenderPanel();
+      }
+    );
+  }
+
+  // Use the existing left-side annotation toolbar instead of duplicating
+  // drawing/editing buttons in this sidebar.
+  document.getElementById(
+    "phaseCellGeometryTools"
+  )?.remove();
+
+  if (
+    !document.getElementById(
+      "phaseCellLeftToolsNote"
+    )
+  ) {
+    const grid =
+      panel.querySelector(
+        ".phase-cell-controls-grid"
+      );
+
+    const note =
+      document.createElement(
+        "div"
+      );
+
+    note.id =
+      "phaseCellLeftToolsNote";
+
+    note.className =
+      "phase-cell-left-tools-note";
+
+    note.textContent =
+      (
+        "Cellular mode:  "
+        + ""
+      );
+
+    grid?.insertAdjacentElement(
+      "afterend",
+      note
+    );
+  }
+
+}
+
+
+function phaseCellNucleusRenderStatus() {
+  if (
+    !phaseCellDocumentIsCellular()
+  ) {
+    return;
+  }
+
+  const counts =
+    phaseCellCounts();
+
+  const status =
+    document.getElementById(
+      "phaseCellGeometryStatus"
+    );
+
+  if (
+    status
+  ) {
+    status.innerHTML = `
+      <div>
+        <strong>${counts.total.toLocaleString()}</strong>
+        <span>cells</span>
+      </div>
+
+      <div>
+        <strong>${Number(counts.part?.cell || 0).toLocaleString()}</strong>
+        <span>bodies</span>
+      </div>
+
+      <div>
+        <strong>${Number(counts.part?.nucleus || 0).toLocaleString()}</strong>
+        <span>nuclei</span>
+      </div>
+    `;
+
+    status.classList.toggle(
+      "no-nuclei",
+      !Number(
+        counts.part?.nucleus
+        || 0
+      )
+    );
+  }
+
+  const summary =
+    document.getElementById(
+      "phaseCellDocumentSummary"
+    );
+
+  if (
+    summary
+  ) {
+    summary.textContent =
+      (
+        `${counts.total.toLocaleString()} cells`
+        + ` · ${Number(counts.part?.cell || 0).toLocaleString()} bodies`
+        + ` · ${Number(counts.part?.nucleus || 0).toLocaleString()} nuclei`
+      );
+  }
+
+  const partFilter =
+    document.getElementById(
+      "phaseCellPartFilter"
+    );
+
+  if (
+    partFilter
+  ) {
+    partFilter.value =
+      String(
+        phaseCellDisplayState
+          .partFilter
+        || "all"
+      );
+  }
+
+  const badge =
+    document.getElementById(
+      "phaseCellCreationBadge"
+    );
+
+  if (
+    badge
+  ) {
+    badge.textContent =
+      `New: ${phaseCellPartLabel(phaseCellCreationPart)}`;
+  }
+
+  let emptyNote =
+    document.getElementById(
+      "phaseCellNucleusEmptyNote"
+    );
+
+  if (
+    !Number(
+      counts.part?.nucleus
+      || 0
+    )
+  ) {
+    if (
+      !emptyNote
+    ) {
+      emptyNote =
+        document.createElement(
+          "div"
+        );
+
+      emptyNote.id =
+        "phaseCellNucleusEmptyNote";
+
+      emptyNote.className =
+        "phase-cell-nucleus-empty-note";
+
+      document.getElementById(
+        "phaseCellGeometryStatus"
+      )?.insertAdjacentElement(
+        "afterend",
+        emptyNote
+      );
+    }
+
+    emptyNote.textContent =
+      (
+        "No nucleus geometries are stored in this annotation. "
+        + "If the source QuPath GeoJSON contains nucleusGeometry, re-import it to recover those contours. "
+        + "Otherwise use the normal Annotation drawing tools on the left to add nuclei."
+      );
+
+  } else if (
+    emptyNote
+  ) {
+    emptyNote.remove();
+  }
+
+  const selected =
+    phaseCellSelectedPrimary();
+
+  const addButton =
+    document.getElementById(
+      "phaseCellAddSelected"
+    );
+
+  const subtractButton =
+    document.getElementById(
+      "phaseCellSubtractSelected"
+    );
+
+  const deleteButton =
+    document.getElementById(
+      "phaseCellDeleteSelectedGeometry"
+    );
+
+  const disabled =
+    !selected;
+
+  if (addButton) {
+    addButton.disabled =
+      disabled;
+  }
+
+  if (subtractButton) {
+    subtractButton.disabled =
+      disabled;
+  }
+
+  if (deleteButton) {
+    deleteButton.disabled =
+      !phaseCellSelectedFeatures()
+        .length;
+  }
+}
+
+
+const phaseCellNucleusBaseRenderPanel =
+  phaseCellRenderPanel;
+
+phaseCellRenderPanel =
+  function phaseCellNucleusRenderPanel(
+    ...args
+  ) {
+    const result =
+      phaseCellNucleusBaseRenderPanel(
+        ...args
+      );
+
+    phaseCellNucleusEnsureUi();
+    phaseCellNucleusRenderStatus();
+
+    return result;
+  };
+
+
+// Initialize part filter for documents loaded before this module.
+phaseCellDisplayState.partFilter =
+  phaseCellDisplayState.partFilter
+  || "all";
+
+phaseCellNucleusEnsureUi();
+phaseCellNucleusRenderStatus();
   function phaseF1Initialize() {
     const refs = phaseF1Refs();
 

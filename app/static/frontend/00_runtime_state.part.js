@@ -5742,7 +5742,9 @@
 
     ["open", "animation", "update-viewport", "resize"].forEach((eventName) => {
       viewer.addHandler(eventName, () => {
-        phaseF26ScheduleDraw();
+        phaseF26HandleViewportDrawEvent(
+          eventName
+        );
         updateDiagnostics();
         updateScaleBar();
         updateCalibrationBadge();
@@ -5753,17 +5755,86 @@
       });
     });
 
-    viewer.addHandler("animation-finish", () => { if (currentImage) saveViewportState(); });
+    viewer.addHandler("animation-finish", () => {
+      phaseF26FinishNavigationDraw();
+      if (currentImage) saveViewportState();
+    });
 
-    viewer.addHandler("tile-loaded", () => {
+    viewer.addHandler("tile-loaded", (event) => {
       tileStats.loaded += 1;
+
+      if (window.__histoEvalVisualPerfSession) {
+        window.__histoEvalVisualPerfSession.tileLoaded =
+          Number(window.__histoEvalVisualPerfSession.tileLoaded || 0) + 1;
+      }
+
       updateDiagnostics();
     });
 
     viewer.addHandler("tile-load-failed", (event) => {
       tileStats.failed += 1;
       const message = event?.message || event?.tile?.url || "unknown tile";
-      setStatus(`Tile error: ${String(message).slice(0, 90)}`, "error");
+
+      if (window.__histoEvalVisualPerfSession) {
+        const session = window.__histoEvalVisualPerfSession;
+        session.tileFailed = Number(session.tileFailed || 0) + 1;
+
+        const tile = event?.tile || {};
+        const failure = {
+          elapsedSinceReviewOpenMs: Number(
+            (
+              (typeof performance !== "undefined" && performance.now)
+                ? performance.now()
+                : Date.now()
+            ) - Number(session.startedAt || 0)
+          ),
+          level: tile.level ?? null,
+          x: tile.x ?? null,
+          y: tile.y ?? null,
+          url: String(tile.url || "").slice(0, 240),
+          message: String(message).slice(0, 240),
+          imageLoaderTimeoutMs:
+            Number(viewer?.imageLoader?.timeout || 0) || null,
+        };
+
+        if (!Array.isArray(session.failures)) {
+          session.failures = [];
+        }
+        session.failures.push(failure);
+        if (session.failures.length > 20) {
+          session.failures = session.failures.slice(-20);
+        }
+
+        console.warn(
+          "[VisualReview TILE PERF]",
+          failure
+        );
+      }
+
+      if (window.__histoEvalVisualReviewActive) {
+        const now = Date.now();
+        const recent = (
+          Array.isArray(window.__histoEvalVisualTileFailureTimes)
+            ? window.__histoEvalVisualTileFailureTimes
+            : []
+        ).filter(
+          (timestamp) => now - Number(timestamp) <= 6000
+        );
+        recent.push(now);
+        window.__histoEvalVisualTileFailureTimes = recent;
+
+        // A single timeout may recover. Keep it in diagnostics and only
+        // interrupt review when failures repeat.
+        if (recent.length >= 3) {
+          setStatus(
+            `Repeated tile error: ${String(message).slice(0, 82)}`,
+            "error"
+          );
+        }
+      } else {
+        setStatus(`Tile error: ${String(message).slice(0, 90)}`, "error");
+      }
+
       updateDiagnostics();
     });
 
