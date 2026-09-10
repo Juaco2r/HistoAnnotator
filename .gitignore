@@ -85,3 +85,6 @@ android-app/android/app/src/debug/res/
 # Local Python virtual environments used by packaging/tests
 .venv*/
 venv*/
+.histoannotator_patch_backups/
+apk-share/
+checkpoints/
