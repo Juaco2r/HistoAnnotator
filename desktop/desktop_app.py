@@ -849,7 +849,24 @@ def run_desktop() -> int:
         "HistoAnnotator Desktop"
     )
 
+    # HistoAnnotator Desktop workspace chooser v1
+    from .workspace_profiles import (
+        choose_workspace_profile,
+    )
+
+    workspace_profile = (
+        choose_workspace_profile()
+    )
+
+    if workspace_profile is None:
+        return 0
+
     window = DesktopWindow()
+    window.setWindowTitle(
+        f"{window.windowTitle()} — "
+        f"{workspace_profile.name} · "
+        f":{window.config.port}"
+    )
     window.show()
 
     return app.exec()

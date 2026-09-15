@@ -1,0 +1,33 @@
+# HistoAnnotator Image Manager v1
+services:
+  histoannotator:
+    build:
+      context: .
+    container_name: ${HISTO_CONTAINER_NAME}
+    restart: unless-stopped
+    environment:
+      IMAGE_ROOT: /data/images
+      ANNOTATION_ROOT: /data/annotations
+      TILE_CACHE_ROOT: /data/cache
+      PREPARED_ROOT: /data/prepared
+      UPLOAD_ROOT: /data/uploads
+      REPORT_ROOT: /data/reports
+      TRASH_ROOT: /data/trash
+      HISTO_ADMIN_KEY: ${HISTO_ADMIN_KEY:-}
+      APP_TITLE: ${HISTO_APP_TITLE}
+      MAX_SCAN_FILES: ${MAX_SCAN_FILES:-5000}
+      PREPARE_THRESHOLD_MB: ${PREPARE_THRESHOLD_MB:-128}
+      TILE_SIZE: ${TILE_SIZE:-512}
+      TILE_JPEG_QUALITY: ${TILE_JPEG_QUALITY:-90}
+      UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-8}
+      MAX_UPLOAD_GB: ${MAX_UPLOAD_GB:-50}
+    volumes:
+      - ${HISTO_IMAGE_ROOT}:/data/images
+      - ${HISTO_DATA_ROOT}/annotations:/data/annotations
+      - ${HISTO_DATA_ROOT}/cache:/data/cache
+      - ${HISTO_DATA_ROOT}/prepared:/data/prepared
+      - ${HISTO_DATA_ROOT}/uploads:/data/uploads
+      - ${HISTO_DATA_ROOT}/reports:/data/reports
+      - ${HISTO_DATA_ROOT}/trash:/data/trash
+    ports:
+      - "${HISTO_BIND}:${HISTO_PORT}:8000"

@@ -2654,4 +2654,783 @@ def cancel_upload(upload_id: str) -> dict[str, Any]:
     return {"cancelled": True, "uploadId": upload_id}
 
 
+# === HistoAnnotator Image Manager v1 ===
+# Administrative image organization is deliberately isolated from scientific
+# geometry. "Rename" below is a display-name alias: image IDs, level-0
+# coordinates, annotation links, and original image bytes remain unchanged.
+
+import hashlib as _image_manager_hashlib
+import hmac as _image_manager_hmac
+import json as _image_manager_json
+import os as _image_manager_os
+import shutil as _image_manager_shutil
+import time as _image_manager_time
+import zipfile as _image_manager_zipfile
+from pathlib import Path as _ImageManagerPath
+
+from fastapi import Body as _ImageManagerBody, Query as _ImageManagerQuery
+from fastapi.responses import FileResponse as _ImageManagerFileResponse
+
+
+_IMAGE_MANAGER_ADMIN_KEY = str(
+    _image_manager_os.getenv(
+        "HISTO_ADMIN_KEY",
+        "",
+    )
+).strip()
+
+_IMAGE_MANAGER_REPORT_ROOT = _ImageManagerPath(
+    _image_manager_os.getenv(
+        "REPORT_ROOT",
+        str(ANNOTATION_ROOT.parent / "reports"),
+    )
+).resolve()
+
+_IMAGE_MANAGER_TRASH_ROOT = _ImageManagerPath(
+    _image_manager_os.getenv(
+        "TRASH_ROOT",
+        str(ANNOTATION_ROOT.parent / "trash"),
+    )
+).resolve()
+
+_IMAGE_MANAGER_CONFIG_PATH = (
+    ANNOTATION_ROOT
+    / "_config"
+    / "image_manager.json"
+)
+
+_IMAGE_MANAGER_REPORT_ROOT.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+_IMAGE_MANAGER_TRASH_ROOT.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+
+def _image_manager_require_key(
+    payload: dict[str, Any],
+) -> None:
+    if not _IMAGE_MANAGER_ADMIN_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Image Manager is not configured "
+                "on this server"
+            ),
+        )
+
+    supplied = str(
+        payload.get("key", "")
+    )
+
+    if not _image_manager_hmac.compare_digest(
+        supplied,
+        _IMAGE_MANAGER_ADMIN_KEY,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid administrator key",
+        )
+
+
+def _image_manager_read_meta() -> dict[str, Any]:
+    with CONFIG_LOCK:
+        if not _IMAGE_MANAGER_CONFIG_PATH.is_file():
+            return {
+                "schemaVersion": 1,
+                "aliases": {},
+            }
+
+        try:
+            payload = _image_manager_json.loads(
+                _IMAGE_MANAGER_CONFIG_PATH.read_text(
+                    encoding="utf-8",
+                )
+            )
+        except (
+            OSError,
+            _image_manager_json.JSONDecodeError,
+        ):
+            return {
+                "schemaVersion": 1,
+                "aliases": {},
+            }
+
+        aliases = (
+            payload.get("aliases")
+            if isinstance(payload, dict)
+            else {}
+        )
+
+        return {
+            "schemaVersion": 1,
+            "aliases": (
+                aliases
+                if isinstance(aliases, dict)
+                else {}
+            ),
+        }
+
+
+def _image_manager_write_meta(
+    payload: dict[str, Any],
+) -> None:
+    with CONFIG_LOCK:
+        atomic_write_json(
+            _IMAGE_MANAGER_CONFIG_PATH,
+            payload,
+        )
+
+
+def _image_manager_clean_alias(
+    raw: Any,
+) -> str:
+    value = str(raw or "").strip()
+
+    if not value:
+        raise HTTPException(
+            status_code=422,
+            detail="Image name is required",
+        )
+
+    if len(value) > 180:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Image name must be "
+                "180 characters or fewer"
+            ),
+        )
+
+    if any(
+        ord(character) < 32
+        for character in value
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Image name contains control characters",
+        )
+
+    return value
+
+
+def _image_manager_catalog_rows() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    aliases = (
+        _image_manager_read_meta()
+        .get("aliases", {})
+    )
+
+    for path in iter_image_files():
+        relative = str(
+            path.relative_to(IMAGE_ROOT)
+        ).replace("\\", "/")
+
+        image_id = encode_image_id(
+            relative
+        )
+
+        rows.append({
+            "id": image_id,
+            "relativePath": relative,
+            "name": path.name,
+            "displayName": (
+                str(
+                    aliases.get(
+                        image_id,
+                        "",
+                    )
+                ).strip()
+                or relative
+            ),
+            "sizeBytes": path.stat().st_size,
+        })
+
+    return rows
+
+
+def _image_manager_report_path(
+    image_id: str,
+    annotation_file: str,
+) -> _ImageManagerPath:
+    token = (
+        _image_manager_hashlib.sha256(
+            (
+                f"{image_id}::"
+                f"{annotation_file}"
+            ).encode("utf-8")
+        )
+        .hexdigest()[:24]
+    )
+
+    return (
+        _IMAGE_MANAGER_REPORT_ROOT
+        / f"{token}.json"
+    )
+
+
+def _image_manager_clean_annotation_file(
+    value: Any,
+) -> str:
+    cleaned = str(
+        value or "Default"
+    ).strip()
+
+    if not cleaned:
+        cleaned = "Default"
+
+    if len(cleaned) > 120:
+        raise HTTPException(
+            status_code=422,
+            detail="Annotation file name is too long",
+        )
+
+    return cleaned
+
+
+@router.get(
+    "/api/image-manager/aliases"
+)
+def image_manager_aliases() -> dict[str, Any]:
+    return {
+        "aliases": (
+            _image_manager_read_meta()
+            .get("aliases", {})
+        ),
+    }
+
+
+@router.post(
+    "/api/image-manager/unlock"
+)
+def image_manager_unlock(
+    payload: dict[str, Any] = _ImageManagerBody(...),
+) -> dict[str, Any]:
+    _image_manager_require_key(
+        payload
+    )
+
+    return {
+        "ok": True,
+        "writable": (
+            _image_manager_os.access(
+                IMAGE_ROOT,
+                _image_manager_os.W_OK,
+            )
+        ),
+    }
+
+
+@router.post(
+    "/api/image-manager/catalog"
+)
+def image_manager_catalog(
+    payload: dict[str, Any] = _ImageManagerBody(...),
+) -> dict[str, Any]:
+    _image_manager_require_key(
+        payload
+    )
+
+    rows = (
+        _image_manager_catalog_rows()
+    )
+
+    return {
+        "images": rows,
+        "count": len(rows),
+        "writable": (
+            _image_manager_os.access(
+                IMAGE_ROOT,
+                _image_manager_os.W_OK,
+            )
+        ),
+    }
+
+
+@router.post(
+    "/api/image-manager/rename"
+)
+def image_manager_rename(
+    payload: dict[str, Any] = _ImageManagerBody(...),
+) -> dict[str, Any]:
+    _image_manager_require_key(
+        payload
+    )
+
+    image_id = str(
+        payload.get(
+            "imageId",
+            "",
+        )
+    ).strip()
+
+    if not image_id:
+        raise HTTPException(
+            status_code=422,
+            detail="imageId is required",
+        )
+
+    # Validate that this is a current server-backed image.
+    _, relative = safe_image_path(
+        image_id
+    )
+
+    alias = _image_manager_clean_alias(
+        payload.get("name")
+    )
+
+    meta = (
+        _image_manager_read_meta()
+    )
+
+    aliases = dict(
+        meta.get(
+            "aliases",
+            {},
+        )
+    )
+
+    aliases[image_id] = alias
+
+    meta["aliases"] = aliases
+
+    _image_manager_write_meta(
+        meta
+    )
+
+    return {
+        "ok": True,
+        "imageId": image_id,
+        "relativePath": relative,
+        "displayName": alias,
+        "physicalFileRenamed": False,
+    }
+
+
+@router.post(
+    "/api/image-manager/delete"
+)
+def image_manager_delete(
+    payload: dict[str, Any] = _ImageManagerBody(...),
+) -> dict[str, Any]:
+    _image_manager_require_key(
+        payload
+    )
+
+    raw_ids = payload.get(
+        "imageIds",
+        [],
+    )
+
+    if not isinstance(
+        raw_ids,
+        list,
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="imageIds must be a list",
+        )
+
+    image_ids = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in raw_ids
+            if str(value).strip()
+        )
+    )
+
+    if not image_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="Select at least one image",
+        )
+
+    timestamp = (
+        _image_manager_time.strftime(
+            "%Y%m%d-%H%M%S"
+        )
+    )
+
+    batch_root = (
+        _IMAGE_MANAGER_TRASH_ROOT
+        / timestamp
+    )
+
+    batch_root.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    deleted: list[dict[str, Any]] = []
+
+    for image_id in image_ids:
+        path, relative = safe_image_path(
+            image_id
+        )
+
+        destination = (
+            batch_root
+            / relative
+        ).resolve()
+
+        try:
+            destination.relative_to(
+                batch_root.resolve()
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid trash destination",
+            ) from exc
+
+        destination.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        if destination.exists():
+            destination = (
+                destination.parent
+                / (
+                    f"{destination.stem}-"
+                    f"{_image_manager_time.time_ns()}"
+                    f"{destination.suffix}"
+                )
+            )
+
+        _image_manager_shutil.move(
+            str(path),
+            str(destination),
+        )
+
+        deleted.append({
+            "imageId": image_id,
+            "relativePath": relative,
+            "trashPath": str(
+                destination.relative_to(
+                    _IMAGE_MANAGER_TRASH_ROOT
+                )
+            ).replace("\\", "/"),
+        })
+
+    meta = (
+        _image_manager_read_meta()
+    )
+
+    aliases = dict(
+        meta.get(
+            "aliases",
+            {},
+        )
+    )
+
+    for item in deleted:
+        aliases.pop(
+            item["imageId"],
+            None,
+        )
+
+    meta["aliases"] = aliases
+    _image_manager_write_meta(
+        meta
+    )
+
+    atomic_write_json(
+        batch_root / "manifest.json",
+        {
+            "schemaVersion": 1,
+            "deletedAtUnix": int(
+                _image_manager_time.time()
+            ),
+            "images": deleted,
+            "note": (
+                "Soft delete: original images were moved "
+                "out of the active image repository. "
+                "Annotations and reports were intentionally "
+                "left intact."
+            ),
+        },
+    )
+
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "softDelete": True,
+    }
+
+
+def _image_manager_add_tree_to_zip(
+    archive: _image_manager_zipfile.ZipFile,
+    root: _ImageManagerPath,
+    prefix: str,
+    *,
+    store_binary: bool,
+) -> int:
+    if not root.is_dir():
+        return 0
+
+    count = 0
+
+    for path in sorted(
+        item
+        for item in root.rglob("*")
+        if item.is_file()
+    ):
+        relative = path.relative_to(
+            root
+        )
+
+        archive_name = (
+            f"{prefix}/"
+            f"{str(relative).replace(chr(92), '/')}"
+        )
+
+        compression = (
+            _image_manager_zipfile.ZIP_STORED
+            if store_binary
+            else _image_manager_zipfile.ZIP_DEFLATED
+        )
+
+        archive.write(
+            path,
+            archive_name,
+            compress_type=compression,
+        )
+
+        count += 1
+
+    return count
+
+
+@router.post(
+    "/api/image-manager/export"
+)
+def image_manager_export(
+    payload: dict[str, Any] = _ImageManagerBody(...),
+) -> _ImageManagerFileResponse:
+    _image_manager_require_key(
+        payload
+    )
+
+    exports_root = (
+        UPLOAD_ROOT
+        / "_exports"
+    )
+
+    exports_root.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    now = _image_manager_time.time()
+
+    for old_zip in exports_root.glob(
+        "histoannotator-data-*.zip"
+    ):
+        try:
+            if (
+                now
+                - old_zip.stat().st_mtime
+                > 24 * 60 * 60
+            ):
+                old_zip.unlink()
+        except OSError:
+            pass
+
+    stamp = (
+        _image_manager_time.strftime(
+            "%Y%m%d-%H%M%S"
+        )
+    )
+
+    filename = (
+        f"histoannotator-data-"
+        f"{stamp}.zip"
+    )
+
+    destination = (
+        exports_root
+        / filename
+    )
+
+    counts = {
+        "images": 0,
+        "annotations": 0,
+        "reports": 0,
+    }
+
+    with _image_manager_zipfile.ZipFile(
+        destination,
+        mode="w",
+        allowZip64=True,
+    ) as archive:
+        counts["images"] = (
+            _image_manager_add_tree_to_zip(
+                archive,
+                IMAGE_ROOT,
+                "images",
+                store_binary=True,
+            )
+        )
+
+        counts["annotations"] = (
+            _image_manager_add_tree_to_zip(
+                archive,
+                ANNOTATION_ROOT,
+                "annotations",
+                store_binary=False,
+            )
+        )
+
+        counts["reports"] = (
+            _image_manager_add_tree_to_zip(
+                archive,
+                _IMAGE_MANAGER_REPORT_ROOT,
+                "reports",
+                store_binary=False,
+            )
+        )
+
+        manifest = {
+            "schemaVersion": 1,
+            "createdAtUnix": int(now),
+            "counts": counts,
+            "aliases": (
+                _image_manager_read_meta()
+                .get("aliases", {})
+            ),
+            "excludedDerivedData": [
+                "cache",
+                "prepared",
+                "uploads",
+            ],
+        }
+
+        archive.writestr(
+            "manifest.json",
+            _image_manager_json.dumps(
+                manifest,
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            compress_type=(
+                _image_manager_zipfile
+                .ZIP_DEFLATED
+            ),
+        )
+
+    return _ImageManagerFileResponse(
+        destination,
+        media_type="application/zip",
+        filename=filename,
+    )
+
+
+@router.get(
+    "/api/reports/{image_id}"
+)
+def image_manager_get_report(
+    image_id: str,
+    file: str = _ImageManagerQuery("Default"),
+) -> dict[str, Any]:
+    decode_image_id(
+        image_id
+    )
+
+    annotation_file = (
+        _image_manager_clean_annotation_file(
+            file
+        )
+    )
+
+    path = (
+        _image_manager_report_path(
+            image_id,
+            annotation_file,
+        )
+    )
+
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Report not found",
+        )
+
+    try:
+        return _image_manager_json.loads(
+            path.read_text(
+                encoding="utf-8",
+            )
+        )
+    except (
+        OSError,
+        _image_manager_json.JSONDecodeError,
+    ) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not read report",
+        ) from exc
+
+
+@router.put(
+    "/api/reports/{image_id}"
+)
+def image_manager_put_report(
+    image_id: str,
+    payload: dict[str, Any] = _ImageManagerBody(...),
+    file: str = _ImageManagerQuery("Default"),
+) -> dict[str, Any]:
+    decode_image_id(
+        image_id
+    )
+
+    annotation_file = (
+        _image_manager_clean_annotation_file(
+            file
+        )
+    )
+
+    document = dict(
+        payload
+    )
+
+    document["imageId"] = (
+        image_id
+    )
+
+    document["annotationFile"] = (
+        annotation_file
+    )
+
+    document["serverUpdatedAtUnix"] = int(
+        _image_manager_time.time()
+    )
+
+    path = (
+        _image_manager_report_path(
+            image_id,
+            annotation_file,
+        )
+    )
+
+    atomic_write_json(
+        path,
+        document,
+    )
+
+    return {
+        "ok": True,
+        "imageId": image_id,
+        "annotationFile": annotation_file,
+    }
+
+
+# === End HistoAnnotator Image Manager v1 ===
+
+
 __all__ = ['PREP_JOBS', 'PREP_LOCK', 'SlideHandle', '_SLIDE_LOCAL', '_open_slide', 'clear_slide_cache', 'get_slide', 'source_signature', 'preparation_key', 'preparation_dir', 'preparation_manifest', 'preparation_required', 'read_ready_manifest', 'resolve_render_path', 'job_snapshot', 'set_job', 'convert_to_pyramidal_tiff', 'prepare_image_worker', 'cache_tile_path', 'STAIN_HEMATOXYLIN', 'STAIN_EOSIN', 'STAIN_DAB', '_unit_vector', '_stain_matrix', 'apply_display_transform', '_IF_MULTICHANNEL_CACHE', '_IF_MULTICHANNEL_LOCK', '_IF_DEFAULT_COLORS', '_if_channel_slice', '_if_infer_allowed_range', 'scientific_multichannel_info', '_if_parse_float_list', '_if_parse_enabled', '_if_parse_colors', '_if_render_settings', '_if_resize_float_plane', 'render_scientific_multichannel_region', 'list_images', 'get_prepare_status', 'start_prepare', '_safe_metadata_float', '_physical_size_to_um', '_tiff_resolution_to_mpp', '_image_calibration_info', '_calibration_overrides_path', '_read_calibration_overrides', '_write_calibration_overrides', '_positive_float_or_none', '_calibration_override_for_relative', 'image_info', '_read_image_types', 'put_image_calibration_override', 'get_image_display_config', 'put_image_display_config', 'image_original', 'download_original_image', 'image_tile', 'image_region', 'UPLOAD_ID_RE', 'safe_upload_name', 'upload_session_dir', 'upload_meta_path', 'read_upload_meta', 'unique_image_destination', 'upload_response', 'init_upload', 'get_upload_status', 'upload_chunk', 'complete_upload', 'cancel_upload']

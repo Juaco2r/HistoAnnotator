@@ -68,6 +68,14 @@ def run_server(runtime_file: str | Path) -> int:
             data_root / "uploads",
     }
 
+    # HistoAnnotator Desktop workspace storage v1
+    storage["REPORT_ROOT"] = (
+        data_root / "reports"
+    )
+    storage["TRASH_ROOT"] = (
+        data_root / "trash"
+    )
+
     for directory in storage.values():
         directory.mkdir(
             parents=True,
@@ -86,6 +94,11 @@ def run_server(runtime_file: str | Path) -> int:
     os.environ.setdefault(
         "APP_TITLE",
         "HistoAnnotator",
+    )
+
+    os.environ.setdefault(
+        "HISTO_ADMIN_KEY",
+        "12345",
     )
 
     if str(project_root) not in sys.path:

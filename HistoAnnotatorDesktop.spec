@@ -24,6 +24,7 @@ hiddenimports = [
     "desktop.server_control",
     "desktop.server_runner",
     "desktop.desktop_app",
+    "desktop.workspace_profiles",
     "uvicorn.logging",
     "uvicorn.loops.auto",
     "uvicorn.protocols.http.auto",
