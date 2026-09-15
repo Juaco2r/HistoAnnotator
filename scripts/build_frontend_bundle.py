@@ -27,6 +27,7 @@ PARTS = [
     "85_detailed_additional_tools.part.js",
     "86_detailed_il_refinements.part.js",
     "87_report_builder.part.js",
+    "88_image_manager.part.js",
     "88_notes_handwriting_share.part.js",
     "89_capture_note_modes.part.js",
     "89_android_report_notes_refinements.part.js",

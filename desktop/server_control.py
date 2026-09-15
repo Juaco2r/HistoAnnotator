@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -120,6 +121,65 @@ class ServerController:
             if isinstance(payload, dict)
             else {}
         )
+
+    def owns_running_server(
+        self,
+        port: int,
+    ) -> bool:
+        pid = self.read_pid()
+
+        if (
+            pid is None
+            or not self._pid_exists(pid)
+        ):
+            return False
+
+        runtime = self.read_runtime()
+
+        if runtime.get("started_by") != (
+            "HistoAnnotator Desktop"
+        ):
+            return False
+
+        try:
+            runtime_port = int(
+                runtime.get("port")
+            )
+        except (TypeError, ValueError):
+            return False
+
+        return runtime_port == int(port)
+
+    @staticmethod
+    def port_available(
+        port: int,
+        *,
+        share_lan: bool = False,
+    ) -> bool:
+        host = (
+            "0.0.0.0"
+            if share_lan
+            else "127.0.0.1"
+        )
+
+        sock = socket.socket(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+        )
+
+        try:
+            sock.bind(
+                (
+                    host,
+                    int(port),
+                )
+            )
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+        return True
 
     def _write_runtime(
         self,
@@ -290,7 +350,27 @@ class ServerController:
         )
 
         if existing:
-            return existing
+            if self.owns_running_server(
+                config.port
+            ):
+                return existing
+
+            raise RuntimeError(
+                f"Port {int(config.port)} is "
+                "already used by another "
+                "HistoAnnotator server. "
+                "Choose another port."
+            )
+
+        if not self.port_available(
+            config.port,
+            share_lan=config.share_lan,
+        ):
+            raise RuntimeError(
+                f"Port {int(config.port)} is "
+                "already in use. "
+                "Choose another port."
+            )
 
         runtime_file = (
             self._write_runtime(
@@ -370,7 +450,16 @@ class ServerController:
     ) -> None:
         pid = self.read_pid()
 
-        if pid is None:
+        if (
+            pid is not None
+            and not self._pid_exists(pid)
+        ):
+            self._clear_pid()
+            pid = None
+
+        if not self.owns_running_server(
+            port
+        ):
             if self.health(port):
                 raise RuntimeError(
                     "A HistoAnnotator server is "
@@ -380,8 +469,7 @@ class ServerController:
                 )
             return
 
-        if not self._pid_exists(pid):
-            self._clear_pid()
+        if pid is None:
             return
 
         if platform.system() == "Windows":
@@ -451,9 +539,18 @@ class ServerController:
         self,
         config: DesktopConfig,
     ) -> dict[str, Any]:
-        if self.health(config.port):
+        if self.owns_running_server(
+            config.port
+        ):
             self.stop(
                 config.port
+            )
+        elif self.health(config.port):
+            raise RuntimeError(
+                f"Port {int(config.port)} is "
+                "already used by another "
+                "HistoAnnotator server. "
+                "Choose another port."
             )
 
         return self.start(

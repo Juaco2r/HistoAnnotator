@@ -161,3 +161,85 @@ def ensure_data_directories(
             parents=True,
             exist_ok=True,
         )
+
+# === HistoAnnotator Desktop workspace profiles v1 ===
+#
+# These functions intentionally override the legacy single-session paths.
+# Existing load_config()/save_config() resolve config_path() at call time,
+# so each Desktop instance automatically uses the selected workspace.
+
+ACTIVE_WORKSPACE_ENV = "HISTOANNOTATOR_DESKTOP_WORKSPACE"
+DESKTOP_CONFIG_ROOT_OVERRIDE_ENV = "HISTOANNOTATOR_DESKTOP_CONFIG_DIR"
+
+
+def _workspace_safe_id(value: str) -> str:
+    import re as _workspace_re
+
+    cleaned = str(value or "").strip().lower()
+    if not _workspace_re.fullmatch(
+        r"[a-z0-9][a-z0-9_-]{0,63}",
+        cleaned,
+    ):
+        return ""
+    return cleaned
+
+
+def _workspace_config_root() -> Path:
+    override = str(
+        os.environ.get(
+            DESKTOP_CONFIG_ROOT_OVERRIDE_ENV,
+            "",
+        )
+    ).strip()
+
+    if override:
+        root = Path(override).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    return user_config_dir()
+
+
+def _active_workspace_state_dir() -> Path:
+    root = _workspace_config_root()
+    workspace_id = _workspace_safe_id(
+        os.environ.get(ACTIVE_WORKSPACE_ENV, "")
+    )
+
+    if not workspace_id:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    directory = root / "workspaces" / workspace_id
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def config_path() -> Path:
+    return _active_workspace_state_dir() / CONFIG_FILE_NAME
+
+
+def runtime_path() -> Path:
+    return _active_workspace_state_dir() / RUNTIME_FILE_NAME
+
+
+def pid_path() -> Path:
+    return _active_workspace_state_dir() / PID_FILE_NAME
+
+
+def ensure_data_directories(config: DesktopConfig) -> None:
+    data_root = Path(config.data_root).expanduser()
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    for name in (
+        "annotations",
+        "cache",
+        "prepared",
+        "uploads",
+        "reports",
+        "trash",
+    ):
+        (data_root / name).mkdir(parents=True, exist_ok=True)
+
+
+# === End HistoAnnotator Desktop workspace profiles v1 ===

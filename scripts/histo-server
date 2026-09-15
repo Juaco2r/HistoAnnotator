@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CFG="${HISTO_SERVER_CONFIG:-$HOME/.config/histoannotator/server-defaults.env}"
+[[ -f "$CFG" ]] && source "$CFG"
+
+CMD="${1:-}"
+shift || true
+
+PORT="${HISTO_DEFAULT_PORT:-8021}"
+PAIR_HOST="${HISTO_PAIR_HOST:-161.116.13.132}"
+IMAGE_ROOT="${HISTO_IMAGE_ROOT:-/srv/histoannotator/images-local}"
+BIND="${HISTO_BIND:-0.0.0.0}"
+DATA_BASE="${HISTO_DATA_BASE:-$HOME/.local/share/histoannotator/servers}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port) PORT="$2"; shift 2 ;;
+    --pair-host) PAIR_HOST="$2"; shift 2 ;;
+    --image-root) IMAGE_ROOT="$2"; shift 2 ;;
+    --bind) BIND="$2"; shift 2 ;;
+    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[[ "$PORT" =~ ^[0-9]+$ ]] || { echo "Invalid port" >&2; exit 2; }
+(( PORT >= 1024 && PORT <= 65535 )) || { echo "Invalid port" >&2; exit 2; }
+[[ "$PORT" != "8020" ]] || { echo "8020 is reserved for HistoAnnotator Stable" >&2; exit 2; }
+[[ "$PORT" != "8090" ]] || { echo "8090 is reserved for APK download" >&2; exit 2; }
+
+INSTANCE="dev-${PORT}"
+PROJECT="histoannotator-${INSTANCE}"
+CONTAINER="histoannotator-${INSTANCE}"
+DATA_ROOT="$DATA_BASE/$INSTANCE"
+
+export HISTO_PORT="$PORT"
+export HISTO_BIND="$BIND"
+export HISTO_CONTAINER_NAME="$CONTAINER"
+export HISTO_DATA_ROOT="$DATA_ROOT"
+export HISTO_IMAGE_ROOT="$IMAGE_ROOT"
+export HISTO_APP_TITLE="HistoAnnotator Dev :${PORT}"
+
+compose() {
+  docker compose -p "$PROJECT" -f "$ROOT/docker-compose.instance.yml" "$@"
+}
+
+info() {
+  echo "Instance:   $INSTANCE"
+  echo "Container:  $CONTAINER"
+  echo "Port:       $PORT"
+  echo "Local URL:  http://127.0.0.1:$PORT"
+  echo "Pair URL:   http://$PAIR_HOST:$PORT"
+  echo "Images:     $IMAGE_ROOT (read-only)"
+  echo "Data:       $DATA_ROOT"
+}
+
+mkdir_data() {
+  mkdir -p "$DATA_ROOT"/annotations "$DATA_ROOT"/cache "$DATA_ROOT"/prepared "$DATA_ROOT"/uploads
+}
+
+wait_ready() {
+  for _ in $(seq 1 40); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+      echo "✓ Server responding on $PORT"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Server did not become ready" >&2
+  compose ps >&2 || true
+  exit 1
+}
+
+case "$CMD" in
+  start)
+    [[ -d "$IMAGE_ROOT" ]] || { echo "Missing image root: $IMAGE_ROOT" >&2; exit 1; }
+    mkdir_data
+    info
+    compose build histoannotator
+    compose up -d --no-deps histoannotator
+    wait_ready
+    compose ps
+    ;;
+  stop)
+    info
+    compose down
+    ;;
+  restart)
+    mkdir_data
+    compose down
+    compose up -d --no-deps histoannotator
+    wait_ready
+    compose ps
+    ;;
+  status)
+    info
+    compose ps
+    curl -sS -o /dev/null -w "HTTP %{http_code}  %{time_total}s\\n" "http://127.0.0.1:$PORT/" || true
+    ;;
+  logs)
+    compose logs -f --tail=200 histoannotator
+    ;;
+  pair)
+    info
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status|logs|pair} [--port N] [--pair-host HOST] [--image-root PATH]"
+    exit 2
+    ;;
+esac
