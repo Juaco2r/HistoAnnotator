@@ -3,7 +3,7 @@ name: Desktop RC Build
 on:
   push:
     branches:
-      - v1.2.0-local-mode
+      - dev/next-server
     paths:
       - "app/**"
       - "desktop/**"
