@@ -9,6 +9,9 @@ services:
       TILE_CACHE_ROOT: /data/cache
       PREPARED_ROOT: /data/prepared
       UPLOAD_ROOT: /data/uploads
+      REPORT_ROOT: /data/reports
+      TRASH_ROOT: /data/trash
+      HISTO_ADMIN_KEY: ${HISTO_ADMIN_KEY:-}
       APP_TITLE: HistoAnnotator
       MAX_SCAN_FILES: ${MAX_SCAN_FILES:-5000}
       PREPARE_THRESHOLD_MB: ${PREPARE_THRESHOLD_MB:-128}
@@ -22,6 +25,8 @@ services:
       - ${TILE_CACHE_ROOT:-/srv/histoannotator/cache}:/data/cache
       - ${PREPARED_ROOT:-/srv/histoannotator/prepared}:/data/prepared
       - ${UPLOAD_ROOT:-/srv/histoannotator/uploads}:/data/uploads
+      - ${REPORT_STORAGE_ROOT:-/srv/histoannotator/reports}:/data/reports
+      - ${TRASH_STORAGE_ROOT:-/srv/histoannotator/trash}:/data/trash
     ports:
       - "0.0.0.0:8020:8000"
     networks:
