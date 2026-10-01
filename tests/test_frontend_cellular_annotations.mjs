@@ -60,7 +60,7 @@ test("Positive and Negative are marker status rather than cell type", () => {
 
   assert.match(
     source,
-    /Cell type and marker status are independent/
+    /Positive\/Negative are marker status, never cell type\./
   );
 });
 

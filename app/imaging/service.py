@@ -79,6 +79,135 @@ class SlideHandle:
 _SLIDE_LOCAL = threading.local()
 
 
+def _env_int(
+    name: str,
+    default: int,
+    minimum: int,
+) -> int:
+    try:
+        value = int(
+            os.getenv(
+                name,
+                str(default),
+            )
+        )
+    except (TypeError, ValueError):
+        value = default
+    return max(
+        minimum,
+        value,
+    )
+
+
+# Direct browser/native raster rendering is convenient for small files,
+# but unsafe for pathology-sized JPEG/PNG/WebP images. A compressed file
+# can expand to hundreds of MB or several GB when decoded, and a single
+# texture can exceed WebGL/Android limits. Large flat rasters therefore
+# use HistoAnnotator's existing local pyramidal-TIFF + DeepZoom path.
+DIRECT_RASTER_MAX_DIMENSION = _env_int(
+    "DIRECT_RASTER_MAX_DIMENSION",
+    8192,
+    2048,
+)
+DIRECT_RASTER_MAX_RGBA_MB = _env_int(
+    "DIRECT_RASTER_MAX_RGBA_MB",
+    128,
+    32,
+)
+DIRECT_RASTER_MAX_RGBA_BYTES = (
+    DIRECT_RASTER_MAX_RGBA_MB
+    * 1024
+    * 1024
+)
+PYRAMID_JPEG_QUALITY = min(
+    100,
+    max(
+        95,
+        TILE_JPEG_QUALITY,
+    ),
+)
+
+
+def _direct_raster_requires_preparation(
+    path: Path,
+) -> bool:
+    if (
+        path.suffix.lower()
+        not in DIRECT_RASTER_SUFFIXES
+    ):
+        return False
+
+    try:
+        with Image.open(path) as image:
+            width = int(
+                image.size[0]
+            )
+            height = int(
+                image.size[1]
+            )
+    except Image.DecompressionBombError:
+        # The file is precisely the kind of flat raster that must
+        # never be decoded as one giant browser/Pillow image.
+        return True
+    except (
+        UnidentifiedImageError,
+        OSError,
+        ValueError,
+    ):
+        # Preserve the existing open/error path for malformed files.
+        return False
+
+    if width <= 0 or height <= 0:
+        return False
+
+    decoded_rgba_bytes = (
+        width
+        * height
+        * 4
+    )
+
+    return bool(
+        max(
+            width,
+            height,
+        )
+        > DIRECT_RASTER_MAX_DIMENSION
+        or decoded_rgba_bytes
+        > DIRECT_RASTER_MAX_RGBA_BYTES
+    )
+
+
+def _prepare_pyvips_raster_for_display(
+    image: Any,
+    source: Path,
+) -> Any:
+    # JPEG is normally 8-bit RGB, but scanner/export tools may emit CMYK.
+    # Normalize only the internal display pyramid; the original stays intact.
+    if (
+        source.suffix.lower()
+        in {".jpg", ".jpeg"}
+        and str(
+            getattr(
+                image,
+                "interpretation",
+                "",
+            )
+        ).lower()
+        == "cmyk"
+    ):
+        try:
+            image = image.icc_transform(
+                "srgb",
+                embedded=True,
+            )
+        except Exception:  # noqa: BLE001
+            image = image.colourspace(
+                "srgb"
+            )
+
+    return image
+
+
 def _open_slide(path: Path) -> SlideHandle:
     try:
         vendor = openslide.OpenSlide.detect_format(str(path))
@@ -165,7 +294,15 @@ def preparation_manifest(path: Path, relative: str) -> Path:
 
 
 def preparation_required(path: Path) -> bool:
-    return path.suffix.lower() not in DIRECT_RASTER_SUFFIXES and path.stat().st_size >= PREPARE_THRESHOLD_BYTES
+    if path.suffix.lower() in DIRECT_RASTER_SUFFIXES:
+        return _direct_raster_requires_preparation(
+            path
+        )
+
+    return (
+        path.stat().st_size
+        >= PREPARE_THRESHOLD_BYTES
+    )
 
 
 def read_ready_manifest(path: Path, relative: str) -> dict[str, Any] | None:
@@ -249,14 +386,38 @@ def convert_to_pyramidal_tiff(source: Path, destination: Path) -> str:
             str(source),
             access="sequential",
         )
+        image = _prepare_pyvips_raster_for_display(
+            image,
+            source,
+        )
+
+        jpeg_source = (
+            source.suffix.lower()
+            in {".jpg", ".jpeg"}
+        )
+        compression = (
+            "jpeg"
+            if jpeg_source
+            else "deflate"
+        )
+
+        save_options: dict[str, Any] = {
+            "tile": True,
+            "pyramid": True,
+            "bigtiff": True,
+            "compression": compression,
+            "tile_width": TILE_SIZE,
+            "tile_height": TILE_SIZE,
+        }
+
+        if jpeg_source:
+            save_options["Q"] = (
+                PYRAMID_JPEG_QUALITY
+            )
+
         image.tiffsave(
             str(destination),
-            tile=True,
-            pyramid=True,
-            bigtiff=True,
-            compression="deflate",
-            tile_width=TILE_SIZE,
-            tile_height=TILE_SIZE,
+            **save_options,
         )
         if destination.is_file() and destination.stat().st_size > 0:
             return "pyvips"
@@ -270,6 +431,16 @@ def convert_to_pyramidal_tiff(source: Path, destination: Path) -> str:
 
     vips_cli = shutil.which("vips")
     if vips_cli:
+        jpeg_source = (
+            source.suffix.lower()
+            in {".jpg", ".jpeg"}
+        )
+        compression = (
+            "jpeg"
+            if jpeg_source
+            else "deflate"
+        )
+
         command = [
             vips_cli,
             "tiffsave",
@@ -279,12 +450,22 @@ def convert_to_pyramidal_tiff(source: Path, destination: Path) -> str:
             "--pyramid",
             "--bigtiff",
             "--compression",
-            "deflate",
+            compression,
             "--tile-width",
             str(TILE_SIZE),
             "--tile-height",
             str(TILE_SIZE),
         ]
+
+        if jpeg_source:
+            command.extend(
+                [
+                    "--Q",
+                    str(
+                        PYRAMID_JPEG_QUALITY
+                    ),
+                ]
+            )
         result = subprocess.run(
             command,
             capture_output=True,
@@ -1590,7 +1771,11 @@ def image_info(image_id: str) -> dict[str, Any]:
         "tileOverlap": 0,
         "levelCount": handle.deepzoom.level_count,
         "sourceKind": handle.source_kind,
-        "directRaster": path.suffix.lower() in DIRECT_RASTER_SUFFIXES,
+        "directRaster": (
+            path.suffix.lower()
+            in DIRECT_RASTER_SUFFIXES
+            and not preparation_required(path)
+        ),
         "preparedLocally": render_path != path,
         "mppX": calibration["mppX"],
         "mppY": calibration["mppY"],
