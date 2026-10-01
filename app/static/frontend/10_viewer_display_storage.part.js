@@ -1057,8 +1057,22 @@
 
     (async () => {
       try {
-        let response = await offlineTileResponse(context.src);
+        let response =
+          await offlineTileResponse(
+            context.src
+          );
+
         let source = "local";
+
+        if (
+          !response
+          && IS_NATIVE
+          && !API
+        ) {
+          throw new Error(
+            "Tile is not available in the local offline cache"
+          );
+        }
 
         if (!response) {
           source = IS_NATIVE ? "android-native" : "network";
@@ -1130,6 +1144,11 @@
   function buildViewerSource(imageId, info) {
     const display = activeDisplayView();
 
+    const sourceApi =
+      viewerApiBaseForImage(
+        currentImage
+      );
+
     // Direct-raster images still use their normal URL in alpha2.
     // The local-first path below covers the DeepZoom tiled images.
     if (
@@ -1143,7 +1162,7 @@
       if (!IS_NATIVE) {
         return {
           type: "image",
-          url: `${API}/images/${imageId}/original`
+          url: `${sourceApi}/images/${imageId}/original`
         };
       }
 
@@ -1161,7 +1180,7 @@
         maxLevel: 0,
 
         getTileUrl() {
-          return `${API}/images/${imageId}/original`;
+          return `${sourceApi}/images/${imageId}/original`;
         },
 
         downloadTileStart:
@@ -1187,7 +1206,7 @@
       maxLevel: info.levelCount - 1,
 
       getTileUrl(level, x, y) {
-        return `${API}/images/${imageId}/tiles/${level}/${x}_${y}.jpeg?${query}`;
+        return `${sourceApi}/images/${imageId}/tiles/${level}/${x}_${y}.jpeg?${query}`;
       },
 
       // Android and Web can now read previously downloaded tiles
@@ -6335,15 +6354,23 @@ if (!geometry) {
       const response = await apiFetch(`${API}/annotations/${imageId}/files`);
       const payload = await response.json();
       annotationFiles = Array.isArray(payload.files) && payload.files.length ? payload.files : ["Default"];
-      await putMeta(`files:${imageId}`, annotationFiles);
+      await putMeta(serverMetaKey("files", imageId), annotationFiles);
       if (!preserve || !annotationFiles.includes(currentAnnotationFile)) currentAnnotationFile = "Default";
       renderAnnotationFileOptions();
     } catch (error) {
-      const cached = await getMeta(`files:${imageId}`);
-      const deletedMeta = await getMeta(`deletedAnnotationFiles:${imageId}`);
+      const cached = await getMeta(serverMetaKey("files", imageId));
+      const deletedMeta = await getMeta(serverMetaKey("deletedAnnotationFiles", imageId));
       const deletedNames = new Set(Array.isArray(deletedMeta) ? deletedMeta : []);
       const drafts = (await idbGetAll(DB_STORE))
-        .filter((record) => record?.sourceImageId === imageId)
+        .filter(
+          (record) =>
+            record?.sourceImageId
+              === imageId
+            && draftBelongsToImageServer(
+              record,
+              currentImage
+            )
+        )
         .map((record) => record.annotationFile || "Default")
         .filter((name) => !deletedNames.has(name));
       annotationFiles = Array.from(
@@ -6396,17 +6423,16 @@ if (!geometry) {
     if (!/^[A-Za-z0-9 _.-]{1,80}$/.test(name) || name === "." || name === "..") {
       setStatus("Invalid annotation file name", "error"); return;
     }
-    const deletedFileMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+    const deletedFileMeta = await getMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id));
     const deletedFileNames = Array.isArray(deletedFileMeta) ? deletedFileMeta : [];
     if (deletedFileNames.includes(name)) {
-      await putMeta(
-        `deletedAnnotationFiles:${currentImage.id}`,
+      await putMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id),
         deletedFileNames.filter((item) => item !== name)
       );
     }
     if (!annotationFiles.includes(name)) annotationFiles.push(name);
     currentAnnotationFile = name;
-    await putMeta(`files:${currentImage.id}`, annotationFiles);
+    await putMeta(serverMetaKey("files", currentImage.id), annotationFiles);
     renderAnnotationFileOptions();
     featureCollection = { type: "FeatureCollection", features: [] };
     currentLocalRevision = 0;
@@ -6422,7 +6448,7 @@ if (!geometry) {
         });
         const payload = await response.json();
         annotationFiles = payload.files || annotationFiles;
-        await putMeta(`files:${currentImage.id}`, annotationFiles);
+        await putMeta(serverMetaKey("files", currentImage.id), annotationFiles);
         renderAnnotationFileOptions();
       } catch (_) {
         setStatus("Annotation file created locally; it will sync when annotations are saved", "local");
@@ -6475,13 +6501,13 @@ if (!geometry) {
         if (Array.isArray(payload.files)) filesAfterDelete = payload.files;
       }
 
-      const deletedMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+      const deletedMeta = await getMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id));
       const deletedNames = Array.isArray(deletedMeta) ? deletedMeta : [];
       if (!deletedNames.includes(name)) deletedNames.push(name);
-      await putMeta(`deletedAnnotationFiles:${currentImage.id}`, deletedNames);
+      await putMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id), deletedNames);
 
       annotationFiles = Array.from(new Set(["Default", ...filesAfterDelete]));
-      await putMeta(`files:${currentImage.id}`, annotationFiles);
+      await putMeta(serverMetaKey("files", currentImage.id), annotationFiles);
       currentAnnotationFile = "Default";
       renderAnnotationFileOptions();
       await loadSelectedAnnotationFile("Default");
@@ -6520,7 +6546,20 @@ if (!geometry) {
       ]);
 
       const packageImages = offlineRecords
-        .map((item) => item.image)
+        .map(
+          (item) =>
+            item?.image
+              ? {
+                  ...deepClone(
+                    item.image
+                  ),
+                  serverKey:
+                    offlineRecordServerKey(
+                      item
+                    ),
+                }
+              : null
+        )
         .filter(Boolean);
 
       nativeLocalImages = await nativeLocalCatalogImages();
@@ -6611,7 +6650,14 @@ if (!geometry) {
         );
       }
 
-      const remoteImages = payload.images;
+      const remoteImages =
+        payload.images.map(
+          (image) => ({
+            ...image,
+            serverKey:
+              activeServerKey(),
+          })
+        );
 
       serverReachable = true;
 
@@ -6646,7 +6692,20 @@ if (!geometry) {
       diagnosticStage = "merging image catalog";
 
       const packageImages = offlineRecords
-        .map((item) => item.image)
+        .map(
+          (item) =>
+            item?.image
+              ? {
+                  ...deepClone(
+                    item.image
+                  ),
+                  serverKey:
+                    offlineRecordServerKey(
+                      item
+                    ),
+                }
+              : null
+        )
         .filter(Boolean);
 
       images = mergeKnownImages(
@@ -6730,8 +6789,21 @@ if (!geometry) {
         images = mergeKnownImages(
           cached,
           currentOfflineRecords
-            .map((item) => item.image)
-            .filter(Boolean)
+            .map(
+          (item) =>
+            item?.image
+              ? {
+                  ...deepClone(
+                    item.image
+                  ),
+                  serverKey:
+                    offlineRecordServerKey(
+                      item
+                    ),
+                }
+              : null
+        )
+        .filter(Boolean)
         );
 
         localState =
@@ -6846,7 +6918,7 @@ if (!geometry) {
         return false;
       }
 
-      const cachedFiles = await getMeta(`files:${imageId}`);
+      const cachedFiles = await getMeta(serverMetaKey("files", imageId));
       annotationFiles = mergeAnnotationFileNames(
         serverFiles,
         annotationFiles,
@@ -6858,12 +6930,12 @@ if (!geometry) {
       }
 
       renderAnnotationFileOptions();
-      await putMeta(`files:${imageId}`, deepClone(annotationFiles));
+      await putMeta(serverMetaKey("files", imageId), deepClone(annotationFiles));
 
-      const imageMeta = await getMeta(`image:${imageId}`);
+      const imageMeta = await getMeta(serverMetaKey("image", imageId));
       if (imageMeta) {
         imageMeta.annotationFiles = deepClone(annotationFiles);
-        await putMeta(`image:${imageId}`, imageMeta);
+        await putMeta(serverMetaKey("image", imageId), imageMeta);
       }
 
       serverReachable = true;
@@ -7001,6 +7073,19 @@ if (!geometry) {
   }
 
   async function openImage(imageId) {
+    const parsedSelection =
+      parseImageSelectionValue(
+        imageId
+      );
+
+    imageId =
+      parsedSelection.imageId;
+
+    const requestedServerKey =
+      normalizeStoredServerKey(
+        parsedSelection.serverKey
+        || ""
+      );
     if (reviewState.active) exitReviewMode();
     const sequence = ++openSequence;
     currentImageUsesOfflineCopy = false;
@@ -7027,9 +7112,26 @@ if (!geometry) {
       return;
     }
 
-    currentImage = images.find((image) => image.id === imageId) || null;
+    currentImage =
+      images.find(
+        (image) =>
+          image.id === imageId
+          && (
+            !requestedServerKey
+            || serverKeyForImage(
+                 image
+               ) === requestedServerKey
+          )
+      )
+      || null;
     if (!currentImage) {
-      const offline = await offlineRecordForImage(imageId);
+      const offline = await offlineRecordForImage(
+        imageId,
+        requestedServerKey
+        || serverKeyForImage(
+             currentImage
+           )
+      );
       currentImage = offline?.image || null;
     }
     if (!currentImage) {
@@ -7042,7 +7144,10 @@ if (!geometry) {
       return;
     }
     configureLocalTiffViewer(false);
-    els.imageSelect.value = imageId;
+    els.imageSelect.value =
+      imageSelectionValue(
+        currentImage
+      );
     els.inputGuide.hidden = true;
     loadDisplaySettings();
     clearSelectedFeatures(false);
@@ -7066,8 +7171,14 @@ if (!geometry) {
       let serverOnline = true;
       let serverCollection = null;
       let serverDisplayConfig = null;
-      let cachedRecord = await getMeta(`image:${imageId}`);
-      let offlinePackage = await offlineRecordForImage(imageId);
+      let cachedRecord = await getMeta(serverMetaKey("image", imageId));
+      let offlinePackage = await offlineRecordForImage(
+        imageId,
+        requestedServerKey
+        || serverKeyForImage(
+             currentImage
+           )
+      );
       const preferOffline = Boolean(offlinePackage && (offlinePackage.info || cachedRecord?.info));
       currentImageUsesOfflineCopy = preferOffline;
 
@@ -7090,8 +7201,8 @@ if (!geometry) {
           serverCollection = await annotationsResponse.json();
           serverDisplayConfig = await displayConfigResponse.json();
           cachedRecord = { image: deepClone(currentImage), info: deepClone(currentInfo), annotationFiles: deepClone(annotationFiles), imageType: serverDisplayConfig?.imageType || imageType };
-          await putMeta(`image:${imageId}`, cachedRecord);
-          await putMeta(`files:${imageId}`, annotationFiles);
+          await putMeta(serverMetaKey("image", imageId), cachedRecord);
+          await putMeta(serverMetaKey("files", imageId), annotationFiles);
         } catch (error) {
           serverOnline = false;
           if (!offlinePackage && !cachedRecord?.info) throw error;
@@ -7105,7 +7216,7 @@ if (!geometry) {
         if (!offlinePackage) throw new Error("This image has not been downloaded for offline use");
         currentInfo = offlinePackage.info || cachedRecord?.info;
         if (!currentInfo) throw new Error("Offline image metadata is missing");
-        const refreshedCachedFiles = await getMeta(`files:${imageId}`);
+        const refreshedCachedFiles = await getMeta(serverMetaKey("files", imageId));
         annotationFiles = mergeAnnotationFileNames(
           offlinePackage.annotationFiles || [],
           cachedRecord?.annotationFiles || [],
@@ -7152,7 +7263,7 @@ if (!geometry) {
 
       featureCollection = normalizeFeatureCollectionClient(featureCollection);
       featureCollection.features.forEach(featureId);
-      restoreViewportState = await getMeta(`viewport:${imageId}`);
+      restoreViewportState = await getMeta(serverMetaKey("viewport", imageId));
 
       viewer.addOnceHandler("open", () => {
         if (sequence !== openSequence) return;

@@ -2887,9 +2887,7 @@ async function phaseImportWorkspaceReserveFile(
   }
 
   const deletedMeta =
-    await getMeta(
-      `deletedAnnotationFiles:${currentImage.id}`
-    );
+    await getMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id));
 
   const deletedNames =
     Array.isArray(
@@ -2903,8 +2901,7 @@ async function phaseImportWorkspaceReserveFile(
       target
     )
   ) {
-    await putMeta(
-      `deletedAnnotationFiles:${currentImage.id}`,
+    await putMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id),
       deletedNames.filter(
         (item) =>
           item !== target
@@ -2912,8 +2909,7 @@ async function phaseImportWorkspaceReserveFile(
     );
   }
 
-  await putMeta(
-    `files:${currentImage.id}`,
+  await putMeta(serverMetaKey("files", currentImage.id),
     annotationFiles
   );
 

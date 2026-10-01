@@ -3574,9 +3574,7 @@
         .forEach(featureId);
 
       restoreViewportState =
-        await getMeta(
-          `viewport:${currentImage.id}`
-        );
+        await getMeta(serverMetaKey("viewport", currentImage.id));
 
       viewer.addOnceHandler(
         "open",
@@ -4073,9 +4071,315 @@
     return record?.value ?? null;
   }
 
+  // ========================================================================
+  // Android server-scoped local storage
+  //
+  // Remote image identity on Android:
+  //
+  //     serverKey + imageId
+  //
+  // This prevents different HistoAnnotator servers with identical image IDs
+  // from sharing cached metadata, drafts, files or offline packages.
+  // ========================================================================
 
-  function localDraftKey(imageId, annotationFile = currentAnnotationFile) {
-    return annotationFile === "Default" ? imageId : `${imageId}::${annotationFile}`;
+  const LEGACY_SERVER_KEY = "__legacy__";
+  const LOCAL_DEVICE_SERVER_KEY = "__local_device__";
+
+  function activeServerKey() {
+    if (!IS_NATIVE) return "__web__";
+    return NATIVE_SERVER || "";
+  }
+
+  function normalizeStoredServerKey(value) {
+    const raw = String(value || "").trim();
+
+    if (!raw) return "";
+
+    if (
+      raw === LEGACY_SERVER_KEY
+      || raw === LOCAL_DEVICE_SERVER_KEY
+      || raw === "__web__"
+    ) {
+      return raw;
+    }
+
+    try {
+      return normalizeServerBase(raw);
+    } catch (_) {
+      return raw.replace(/\/+$/, "");
+    }
+  }
+
+  function inferServerKeyFromCachedUrl(rawUrl) {
+    try {
+      const parsed = new URL(
+        String(rawUrl || "")
+      );
+
+      const apiMarker = "/api/";
+      const position =
+        parsed.pathname.indexOf(apiMarker);
+
+      if (position < 0) return "";
+
+      const deploymentPath =
+        parsed.pathname.slice(
+          0,
+          position
+        );
+
+      return normalizeServerBase(
+        `${parsed.origin}${deploymentPath}`
+      );
+
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function offlineRecordServerKey(record) {
+    const explicit =
+      normalizeStoredServerKey(
+        record?.serverKey
+        || record?.originServer
+        || ""
+      );
+
+    if (explicit) return explicit;
+
+    for (const url of record?.urls || []) {
+      const inferred =
+        inferServerKeyFromCachedUrl(url);
+
+      if (inferred) return inferred;
+    }
+
+    return LEGACY_SERVER_KEY;
+  }
+
+  function serverKeyForImage(
+    image = currentImage
+  ) {
+    if (!IS_NATIVE) {
+      return "__web__";
+    }
+
+    if (image?.localNative) {
+      return LOCAL_DEVICE_SERVER_KEY;
+    }
+
+    const explicit =
+      normalizeStoredServerKey(
+        image?.serverKey
+        || image?.originServer
+        || ""
+      );
+
+    if (explicit) {
+      return explicit;
+    }
+
+    return (
+      NATIVE_SERVER
+      || LEGACY_SERVER_KEY
+    );
+  }
+
+  function localImageIdentity(
+    imageId,
+    serverKey = ""
+  ) {
+    if (!IS_NATIVE || NATIVE_SERVER) {
+      return String(imageId || "");
+    }
+
+    const normalized =
+      normalizeStoredServerKey(
+        serverKey || LEGACY_SERVER_KEY
+      );
+
+    return `${
+      normalized || LEGACY_SERVER_KEY
+    }::${
+      imageId
+    }`;
+  }
+
+  function serverMetaKey(
+    kind,
+    imageId,
+    image = currentImage
+  ) {
+    if (!IS_NATIVE) {
+      return `${kind}:${imageId}`;
+    }
+
+    return `${
+      kind
+    }:${
+      serverKeyForImage(image)
+    }:${
+      imageId
+    }`;
+  }
+
+  function catalogMetaKey() {
+    if (!IS_NATIVE) {
+      return "imageCatalog";
+    }
+
+    if (!NATIVE_SERVER) {
+      return "";
+    }
+
+    return `imageCatalog:${NATIVE_SERVER}`;
+  }
+
+  function classStorageKey() {
+    if (!IS_NATIVE) {
+      return CLASS_STORAGE_KEY;
+    }
+
+    return `${
+      CLASS_STORAGE_KEY
+    }:${
+      NATIVE_SERVER
+      || LEGACY_SERVER_KEY
+    }`;
+  }
+
+  function viewerApiBaseForImage(
+    image = currentImage
+  ) {
+    if (!IS_NATIVE) {
+      return API;
+    }
+
+    const serverKey =
+      serverKeyForImage(image);
+
+    if (/^https?:\/\//i.test(serverKey)) {
+      return `${serverKey}/api`;
+    }
+
+    return API;
+  }
+
+  function imageSelectionValue(image) {
+    if (
+      !IS_NATIVE
+      || NATIVE_SERVER
+      || image?.localNative
+    ) {
+      return String(image?.id || "");
+    }
+
+    return `@server:${
+      encodeURIComponent(
+        serverKeyForImage(image)
+      )
+    }:${
+      encodeURIComponent(
+        String(image?.id || "")
+      )
+    }`;
+  }
+
+  function parseImageSelectionValue(value) {
+    const raw =
+      String(value || "");
+
+    if (!raw.startsWith("@server:")) {
+      return {
+        imageId: raw,
+        serverKey: "",
+      };
+    }
+
+    const payload =
+      raw.slice("@server:".length);
+
+    const separator =
+      payload.indexOf(":");
+
+    if (separator < 0) {
+      return {
+        imageId: raw,
+        serverKey: "",
+      };
+    }
+
+    try {
+      return {
+        serverKey:
+          decodeURIComponent(
+            payload.slice(
+              0,
+              separator
+            )
+          ),
+
+        imageId:
+          decodeURIComponent(
+            payload.slice(
+              separator + 1
+            )
+          ),
+      };
+
+    } catch (_) {
+      return {
+        imageId: raw,
+        serverKey: "",
+      };
+    }
+  }
+
+  function draftBelongsToImageServer(
+    record,
+    image = currentImage
+  ) {
+    if (!IS_NATIVE) {
+      return true;
+    }
+
+    const recordServer =
+      normalizeStoredServerKey(
+        record?.serverKey || ""
+      );
+
+    if (!recordServer) {
+      // Legacy drafts cannot safely be assigned to a server automatically.
+      return (
+        serverKeyForImage(image)
+        === LEGACY_SERVER_KEY
+      );
+    }
+
+    return (
+      recordServer
+      === serverKeyForImage(image)
+    );
+  }
+
+
+  function localDraftKey(
+    imageId,
+    annotationFile = currentAnnotationFile,
+    serverKey = serverKeyForImage(currentImage)
+  ) {
+    const documentKey =
+      annotationFile === "Default"
+        ? imageId
+        : `${imageId}::${annotationFile}`;
+
+    if (!IS_NATIVE) {
+      return documentKey;
+    }
+
+    return `${
+      serverKey || LEGACY_SERVER_KEY
+    }::${documentKey}`;
   }
   function currentDocumentKey() {
     if (!currentImage) return "";
@@ -4114,15 +4418,86 @@
   }
 
 
-  async function getLocalDraft(imageId, annotationFile = currentAnnotationFile) {
+  async function getLocalDraft(
+    imageId,
+    annotationFile = currentAnnotationFile
+  ) {
     try {
-      const db = await openDraftDb();
-      return await new Promise((resolve, reject) => {
-        const transaction = db.transaction(DB_STORE, "readonly");
-        const request = transaction.objectStore(DB_STORE).get(localDraftKey(imageId, annotationFile));
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () => reject(request.error);
-      });
+      const db =
+        await openDraftDb();
+
+      const serverKey =
+        serverKeyForImage(currentImage);
+
+      const scopedKey =
+        localDraftKey(
+          imageId,
+          annotationFile,
+          serverKey
+        );
+
+      const legacyKey =
+        annotationFile === "Default"
+          ? imageId
+          : `${imageId}::${annotationFile}`;
+
+      return await new Promise(
+        (resolve, reject) => {
+          const transaction =
+            db.transaction(
+              DB_STORE,
+              "readonly"
+            );
+
+          const store =
+            transaction.objectStore(
+              DB_STORE
+            );
+
+          const request =
+            store.get(scopedKey);
+
+          request.onsuccess = () => {
+            if (request.result) {
+              resolve(request.result);
+              return;
+            }
+
+            // Only expose old unscoped drafts when the image itself
+            // is explicitly Legacy / Unknown. Never silently attach
+            // them to a configured server.
+            if (
+              !IS_NATIVE
+              || serverKey
+                 !== LEGACY_SERVER_KEY
+            ) {
+              resolve(null);
+              return;
+            }
+
+            const legacyRequest =
+              store.get(legacyKey);
+
+            legacyRequest.onsuccess =
+              () =>
+                resolve(
+                  legacyRequest.result
+                  || null
+                );
+
+            legacyRequest.onerror =
+              () =>
+                reject(
+                  legacyRequest.error
+                );
+          };
+
+          request.onerror =
+            () =>
+              reject(request.error);
+        }
+      );
+
     } catch (_) {
       return null;
     }
@@ -4193,8 +4568,13 @@
       : 0;
 
     const record = {
-      imageId: localDraftKey(image.id, annotationFile),
+      imageId: localDraftKey(
+        image.id,
+        annotationFile,
+        serverKeyForImage(image)
+      ),
       sourceImageId: image.id,
+      serverKey: serverKeyForImage(image),
       annotationFile,
       imageName: image.name,
       relativePath: image.relativePath,
@@ -4240,6 +4620,11 @@
           const existing = request.result || {
             imageId: job.draftKey,
             sourceImageId: job.image.id,
+            serverKey:
+              job.serverKey
+              || serverKeyForImage(
+                job.image
+              ),
             annotationFile: job.annotationFile,
             imageName: job.image.name,
             relativePath: job.image.relativePath,
@@ -4519,8 +4904,24 @@
   }
 
 
-  function offlinePackageKey(imageId, displayQuery = offlineDisplaySignature(), quality = "full") {
-    return `${imageId}::${displayQuery}::${quality}`;
+  function offlinePackageKey(
+    imageId,
+    displayQuery = offlineDisplaySignature(),
+    quality = "full"
+  ) {
+    const serverKey =
+      activeServerKey()
+      || LEGACY_SERVER_KEY;
+
+    return `${
+      serverKey
+    }::${
+      imageId
+    }::${
+      displayQuery
+    }::${
+      quality
+    }`;
   }
 
   function deepZoomLevelSize(info, level) {
@@ -4667,7 +5068,16 @@
     const quality = els.offlineQuality?.value || "review";
     const displayQuery = offlineDisplaySignature();
     const plan = buildOfflinePlan(currentImage.id, currentInfo, quality, displayQuery);
-    const key = offlinePackageKey(currentImage.id, displayQuery, quality);
+    const serverKey =
+      activeServerKey()
+      || LEGACY_SERVER_KEY;
+
+    const key =
+      offlinePackageKey(
+        currentImage.id,
+        displayQuery,
+        quality
+      );
     offlineDownloadAbort = false;
     els.startOfflineDownload.disabled = true;
     els.offlineQuality.disabled = true;
@@ -4678,10 +5088,18 @@
 
     const packageRecord = {
       key,
+      serverKey,
+      originServer:
+        serverKey === LEGACY_SERVER_KEY
+          ? ""
+          : serverKey,
       imageId: currentImage.id,
       imageName: currentImage.name,
       relativePath: currentImage.relativePath,
-      image: deepClone(currentImage),
+      image: {
+        ...deepClone(currentImage),
+        serverKey,
+      },
       info: deepClone(currentInfo),
       annotationFiles: deepClone(annotationFiles),
       imageType,
@@ -4741,7 +5159,7 @@
     if (!offlineDownloadAbort && failed === 0 && available === plan.urls.length) {
       packageRecord.ready = true;
       await idbPut(DB_OFFLINE, packageRecord);
-      await putMeta(`image:${currentImage.id}`, {
+      await putMeta(serverMetaKey("image", currentImage.id), {
         image: deepClone(currentImage), info: deepClone(currentInfo), annotationFiles: deepClone(annotationFiles), imageType,
       });
       els.offlineStatus.textContent = "Offline copy ready. You can disconnect the VPN and keep working.";
@@ -4778,12 +5196,54 @@
     await updateOfflineEstimate();
   }
 
-  async function listOfflineRecords() {
-    return (await idbGetAll(DB_OFFLINE)).filter((item) => item?.imageId);
+  async function listOfflineRecords(
+    options = {}
+  ) {
+    const allServers =
+      Boolean(options?.allServers);
+
+    const records =
+      (await idbGetAll(DB_OFFLINE))
+        .filter(
+          (item) =>
+            item?.imageId
+        )
+        .map(
+          (item) => ({
+            ...item,
+            serverKey:
+              offlineRecordServerKey(
+                item
+              ),
+          })
+        );
+
+    if (
+      !IS_NATIVE
+      || allServers
+      || !NATIVE_SERVER
+    ) {
+      return records;
+    }
+
+    return records.filter(
+      (item) =>
+        item.serverKey
+        === NATIVE_SERVER
+    );
   }
 
-  async function listOfflinePackages() {
-    return (await listOfflineRecords()).filter((item) => item?.ready);
+  async function listOfflinePackages(
+    options = {}
+  ) {
+    return (
+      await listOfflineRecords(
+        options
+      )
+    ).filter(
+      (item) =>
+        item?.ready
+    );
   }
 
   async function removeOfflinePackage(record) {
@@ -4816,7 +5276,24 @@
       const state = record.ready ? "Downloaded" : "Partial download";
       const progress = total ? ` · ${completed.toLocaleString()} / ${total.toLocaleString()} tiles` : "";
       const small = document.createElement("small");
-      small.textContent = `${state} · ${record.quality || "review"}${progress}`;
+      const origin =
+        offlineRecordServerKey(
+          record
+        );
+
+      const originLabel =
+        origin
+          === LEGACY_SERVER_KEY
+          ? "Legacy / Unknown server"
+          : origin;
+
+      small.textContent =
+        `${state} · ${
+          record.quality
+          || "review"
+        }${progress} · ${
+          originLabel
+        }`;
       text.append(strong, small);
 
       const actions = document.createElement("div"); actions.className = "offline-file-actions";
@@ -4824,7 +5301,23 @@
         const open = document.createElement("button"); open.type = "button"; open.textContent = "Open";
         open.addEventListener("click", async () => {
           els.offlineFilesOverlay.hidden = true;
-          await openImage(record.imageId);
+          const imageForOpen = {
+            ...(record.image || {}),
+            id: record.imageId,
+            name:
+              record.imageName
+              || record.imageId,
+            serverKey:
+              offlineRecordServerKey(
+                record
+              ),
+          };
+
+          await openImage(
+            imageSelectionValue(
+              imageForOpen
+            )
+          );
         });
         actions.append(open);
       }
@@ -4843,18 +5336,90 @@
     els.offlineFilesOverlay.hidden = false;
   }
 
-  async function offlineRecordForImage(imageId) {
-    const records = await listOfflinePackages();
-    return records.filter((item) => item.imageId === imageId).sort((a, b) => Number(b.maxLevel || 0) - Number(a.maxLevel || 0))[0] || null;
+  async function offlineRecordForImage(
+    imageId,
+    preferredServerKey = ""
+  ) {
+    const wantedServer =
+      normalizeStoredServerKey(
+        preferredServerKey
+        || currentImage?.serverKey
+        || (
+          IS_NATIVE
+            ? NATIVE_SERVER
+            : ""
+        )
+        || ""
+      );
+
+    const records =
+      await listOfflinePackages({
+        allServers:
+          Boolean(
+            preferredServerKey
+          )
+          || (
+            IS_NATIVE
+            && !NATIVE_SERVER
+          ),
+      });
+
+    return records
+      .filter(
+        (item) =>
+          item.imageId
+            === imageId
+          && (
+            !wantedServer
+            || offlineRecordServerKey(
+                 item
+               ) === wantedServer
+          )
+      )
+      .sort(
+        (a, b) =>
+          Number(
+            b.maxLevel || 0
+          )
+          - Number(
+            a.maxLevel || 0
+          )
+      )[0]
+      || null;
   }
 
   async function cacheImageCatalog(payload) {
-    cachedCatalog = Array.isArray(payload?.images) ? deepClone(payload.images) : [];
-    await putMeta("imageCatalog", cachedCatalog);
+    cachedCatalog =
+      Array.isArray(payload?.images)
+        ? deepClone(payload.images)
+        : [];
+
+    const key =
+      catalogMetaKey();
+
+    if (key) {
+      await putMeta(
+        key,
+        cachedCatalog
+      );
+    }
   }
 
   async function restoreCachedCatalog() {
-    cachedCatalog = (await getMeta("imageCatalog")) || [];
+    const key =
+      catalogMetaKey();
+
+    // Local / Offline is assembled from downloaded packages.
+    // Never expose a stale catalog from another server.
+    if (!key) {
+      cachedCatalog = [];
+      return cachedCatalog;
+    }
+
+    cachedCatalog =
+      (await getMeta(key))
+      || [];
+
     return cachedCatalog;
   }
 
@@ -4863,20 +5428,109 @@
     for (const collection of collections) {
       for (const image of collection || []) {
         if (!image?.id) continue;
-        const previous = byId.get(image.id) || {};
-        byId.set(image.id, { ...previous, ...deepClone(image) });
+        const identity =
+          localImageIdentity(
+            image.id,
+            serverKeyForImage(
+              image
+            )
+          );
+
+        const previous =
+          byId.get(identity)
+          || {};
+
+        byId.set(
+          identity,
+          {
+            ...previous,
+            ...deepClone(image),
+          }
+        );
       }
     }
     return [...byId.values()].sort((a, b) => String(a.relativePath || a.name || "").localeCompare(String(b.relativePath || b.name || "")));
   }
 
-  async function collectLocalImageState(records = null) {
-    const offlineRecords = records || await listOfflineRecords();
-    const drafts = await idbGetAll(DB_STORE);
+  async function collectLocalImageState(
+    records = null
+  ) {
+    const offlineRecords =
+      records
+      || await listOfflineRecords();
+
+    const drafts =
+      await idbGetAll(DB_STORE);
+
+    const readyIds =
+      new Set(
+        offlineRecords
+          .filter(
+            (item) =>
+              item.ready
+          )
+          .map(
+            (item) =>
+              localImageIdentity(
+                item.imageId,
+                offlineRecordServerKey(
+                  item
+                )
+              )
+          )
+      );
+
+    const partialIds =
+      new Set(
+        offlineRecords
+          .filter(
+            (item) =>
+              !item.ready
+          )
+          .map(
+            (item) =>
+              localImageIdentity(
+                item.imageId,
+                offlineRecordServerKey(
+                  item
+                )
+              )
+          )
+      );
+
+    const pendingIds =
+      new Set(
+        drafts
+          .filter(
+            (item) =>
+              item?.pending
+              && item?.sourceImageId
+              && (
+                !IS_NATIVE
+                || (
+                  NATIVE_SERVER
+                    ? item?.serverKey
+                      === NATIVE_SERVER
+                    : Boolean(
+                        item?.serverKey
+                      )
+                )
+              )
+          )
+          .map(
+            (item) =>
+              localImageIdentity(
+                item.sourceImageId,
+                item.serverKey
+                || LEGACY_SERVER_KEY
+              )
+          )
+      );
+
     return {
-      readyIds: new Set(offlineRecords.filter((item) => item.ready).map((item) => item.imageId)),
-      partialIds: new Set(offlineRecords.filter((item) => !item.ready).map((item) => item.imageId)),
-      pendingIds: new Set(drafts.filter((item) => item?.pending && item?.sourceImageId).map((item) => item.sourceImageId)),
+      readyIds,
+      partialIds,
+      pendingIds,
     };
   }
 
@@ -4884,7 +5538,10 @@
     els.imageSelect.innerHTML = '<option value="">Select an image…</option>';
     for (const image of images) {
       const option = document.createElement("option");
-      option.value = image.id;
+      option.value =
+        imageSelectionValue(
+          image
+        );
       const isNativeLocal = Boolean(image.localNative);
       if (isNativeLocal) {
         const nativeState = image.accessible
@@ -4895,23 +5552,87 @@
         els.imageSelect.append(option);
         continue;
       }
+      const originSuffix =
+        IS_NATIVE
+        && !NATIVE_SERVER
+        && !image.localNative
+          ? ` • ${
+              serverKeyForImage(image)
+              === LEGACY_SERVER_KEY
+                ? "Legacy / Unknown server"
+                : serverKeyForImage(
+                    image
+                  )
+            }`
+          : "";
+
       const prep = image.prepared ? " • SSD ready" : (image.needsPreparation ? " • prepare on open" : "");
-      const downloaded = localState.readyIds.has(image.id);
-      const partial = localState.partialIds.has(image.id);
-      const pending = localState.pendingIds.has(image.id);
+
+      const stateIdentity =
+        localImageIdentity(
+          image.id,
+          serverKeyForImage(
+            image
+          )
+        );
+
+      const downloaded =
+        localState.readyIds.has(
+          stateIdentity
+        );
+
+      const partial =
+        localState.partialIds.has(
+          stateIdentity
+        );
+
+      const pending =
+        localState.pendingIds.has(
+          stateIdentity
+        );
       const storageState = downloaded ? "Downloaded" : (partial ? "Partial download" : "Online only");
       const syncState = pending ? " • Sync pending" : "";
       const unavailable = serverReachable === false && !downloaded ? " • unavailable offline" : "";
-      option.textContent = `${image.relativePath} (${formatBytes(image.sizeBytes)}) • ${storageState}${syncState}${image.hasAnnotations ? " • annotated" : ""}${prep}${unavailable}`;
+      option.textContent = `${image.relativePath} (${formatBytes(image.sizeBytes)}) • ${storageState}${syncState}${image.hasAnnotations ? " • annotated" : ""}${prep}${unavailable}${originSuffix}`;
       if (serverReachable === false && !downloaded) option.disabled = true;
       els.imageSelect.append(option);
     }
-    if (previous && images.some((image) => image.id === previous)) els.imageSelect.value = previous;
+    if (
+      previous
+      && Array.from(
+        els.imageSelect.options
+      ).some(
+        (option) =>
+          option.value === previous
+      )
+    ) {
+      els.imageSelect.value =
+        previous;
+
+    } else if (currentImage) {
+      const currentValue =
+        imageSelectionValue(
+          currentImage
+        );
+
+      if (
+        Array.from(
+          els.imageSelect.options
+        ).some(
+          (option) =>
+            option.value
+              === currentValue
+        )
+      ) {
+        els.imageSelect.value =
+          currentValue;
+      }
+    }
   }
 
   async function cacheCurrentImageMetadata() {
     if (!currentImage || !currentInfo) return;
-    await putMeta(`image:${currentImage.id}`, {
+    await putMeta(serverMetaKey("image", currentImage.id), {
       image: deepClone(currentImage), info: deepClone(currentInfo), annotationFiles: deepClone(annotationFiles), imageType,
     });
   }
@@ -4921,7 +5642,7 @@
     try {
       const center = viewer.viewport.getCenter();
       const zoom = viewer.viewport.getZoom();
-      await putMeta(`viewport:${currentImage.id}`, { x: center.x, y: center.y, zoom, annotationFile: currentAnnotationFile });
+      await putMeta(serverMetaKey("viewport", currentImage.id), { x: center.x, y: center.y, zoom, annotationFile: currentAnnotationFile });
     } catch (_) { /* best effort */ }
   }
 
@@ -4945,13 +5666,23 @@
       return { synced: 0, failed: 0 };
     }
 
-    const drafts = (await idbGetAll(DB_STORE)).filter(
-      (record) =>
-        record?.pending
-        && !record?.localNative
-        && record?.sourceImageId
-        && record?.featureCollection
-    );
+    const activeDraftServerKey =
+      activeServerKey();
+
+    const drafts =
+      (await idbGetAll(DB_STORE))
+        .filter(
+          (record) =>
+            record?.pending
+            && !record?.localNative
+            && record?.sourceImageId
+            && record?.featureCollection
+            && Boolean(
+              record?.serverKey
+            )
+            && record.serverKey
+               === activeDraftServerKey
+        );
 
     let synced = 0;
     let failed = 0;
@@ -4963,7 +5694,8 @@
       );
       const annotationFile = record.annotationFile || "Default";
       const job = {
-        draftKey: localDraftKey(record.sourceImageId, annotationFile),
+        draftKey: record.imageId,
+        serverKey: record.serverKey,
         image: {
           id: record.sourceImageId,
           name: record.imageName || record.sourceImageId,
@@ -5011,7 +5743,7 @@
 
   function readLocalClasses() {
     try {
-      const raw = localStorage.getItem(CLASS_STORAGE_KEY);
+      const raw = localStorage.getItem(classStorageKey());
       if (!raw) return null;
       const payload = JSON.parse(raw);
       if (!Array.isArray(payload.classes) || !payload.classes.length) return null;
@@ -5022,7 +5754,7 @@
   }
 
   function writeLocalClasses(pending) {
-    localStorage.setItem(CLASS_STORAGE_KEY, JSON.stringify({ classes, pending, updatedAt: Date.now() }));
+    localStorage.setItem(classStorageKey(), JSON.stringify({ classes, pending, updatedAt: Date.now() }));
   }
 
   async function syncClassesToServer() {
@@ -7060,8 +7792,22 @@
 
     (async () => {
       try {
-        let response = await offlineTileResponse(context.src);
+        let response =
+          await offlineTileResponse(
+            context.src
+          );
+
         let source = "local";
+
+        if (
+          !response
+          && IS_NATIVE
+          && !API
+        ) {
+          throw new Error(
+            "Tile is not available in the local offline cache"
+          );
+        }
 
         if (!response) {
           source = IS_NATIVE ? "android-native" : "network";
@@ -7133,6 +7879,11 @@
   function buildViewerSource(imageId, info) {
     const display = activeDisplayView();
 
+    const sourceApi =
+      viewerApiBaseForImage(
+        currentImage
+      );
+
     // Direct-raster images still use their normal URL in alpha2.
     // The local-first path below covers the DeepZoom tiled images.
     if (
@@ -7146,7 +7897,7 @@
       if (!IS_NATIVE) {
         return {
           type: "image",
-          url: `${API}/images/${imageId}/original`
+          url: `${sourceApi}/images/${imageId}/original`
         };
       }
 
@@ -7164,7 +7915,7 @@
         maxLevel: 0,
 
         getTileUrl() {
-          return `${API}/images/${imageId}/original`;
+          return `${sourceApi}/images/${imageId}/original`;
         },
 
         downloadTileStart:
@@ -7190,7 +7941,7 @@
       maxLevel: info.levelCount - 1,
 
       getTileUrl(level, x, y) {
-        return `${API}/images/${imageId}/tiles/${level}/${x}_${y}.jpeg?${query}`;
+        return `${sourceApi}/images/${imageId}/tiles/${level}/${x}_${y}.jpeg?${query}`;
       },
 
       // Android and Web can now read previously downloaded tiles
@@ -12338,15 +13089,23 @@ if (!geometry) {
       const response = await apiFetch(`${API}/annotations/${imageId}/files`);
       const payload = await response.json();
       annotationFiles = Array.isArray(payload.files) && payload.files.length ? payload.files : ["Default"];
-      await putMeta(`files:${imageId}`, annotationFiles);
+      await putMeta(serverMetaKey("files", imageId), annotationFiles);
       if (!preserve || !annotationFiles.includes(currentAnnotationFile)) currentAnnotationFile = "Default";
       renderAnnotationFileOptions();
     } catch (error) {
-      const cached = await getMeta(`files:${imageId}`);
-      const deletedMeta = await getMeta(`deletedAnnotationFiles:${imageId}`);
+      const cached = await getMeta(serverMetaKey("files", imageId));
+      const deletedMeta = await getMeta(serverMetaKey("deletedAnnotationFiles", imageId));
       const deletedNames = new Set(Array.isArray(deletedMeta) ? deletedMeta : []);
       const drafts = (await idbGetAll(DB_STORE))
-        .filter((record) => record?.sourceImageId === imageId)
+        .filter(
+          (record) =>
+            record?.sourceImageId
+              === imageId
+            && draftBelongsToImageServer(
+              record,
+              currentImage
+            )
+        )
         .map((record) => record.annotationFile || "Default")
         .filter((name) => !deletedNames.has(name));
       annotationFiles = Array.from(
@@ -12399,17 +13158,16 @@ if (!geometry) {
     if (!/^[A-Za-z0-9 _.-]{1,80}$/.test(name) || name === "." || name === "..") {
       setStatus("Invalid annotation file name", "error"); return;
     }
-    const deletedFileMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+    const deletedFileMeta = await getMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id));
     const deletedFileNames = Array.isArray(deletedFileMeta) ? deletedFileMeta : [];
     if (deletedFileNames.includes(name)) {
-      await putMeta(
-        `deletedAnnotationFiles:${currentImage.id}`,
+      await putMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id),
         deletedFileNames.filter((item) => item !== name)
       );
     }
     if (!annotationFiles.includes(name)) annotationFiles.push(name);
     currentAnnotationFile = name;
-    await putMeta(`files:${currentImage.id}`, annotationFiles);
+    await putMeta(serverMetaKey("files", currentImage.id), annotationFiles);
     renderAnnotationFileOptions();
     featureCollection = { type: "FeatureCollection", features: [] };
     currentLocalRevision = 0;
@@ -12425,7 +13183,7 @@ if (!geometry) {
         });
         const payload = await response.json();
         annotationFiles = payload.files || annotationFiles;
-        await putMeta(`files:${currentImage.id}`, annotationFiles);
+        await putMeta(serverMetaKey("files", currentImage.id), annotationFiles);
         renderAnnotationFileOptions();
       } catch (_) {
         setStatus("Annotation file created locally; it will sync when annotations are saved", "local");
@@ -12478,13 +13236,13 @@ if (!geometry) {
         if (Array.isArray(payload.files)) filesAfterDelete = payload.files;
       }
 
-      const deletedMeta = await getMeta(`deletedAnnotationFiles:${currentImage.id}`);
+      const deletedMeta = await getMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id));
       const deletedNames = Array.isArray(deletedMeta) ? deletedMeta : [];
       if (!deletedNames.includes(name)) deletedNames.push(name);
-      await putMeta(`deletedAnnotationFiles:${currentImage.id}`, deletedNames);
+      await putMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id), deletedNames);
 
       annotationFiles = Array.from(new Set(["Default", ...filesAfterDelete]));
-      await putMeta(`files:${currentImage.id}`, annotationFiles);
+      await putMeta(serverMetaKey("files", currentImage.id), annotationFiles);
       currentAnnotationFile = "Default";
       renderAnnotationFileOptions();
       await loadSelectedAnnotationFile("Default");
@@ -12523,7 +13281,20 @@ if (!geometry) {
       ]);
 
       const packageImages = offlineRecords
-        .map((item) => item.image)
+        .map(
+          (item) =>
+            item?.image
+              ? {
+                  ...deepClone(
+                    item.image
+                  ),
+                  serverKey:
+                    offlineRecordServerKey(
+                      item
+                    ),
+                }
+              : null
+        )
         .filter(Boolean);
 
       nativeLocalImages = await nativeLocalCatalogImages();
@@ -12614,7 +13385,14 @@ if (!geometry) {
         );
       }
 
-      const remoteImages = payload.images;
+      const remoteImages =
+        payload.images.map(
+          (image) => ({
+            ...image,
+            serverKey:
+              activeServerKey(),
+          })
+        );
 
       serverReachable = true;
 
@@ -12649,7 +13427,20 @@ if (!geometry) {
       diagnosticStage = "merging image catalog";
 
       const packageImages = offlineRecords
-        .map((item) => item.image)
+        .map(
+          (item) =>
+            item?.image
+              ? {
+                  ...deepClone(
+                    item.image
+                  ),
+                  serverKey:
+                    offlineRecordServerKey(
+                      item
+                    ),
+                }
+              : null
+        )
         .filter(Boolean);
 
       images = mergeKnownImages(
@@ -12733,8 +13524,21 @@ if (!geometry) {
         images = mergeKnownImages(
           cached,
           currentOfflineRecords
-            .map((item) => item.image)
-            .filter(Boolean)
+            .map(
+          (item) =>
+            item?.image
+              ? {
+                  ...deepClone(
+                    item.image
+                  ),
+                  serverKey:
+                    offlineRecordServerKey(
+                      item
+                    ),
+                }
+              : null
+        )
+        .filter(Boolean)
         );
 
         localState =
@@ -12849,7 +13653,7 @@ if (!geometry) {
         return false;
       }
 
-      const cachedFiles = await getMeta(`files:${imageId}`);
+      const cachedFiles = await getMeta(serverMetaKey("files", imageId));
       annotationFiles = mergeAnnotationFileNames(
         serverFiles,
         annotationFiles,
@@ -12861,12 +13665,12 @@ if (!geometry) {
       }
 
       renderAnnotationFileOptions();
-      await putMeta(`files:${imageId}`, deepClone(annotationFiles));
+      await putMeta(serverMetaKey("files", imageId), deepClone(annotationFiles));
 
-      const imageMeta = await getMeta(`image:${imageId}`);
+      const imageMeta = await getMeta(serverMetaKey("image", imageId));
       if (imageMeta) {
         imageMeta.annotationFiles = deepClone(annotationFiles);
-        await putMeta(`image:${imageId}`, imageMeta);
+        await putMeta(serverMetaKey("image", imageId), imageMeta);
       }
 
       serverReachable = true;
@@ -13004,6 +13808,19 @@ if (!geometry) {
   }
 
   async function openImage(imageId) {
+    const parsedSelection =
+      parseImageSelectionValue(
+        imageId
+      );
+
+    imageId =
+      parsedSelection.imageId;
+
+    const requestedServerKey =
+      normalizeStoredServerKey(
+        parsedSelection.serverKey
+        || ""
+      );
     if (reviewState.active) exitReviewMode();
     const sequence = ++openSequence;
     currentImageUsesOfflineCopy = false;
@@ -13030,9 +13847,26 @@ if (!geometry) {
       return;
     }
 
-    currentImage = images.find((image) => image.id === imageId) || null;
+    currentImage =
+      images.find(
+        (image) =>
+          image.id === imageId
+          && (
+            !requestedServerKey
+            || serverKeyForImage(
+                 image
+               ) === requestedServerKey
+          )
+      )
+      || null;
     if (!currentImage) {
-      const offline = await offlineRecordForImage(imageId);
+      const offline = await offlineRecordForImage(
+        imageId,
+        requestedServerKey
+        || serverKeyForImage(
+             currentImage
+           )
+      );
       currentImage = offline?.image || null;
     }
     if (!currentImage) {
@@ -13045,7 +13879,10 @@ if (!geometry) {
       return;
     }
     configureLocalTiffViewer(false);
-    els.imageSelect.value = imageId;
+    els.imageSelect.value =
+      imageSelectionValue(
+        currentImage
+      );
     els.inputGuide.hidden = true;
     loadDisplaySettings();
     clearSelectedFeatures(false);
@@ -13069,8 +13906,14 @@ if (!geometry) {
       let serverOnline = true;
       let serverCollection = null;
       let serverDisplayConfig = null;
-      let cachedRecord = await getMeta(`image:${imageId}`);
-      let offlinePackage = await offlineRecordForImage(imageId);
+      let cachedRecord = await getMeta(serverMetaKey("image", imageId));
+      let offlinePackage = await offlineRecordForImage(
+        imageId,
+        requestedServerKey
+        || serverKeyForImage(
+             currentImage
+           )
+      );
       const preferOffline = Boolean(offlinePackage && (offlinePackage.info || cachedRecord?.info));
       currentImageUsesOfflineCopy = preferOffline;
 
@@ -13093,8 +13936,8 @@ if (!geometry) {
           serverCollection = await annotationsResponse.json();
           serverDisplayConfig = await displayConfigResponse.json();
           cachedRecord = { image: deepClone(currentImage), info: deepClone(currentInfo), annotationFiles: deepClone(annotationFiles), imageType: serverDisplayConfig?.imageType || imageType };
-          await putMeta(`image:${imageId}`, cachedRecord);
-          await putMeta(`files:${imageId}`, annotationFiles);
+          await putMeta(serverMetaKey("image", imageId), cachedRecord);
+          await putMeta(serverMetaKey("files", imageId), annotationFiles);
         } catch (error) {
           serverOnline = false;
           if (!offlinePackage && !cachedRecord?.info) throw error;
@@ -13108,7 +13951,7 @@ if (!geometry) {
         if (!offlinePackage) throw new Error("This image has not been downloaded for offline use");
         currentInfo = offlinePackage.info || cachedRecord?.info;
         if (!currentInfo) throw new Error("Offline image metadata is missing");
-        const refreshedCachedFiles = await getMeta(`files:${imageId}`);
+        const refreshedCachedFiles = await getMeta(serverMetaKey("files", imageId));
         annotationFiles = mergeAnnotationFileNames(
           offlinePackage.annotationFiles || [],
           cachedRecord?.annotationFiles || [],
@@ -13155,7 +13998,7 @@ if (!geometry) {
 
       featureCollection = normalizeFeatureCollectionClient(featureCollection);
       featureCollection.features.forEach(featureId);
-      restoreViewportState = await getMeta(`viewport:${imageId}`);
+      restoreViewportState = await getMeta(serverMetaKey("viewport", imageId));
 
       viewer.addOnceHandler("open", () => {
         if (sequence !== openSequence) return;
@@ -24959,9 +25802,7 @@ if (
     saveDisplaySettings();
 
     const cached =
-      await getMeta(
-        `image:${currentImage.id}`
-      );
+      await getMeta(serverMetaKey("image", currentImage.id));
 
     if (
       cached
@@ -24970,8 +25811,7 @@ if (
       cached.imageType =
         normalized;
 
-      await putMeta(
-        `image:${currentImage.id}`,
+      await putMeta(serverMetaKey("image", currentImage.id),
         cached
       );
     }
@@ -25116,9 +25956,7 @@ if (
     };
 
     const cached =
-      await getMeta(
-        `image:${currentImage.id}`
-      );
+      await getMeta(serverMetaKey("image", currentImage.id));
 
     if (
       cached
@@ -25129,8 +25967,7 @@ if (
           currentInfo
         );
 
-      await putMeta(
-        `image:${currentImage.id}`,
+      await putMeta(serverMetaKey("image", currentImage.id),
         cached
       );
     }
@@ -26041,8 +26878,7 @@ if (
       );
     }
 
-    await putMeta(
-      `files:${currentImage.id}`,
+    await putMeta(serverMetaKey("files", currentImage.id),
       annotationFiles
     );
 
@@ -29632,8 +30468,7 @@ async function phaseGCreateAnnotationFileCopy() {
     annotationFiles.push(target);
   }
 
-  await putMeta(
-    `files:${currentImage.id}`,
+  await putMeta(serverMetaKey("files", currentImage.id),
     annotationFiles
   );
 
@@ -61333,9 +62168,7 @@ async function phaseImportWorkspaceReserveFile(
   }
 
   const deletedMeta =
-    await getMeta(
-      `deletedAnnotationFiles:${currentImage.id}`
-    );
+    await getMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id));
 
   const deletedNames =
     Array.isArray(
@@ -61349,8 +62182,7 @@ async function phaseImportWorkspaceReserveFile(
       target
     )
   ) {
-    await putMeta(
-      `deletedAnnotationFiles:${currentImage.id}`,
+    await putMeta(serverMetaKey("deletedAnnotationFiles", currentImage.id),
       deletedNames.filter(
         (item) =>
           item !== target
@@ -61358,8 +62190,7 @@ async function phaseImportWorkspaceReserveFile(
     );
   }
 
-  await putMeta(
-    `files:${currentImage.id}`,
+  await putMeta(serverMetaKey("files", currentImage.id),
     annotationFiles
   );
 
@@ -63033,8 +63864,7 @@ async function phaseCellImportPayload(
   currentAnnotationFile =
     name;
 
-  await putMeta(
-    `files:${currentImage.id}`,
+  await putMeta(serverMetaKey("files", currentImage.id),
     annotationFiles
   );
 

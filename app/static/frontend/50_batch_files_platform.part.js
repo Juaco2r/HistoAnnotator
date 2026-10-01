@@ -435,9 +435,7 @@
     saveDisplaySettings();
 
     const cached =
-      await getMeta(
-        `image:${currentImage.id}`
-      );
+      await getMeta(serverMetaKey("image", currentImage.id));
 
     if (
       cached
@@ -446,8 +444,7 @@
       cached.imageType =
         normalized;
 
-      await putMeta(
-        `image:${currentImage.id}`,
+      await putMeta(serverMetaKey("image", currentImage.id),
         cached
       );
     }
@@ -592,9 +589,7 @@
     };
 
     const cached =
-      await getMeta(
-        `image:${currentImage.id}`
-      );
+      await getMeta(serverMetaKey("image", currentImage.id));
 
     if (
       cached
@@ -605,8 +600,7 @@
           currentInfo
         );
 
-      await putMeta(
-        `image:${currentImage.id}`,
+      await putMeta(serverMetaKey("image", currentImage.id),
         cached
       );
     }
@@ -1517,8 +1511,7 @@
       );
     }
 
-    await putMeta(
-      `files:${currentImage.id}`,
+    await putMeta(serverMetaKey("files", currentImage.id),
       annotationFiles
     );
 
@@ -5108,8 +5101,7 @@ async function phaseGCreateAnnotationFileCopy() {
     annotationFiles.push(target);
   }
 
-  await putMeta(
-    `files:${currentImage.id}`,
+  await putMeta(serverMetaKey("files", currentImage.id),
     annotationFiles
   );
 

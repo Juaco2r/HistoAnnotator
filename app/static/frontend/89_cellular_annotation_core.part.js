@@ -1224,8 +1224,7 @@ async function phaseCellImportPayload(
   currentAnnotationFile =
     name;
 
-  await putMeta(
-    `files:${currentImage.id}`,
+  await putMeta(serverMetaKey("files", currentImage.id),
     annotationFiles
   );
 
