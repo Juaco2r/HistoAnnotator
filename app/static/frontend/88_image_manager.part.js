@@ -156,6 +156,66 @@ function phaseImageManagerApplyAliasesToPicker() {
 }
 
 
+
+function phaseImageManagerSortPickerOptions() {
+  if (!els?.imageSelect) {
+    return;
+  }
+
+  const selectedValue =
+    String(
+      els.imageSelect.value
+      || ""
+    );
+
+  const collator =
+    new Intl.Collator(
+      undefined,
+      {
+        numeric: true,
+        sensitivity: "base",
+      }
+    );
+
+  const options =
+    Array.from(
+      els.imageSelect.options
+      || []
+    )
+      .filter(
+        (option) =>
+          String(
+            option?.value
+            || ""
+          )
+      )
+      .sort(
+        (a, b) =>
+          collator.compare(
+            String(
+              a?.textContent
+              || ""
+            ),
+            String(
+              b?.textContent
+              || ""
+            )
+          )
+      );
+
+  for (const option of options) {
+    els.imageSelect.append(
+      option
+    );
+  }
+
+  if (selectedValue) {
+    els.imageSelect.value =
+      selectedValue;
+  }
+}
+
+
 const phaseImageManagerOriginalLoadImages =
   loadImages;
 
@@ -172,6 +232,8 @@ loadImages =
 
     phaseImageManagerApplyAliasesToPicker();
 
+
+    phaseImageManagerSortPickerOptions();
     return result;
   };
 
