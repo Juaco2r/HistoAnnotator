@@ -91,3 +91,11 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def test_freehand_geometry_route_is_available():
+    source = Path("app/imaging/multi_review.py").read_text(encoding="utf-8")
+    assert 'class FreehandGeometryRequest' in source
+    assert '@router.post("/sessions/{session_id}/geometry/freehand")' in source
+    assert 'base.union(stroke)' in source
+    assert 'base.difference(stroke)' in source

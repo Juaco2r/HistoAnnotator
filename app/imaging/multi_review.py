@@ -518,6 +518,12 @@ class ItemDecisionRequest(BaseModel):
     edited: bool | None = None
 
 
+class FreehandGeometryRequest(BaseModel):
+    geometry: dict[str, Any]
+    stroke: dict[str, Any]
+    operation: str = "add"
+
+
 @router.post("/authorize-labelled")
 def authorize_labelled(x_histo_admin_key: str | None = Header(default=None)):
     _require_admin_key(x_histo_admin_key)
@@ -853,6 +859,38 @@ def update_item(
     result = _public_item(target, manifest)
     result["progress"] = _progress(items)
     return result
+
+
+@router.post("/sessions/{session_id}/geometry/freehand")
+def freehand_geometry(
+    session_id: str,
+    req: FreehandGeometryRequest,
+    x_histo_admin_key: str | None = Header(default=None),
+):
+    path = _session_dir(session_id)
+    manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
+    if req.operation not in ("add", "subtract"):
+        raise HTTPException(status_code=400, detail="operation must be add or subtract")
+    base = _safe_shape(req.geometry)
+    stroke = _safe_shape(req.stroke)
+    if base is None or stroke is None:
+        raise HTTPException(status_code=400, detail="Freehand edit geometry is invalid")
+    result = base.union(stroke) if req.operation == "add" else base.difference(stroke)
+    if not result.is_valid:
+        result = result.buffer(0)
+    if result.is_empty:
+        raise HTTPException(status_code=400, detail="This edit would remove the entire selected mask")
+    if result.geom_type not in ("Polygon", "MultiPolygon"):
+        parts = [
+            geom
+            for geom in getattr(result, "geoms", [])
+            if geom.geom_type in ("Polygon", "MultiPolygon") and not geom.is_empty
+        ]
+        result = unary_union(parts) if parts else None
+    if result is None or result.is_empty:
+        raise HTTPException(status_code=400, detail="Freehand edit did not produce a polygonal mask")
+    return {"geometry": _geom_json(result), "operation": req.operation}
 
 
 @router.post("/sessions/{session_id}/close")

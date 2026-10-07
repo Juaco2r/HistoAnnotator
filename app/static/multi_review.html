@@ -9,7 +9,7 @@
     :root{color-scheme:dark;--bg:#101318;--panel:#181d24;--panel2:#20262f;--line:#343c47;--text:#f4f7fb;--muted:#9da8b5;--accent:#65b7ff;--good:#62d28f;--warn:#f4c430;--danger:#ff6b75}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-ui,-apple-system,Segoe UI,sans-serif;height:100vh;overflow:hidden}
     button,select,input{font:inherit}button{border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}button:hover{border-color:#596576}button.primary{background:#1f6fb2;border-color:#2b83ce}button.good{background:#1f7548;border-color:#2d9d65}button.warn{background:#725d13;border-color:#a88c1e}button.danger{background:#7a2c35;border-color:#a13b46}button:disabled{opacity:.45;cursor:not-allowed}
-    select,input[type=text]{background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px}.app{display:grid;grid-template-columns:320px 1fr;height:100vh}.sidebar{border-right:1px solid var(--line);background:#12171d;overflow:auto;padding:14px}.main{display:grid;grid-template-rows:auto auto 1fr auto;min-width:0;min-height:0}.brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}.brand h1{font-size:16px;margin:0}.muted{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}.card h2{font-size:13px;margin:0 0 10px}.field{display:grid;gap:5px;margin:9px 0}.field label{color:#cbd3dc;font-size:12px}.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:8px}.session{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#141a21}.session .title{font-weight:650}.toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#14191f;flex-wrap:wrap}.toolbar .spacer{flex:1}.progressbar{height:5px;background:#282f38;border-radius:6px;overflow:hidden;min-width:130px}.progressbar>div{height:100%;background:var(--good)}.candidatebar{display:flex;gap:7px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161c;flex-wrap:wrap}.candidate-chip{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.viewer-area{min-height:0;position:relative;background:#080a0d}.split-grid{width:100%;height:100%;display:grid;gap:2px;background:#000}.split-grid.n2{grid-template-columns:1fr 1fr}.split-grid.n3{grid-template-columns:1fr 1fr 1fr}.split-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}.view-panel{position:relative;min-width:0;min-height:0;background:#050607}.view-title{position:absolute;z-index:5;left:8px;top:8px;padding:4px 8px;border-radius:7px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);pointer-events:none}.osd{position:absolute;inset:0}#overlayPanel{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:0}#overlayOsd{width:100%;height:100%}.overlay-svg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.overlay-svg.editing{pointer-events:none}.edit-handle{pointer-events:all;cursor:grab}.empty-mask{position:absolute;z-index:5;inset:auto 8px 8px 8px;background:rgba(0,0,0,.58);padding:5px 7px;border-radius:6px;color:#cbd3dc;text-align:center}.actions{padding:10px 12px;border-top:1px solid var(--line);background:#14191f;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.actions .spacer{flex:1}.status-pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.status-pending{color:#d9dfe6}.status-deferred{color:var(--warn)}.status-accepted{color:var(--good)}.hidden{display:none!important}.error{color:#ff9097;white-space:pre-wrap}.success{color:#8ce6ad}.setup-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0a0d11}.setup-box{width:min(560px,96%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}.setup-box h2{margin-top:0}.notice{padding:8px 10px;border-radius:8px;background:#202833;border:1px solid #334153;color:#ced8e3}.kbd{border:1px solid var(--line);background:#0e1217;padding:2px 5px;border-radius:5px}.fileline{display:grid;grid-template-columns:1fr;gap:4px}.source-box{display:grid;gap:6px;padding:8px;border:1px solid var(--line);border-radius:9px;background:#141a21}.source-meta{min-height:17px}.small{font-size:12px}.session.closed{opacity:.68}.session-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);padding:0;box-shadow:0 18px 60px rgba(0,0,0,.55)}dialog::backdrop{background:rgba(0,0,0,.62)}.auth-box{padding:18px;width:min(390px,88vw)}.auth-box h2{margin:0 0 8px}.auth-box input{width:100%;margin:8px 0 10px}.edit-banner{background:#15304a;color:#d7edff;border:1px solid #285780;border-radius:8px;padding:6px 9px}.blind{color:#c7a7ff}.footer-stat{color:#cbd3dc}@media(max-width:900px){.app{grid-template-columns:250px 1fr}.split-grid.n3,.split-grid.n4{grid-template-columns:1fr 1fr}.view-title{font-size:11px}}
+    select,input[type=text]{background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px}.app{display:grid;grid-template-columns:320px 1fr;height:100vh}.sidebar{border-right:1px solid var(--line);background:#12171d;overflow:auto;padding:14px}.main{display:grid;grid-template-rows:auto auto 1fr auto;min-width:0;min-height:0}.brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}.brand h1{font-size:16px;margin:0}.muted{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}.card h2{font-size:13px;margin:0 0 10px}.field{display:grid;gap:5px;margin:9px 0}.field label{color:#cbd3dc;font-size:12px}.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:8px}.session{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#141a21}.session .title{font-weight:650}.toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#14191f;flex-wrap:wrap}.toolbar .spacer{flex:1}.progressbar{height:5px;background:#282f38;border-radius:6px;overflow:hidden;min-width:130px}.progressbar>div{height:100%;background:var(--good)}.candidatebar{display:flex;gap:7px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161c;flex-wrap:wrap}.candidate-chip{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.viewer-area{min-height:0;position:relative;background:#080a0d}.split-grid{width:100%;height:100%;display:grid;gap:2px;background:#000}.split-grid.n2{grid-template-columns:1fr 1fr}.split-grid.n3{grid-template-columns:1fr 1fr 1fr}.split-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}.view-panel{position:relative;min-width:0;min-height:0;background:#050607}.view-title{position:absolute;z-index:5;left:8px;top:8px;padding:4px 8px;border-radius:7px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);pointer-events:none}.osd{position:absolute;inset:0}#overlayPanel{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:0}#overlayOsd{width:100%;height:100%}.overlay-svg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.overlay-svg.editing{pointer-events:auto;cursor:crosshair;touch-action:none}.edit-handle{pointer-events:all;cursor:grab}.empty-mask{position:absolute;z-index:5;inset:auto 8px 8px 8px;background:rgba(0,0,0,.58);padding:5px 7px;border-radius:6px;color:#cbd3dc;text-align:center}.actions{padding:10px 12px;border-top:1px solid var(--line);background:#14191f;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.actions .spacer{flex:1}.status-pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.status-pending{color:#d9dfe6}.status-deferred{color:var(--warn)}.status-accepted{color:var(--good)}.hidden{display:none!important}.error{color:#ff9097;white-space:pre-wrap}.success{color:#8ce6ad}.setup-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0a0d11}.setup-box{width:min(560px,96%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}.setup-box h2{margin-top:0}.notice{padding:8px 10px;border-radius:8px;background:#202833;border:1px solid #334153;color:#ced8e3}.kbd{border:1px solid var(--line);background:#0e1217;padding:2px 5px;border-radius:5px}.fileline{display:grid;grid-template-columns:1fr;gap:4px}.source-box{display:grid;gap:6px;padding:8px;border:1px solid var(--line);border-radius:9px;background:#141a21}.source-meta{min-height:17px}.small{font-size:12px}.session.closed{opacity:.68}.session-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);padding:0;box-shadow:0 18px 60px rgba(0,0,0,.55)}dialog::backdrop{background:rgba(0,0,0,.62)}.auth-box{padding:18px;width:min(390px,88vw)}.auth-box h2{margin:0 0 8px}.auth-box input{width:100%;margin:8px 0 10px}.edit-banner{background:#15304a;color:#d7edff;border:1px solid #285780;border-radius:8px;padding:6px 9px}.edit-toolbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.edit-operation.active{background:#1f6fb2;border-color:#2b83ce}.edit-freehand-label{font-weight:650}.freehand-preview{fill:rgba(101,183,255,.16);stroke:#65b7ff;stroke-width:2.5;vector-effect:non-scaling-stroke;stroke-dasharray:6 4;pointer-events:none}.blind{color:#c7a7ff}.footer-stat{color:#cbd3dc}@media(max-width:900px){.app{grid-template-columns:250px 1fr}.split-grid.n3,.split-grid.n4{grid-template-columns:1fr 1fr}.view-title{font-size:11px}}
   </style>
 </head>
 <body>
@@ -82,6 +82,12 @@
       <span class="spacer"></span>
       <label class="row"><input id="challenging" type="checkbox"> Challenging</label>
       <button id="editBtn" disabled>Edit selected</button>
+      <div id="freehandEditControls" class="edit-toolbar hidden">
+        <span class="edit-banner"><span class="edit-freehand-label">Freehand</span></span>
+        <button id="editAddBtn" class="edit-operation primary active">Add</button>
+        <button id="editSubtractBtn" class="edit-operation">Subtract</button>
+        <button id="finishEditBtn">Done editing</button>
+      </div>
       <button id="resetEditBtn" disabled>Reset edit</button>
       <button id="deferBtn" class="warn" disabled>Leave for end</button>
       <button id="acceptBtn" class="good" disabled>Accept & next <span class="kbd">Enter</span></button>
@@ -118,6 +124,10 @@
     decisionGeometry: null,
     edited: false,
     editMode: false,
+    editOperation: 'add',
+    freehandDrawing: false,
+    freehandPoints: [],
+    freehandLastClient: null,
     imageInfo: null,
     tileSource: null,
     autosaveTimer: null,
@@ -446,7 +456,7 @@
       const number=candidateNumber(c,index);
       return `<button data-prefer="${esc(c.key)}" class="${selected?'primary':''}" title="Keyboard shortcut ${number}"><span class="kbd">${number}</span><span class="dot" style="background:${c.color}"></span>${esc(candidateDisplayLabel(c,index))}${c.geometry?'':' · no mask'}</button>`;
     }).join('');
-    document.querySelectorAll('[data-prefer]').forEach(btn=>btn.addEventListener('click',()=>selectPreferred(btn.dataset.prefer)));
+    document.querySelectorAll('[data-prefer]').forEach(btn=>{btn.disabled=state.editMode;btn.addEventListener('click',()=>selectPreferred(btn.dataset.prefer));});
     $('visibilityControls').innerHTML=candidates().map((c,index)=>`<label class="candidate-chip"><input type="checkbox" data-visible="${esc(c.key)}" ${state.visibility[c.key]?'checked':''}><span class="dot" style="background:${c.color}"></span>${esc(candidateDisplayLabel(c,index))}</label>`).join('');
     document.querySelectorAll('[data-visible]').forEach(cb=>cb.addEventListener('change',()=>{state.visibility[cb.dataset.visible]=cb.checked;drawAllOverlays();}));
     $('editBtn').disabled=!state.selectedKey || !state.decisionGeometry;
@@ -489,14 +499,54 @@
 
   function setAutosave(text,error=false){ $('autosaveState').textContent=text; $('autosaveState').style.color=error?'var(--danger)':''; }
 
+  function setEditOperation(operation){
+    state.editOperation=operation==='subtract'?'subtract':'add';
+    $('editAddBtn').classList.toggle('primary',state.editOperation==='add');
+    $('editAddBtn').classList.toggle('active',state.editOperation==='add');
+    $('editSubtractBtn').classList.toggle('primary',state.editOperation==='subtract');
+    $('editSubtractBtn').classList.toggle('active',state.editOperation==='subtract');
+    setAutosave(`Freehand edit · ${state.editOperation==='add'?'Add':'Subtract'}`);
+  }
+
+  function setEditUi(active){
+    $('freehandEditControls').classList.toggle('hidden',!active);
+    $('editBtn').classList.toggle('hidden',active);
+    $('visibilityControls').classList.toggle('hidden',active);
+    $('showAllBtn').classList.toggle('hidden',active);
+    $('showNoneBtn').classList.toggle('hidden',active);
+    $('splitBtn').disabled=active;
+    $('overlayBtn').disabled=active;
+  }
+
   async function enterEdit(){
     if(!state.decisionGeometry)return;
-    state.viewMode='overlay'; state.editMode=true; $('splitBtn').classList.remove('primary'); $('overlayBtn').classList.add('primary');
-    await renderCurrentView(true); updateItemControls(); drawAllOverlays(); setAutosave('Edit mode · drag vertices');
+    state.viewMode='overlay';
+    state.editMode=true;
+    state.freehandDrawing=false;
+    state.freehandPoints=[];
+    state.editOperation='add';
+    $('splitBtn').classList.remove('primary'); $('overlayBtn').classList.add('primary');
+    setEditUi(true);
+    setEditOperation('add');
+    await renderCurrentView(true);
+    updateItemControls();
+    drawAllOverlays();
   }
+
+  function finishEdit(){
+    state.freehandDrawing=false;
+    state.freehandPoints=[];
+    state.editMode=false;
+    try{state.overlayViewer?.setMouseNavEnabled(true);}catch{}
+    setEditUi(false);
+    updateItemControls();
+    drawAllOverlays();
+    setAutosave(state.edited?'Edit complete · changes autosaved':'Edit complete');
+  }
+
   function resetEdit(){
     const c=candidateByKey(state.selectedKey); if(!c)return;
-    state.decisionGeometry=clone(c.geometry); state.edited=false; state.editMode=true; drawAllOverlays(); updateItemControls(); scheduleGeometrySave();
+    state.decisionGeometry=clone(c.geometry); state.edited=false; state.editMode=true; state.freehandPoints=[]; drawAllOverlays(); updateItemControls(); scheduleGeometrySave();
   }
   function scheduleGeometrySave(){
     clearTimeout(state.autosaveTimer); setAutosave('Editing…');
@@ -610,7 +660,20 @@
 
   function ensureSvg(viewer){
     const panel=viewer._mrPanel || $('overlayPanel'); let svg=panel.querySelector(':scope > .overlay-svg');
-    if(!svg){svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.classList.add('overlay-svg');panel.appendChild(svg);} return svg;
+    if(!svg){
+      svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.classList.add('overlay-svg');
+      panel.appendChild(svg);
+    }
+    svg.classList.toggle('editing',state.editMode && viewer===state.overlayViewer);
+    if(viewer===state.overlayViewer && !svg.dataset.freehandBound){
+      svg.dataset.freehandBound='1';
+      svg.addEventListener('pointerdown',event=>beginFreehand(event,viewer));
+      svg.addEventListener('pointermove',event=>moveFreehand(event,viewer));
+      svg.addEventListener('pointerup',event=>endFreehand(event,viewer));
+      svg.addEventListener('pointercancel',event=>cancelFreehand(event,viewer));
+    }
+    return svg;
   }
   function drawViewerOverlay(viewer,geometry,color,editable){
     if(!viewer?.viewport)return; const svg=ensureSvg(viewer); svg.innerHTML='';
@@ -623,9 +686,95 @@
       return;
     }
     const v=state.overlayViewer; if(!v)return; const svg=ensureSvg(v); svg.innerHTML='';
+    svg.classList.toggle('editing',state.editMode);
+    if(state.editMode){
+      if(state.decisionGeometry) appendGeometry(svg,v,state.decisionGeometry,'#ffffff',false,true);
+      drawFreehandPreview(svg,v);
+      return;
+    }
     candidates().forEach(c=>{if(state.visibility[c.key]&&c.geometry)appendGeometry(svg,v,c.geometry,c.color,false);});
     if(state.selectedKey&&state.decisionGeometry){
-      appendGeometry(svg,v,state.decisionGeometry,'#ffffff',state.editMode,true);
+      appendGeometry(svg,v,state.decisionGeometry,'#ffffff',false,true);
+    }
+  }
+
+  function pointerImagePoint(event,viewer){
+    const rect=viewer.element.getBoundingClientRect();
+    return viewer.viewport.viewerElementToImageCoordinates(
+      new OpenSeadragon.Point(event.clientX-rect.left,event.clientY-rect.top)
+    );
+  }
+
+  function drawFreehandPreview(svg,viewer){
+    if(!state.editMode||!state.freehandPoints?.length)return;
+    const points=state.freehandPoints.map(point=>imageToElement(viewer,point));
+    if(points.length<2)return;
+    const ns='http://www.w3.org/2000/svg';
+    const path=document.createElementNS(ns,'path');
+    path.id='mr-freehand-preview';
+    path.classList.add('freehand-preview');
+    const d=points.map((p,i)=>`${i?'L':'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ')+(points.length>2?' Z':'');
+    path.setAttribute('d',d);
+    svg.appendChild(path);
+  }
+
+  function beginFreehand(event,viewer){
+    if(!state.editMode||event.button!==0||viewer!==state.overlayViewer)return;
+    event.preventDefault(); event.stopPropagation();
+    state.freehandDrawing=true;
+    const point=pointerImagePoint(event,viewer);
+    state.freehandPoints=[[point.x,point.y]];
+    state.freehandLastClient=[event.clientX,event.clientY];
+    try{viewer.setMouseNavEnabled(false);}catch{}
+    try{event.currentTarget.setPointerCapture(event.pointerId);}catch{}
+    drawAllOverlays();
+  }
+
+  function moveFreehand(event,viewer){
+    if(!state.editMode||!state.freehandDrawing||viewer!==state.overlayViewer)return;
+    event.preventDefault(); event.stopPropagation();
+    const last=state.freehandLastClient;
+    if(last && Math.hypot(event.clientX-last[0],event.clientY-last[1])<2.5)return;
+    const point=pointerImagePoint(event,viewer);
+    state.freehandPoints.push([point.x,point.y]);
+    state.freehandLastClient=[event.clientX,event.clientY];
+    const svg=ensureSvg(viewer);
+    const old=svg.querySelector('#mr-freehand-preview'); if(old)old.remove();
+    drawFreehandPreview(svg,viewer);
+  }
+
+  function cancelFreehand(event,viewer){
+    if(!state.freehandDrawing)return;
+    state.freehandDrawing=false; state.freehandPoints=[]; state.freehandLastClient=null;
+    try{viewer.setMouseNavEnabled(true);}catch{}
+    drawAllOverlays();
+  }
+
+  async function endFreehand(event,viewer){
+    if(!state.editMode||!state.freehandDrawing||viewer!==state.overlayViewer)return;
+    event.preventDefault(); event.stopPropagation();
+    state.freehandDrawing=false;
+    try{viewer.setMouseNavEnabled(true);}catch{}
+    const points=state.freehandPoints.slice();
+    state.freehandPoints=[]; state.freehandLastClient=null;
+    if(points.length<3){drawAllOverlays();return;}
+    const first=points[0]; const last=points[points.length-1];
+    if(first[0]!==last[0]||first[1]!==last[1]) points.push([...first]);
+    const stroke={type:'Polygon',coordinates:[points]};
+    setAutosave(`${state.editOperation==='add'?'Adding':'Subtracting'} freehand area…`);
+    try{
+      const result=await api(`/sessions/${encodeURIComponent(state.session.id)}/geometry/freehand`,{
+        method:'POST',
+        body:JSON.stringify({geometry:state.decisionGeometry,stroke,operation:state.editOperation}),
+      });
+      state.decisionGeometry=result.geometry;
+      state.edited=true;
+      drawAllOverlays();
+      updateItemControls();
+      scheduleGeometrySave();
+    }catch(err){
+      setAutosave(`Edit error: ${err.message}`,true);
+      drawAllOverlays();
     }
   }
 
@@ -709,6 +858,9 @@
   $('showNoneBtn').addEventListener('click',()=>setAllVisibility(false));
   $('challenging').addEventListener('change',toggleChallenging);
   $('editBtn').addEventListener('click',enterEdit);
+  $('editAddBtn').addEventListener('click',()=>setEditOperation('add'));
+  $('editSubtractBtn').addEventListener('click',()=>setEditOperation('subtract'));
+  $('finishEditBtn').addEventListener('click',finishEdit);
   $('resetEditBtn').addEventListener('click',resetEdit);
   $('deferBtn').addEventListener('click',deferCurrent);
   $('acceptBtn').addEventListener('click',acceptCurrent);

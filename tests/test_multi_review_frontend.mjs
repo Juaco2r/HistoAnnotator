@@ -70,3 +70,15 @@ test('Enter accepts the selected candidate and advances to the next item', () =>
   assert.match(html, /acceptCurrent\(\)/);
   assert.match(html, /Accept & next <span class="kbd">Enter<\/span>/);
 });
+
+
+test('selected mask uses freehand Add/Subtract editor', () => {
+  assert.match(html, /id="freehandEditControls"/);
+  assert.match(html, /id="editAddBtn"/);
+  assert.match(html, /id="editSubtractBtn"/);
+  assert.match(html, /function beginFreehand\(/);
+  assert.match(html, /function moveFreehand\(/);
+  assert.match(html, /async function endFreehand\(/);
+  assert.match(html, /geometry\/freehand/);
+  assert.match(html, /if\(state\.editMode\)\{[\s\S]*state\.decisionGeometry[\s\S]*return;/);
+});
