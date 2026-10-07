@@ -109,7 +109,7 @@
     imageInfo: null,
     tileSource: null,
     autosaveTimer: null,
-    storedAnnotations: [],
+    annotationFiles: [],
   };
 
   function esc(text){ return String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -123,26 +123,29 @@
     const text = await file.text();
     try { return {name:file.name, geojson:JSON.parse(text)}; } catch { throw new Error(`${file.name}: invalid JSON`); }
   }
-  function storedOptionLabel(annotation){
-    const classes=(annotation.classes||[]).join(', ');
-    const details=[`${annotation.featureCount ?? 0} objects`, classes].filter(Boolean).join(' · ');
-    return details ? `${annotation.name} — ${details}` : annotation.name;
+  function addOption(select, value, label){
+    const option=document.createElement('option');
+    option.value=value;
+    option.textContent=label;
+    select.appendChild(option);
   }
   function populateSourceSelectors(){
-    const anns=state.storedAnnotations||[];
+    const files=state.annotationFiles||[];
     for(let i=1;i<=3;i++){
       const select=$(`source${i}`);
       const previous=select.value;
       const optional=i===3;
-      const options=[];
-      if(optional) options.push('<option value="">None</option>');
-      else options.push('<option value="">Select a stored annotation…</option>');
-      anns.forEach(a=>options.push(`<option value="stored:${esc(a.id)}">${esc(storedOptionLabel(a))}</option>`));
-      options.push('<option value="__upload__">Upload additional GeoJSON…</option>');
-      select.innerHTML=options.join('');
+      select.innerHTML='';
+      addOption(select,'',optional?'None':'Select an annotation file…');
+      files.forEach(name=>addOption(select,`server:${name}`,name));
+      addOption(select,'__upload__','Upload additional GeoJSON…');
       if([...select.options].some(o=>o.value===previous)) select.value=previous;
       updateSourceInput(i);
     }
+  }
+  function selectedAnnotationName(index){
+    const value=$(`source${index}`).value||'';
+    return value.startsWith('server:') ? value.slice(7) : '';
   }
   function updateSourceInput(index){
     const select=$(`source${index}`);
@@ -154,38 +157,59 @@
       meta.textContent=upload.files?.[0] ? `External file: ${upload.files[0].name}` : 'Choose an external GeoJSON file.';
       return;
     }
-    if(select.value.startsWith('stored:')){
-      const id=select.value.slice(7);
-      const ann=(state.storedAnnotations||[]).find(a=>a.id===id);
-      meta.textContent=ann ? `Stored in HistoAnnotator · ${ann.featureCount ?? 0} objects · ${(ann.classes||[]).join(', ')}` : 'Stored in HistoAnnotator';
+    const name=selectedAnnotationName(index);
+    if(name){
+      meta.textContent=`HistoAnnotator annotation file · ${name}`;
     }else{
-      meta.textContent=index===3 ? 'Optional.' : 'Select an annotation already stored for this image.';
+      meta.textContent=index===3 ? 'Optional.' : 'Select one of the annotation files associated with this image.';
     }
+  }
+  async function fetchAnnotationFile(imageId,name){
+    const response=await fetch(`/api/annotations/${encodeURIComponent(imageId)}?file=${encodeURIComponent(name)}`,{cache:'no-store'});
+    if(!response.ok){
+      let detail=`${response.status} ${response.statusText}`;
+      try{const body=await response.json();detail=body.detail||JSON.stringify(body);}catch{}
+      throw new Error(`Could not load annotation file "${name}": ${detail}`);
+    }
+    const geojson=await response.json();
+    if(!geojson || !['FeatureCollection','Feature'].includes(geojson.type)) throw new Error(`Annotation file "${name}" is not valid GeoJSON.`);
+    return geojson;
   }
   async function readSource(index){
     const select=$(`source${index}`);
     if(!select.value) return null;
     if(select.value==='__upload__') return readUploadedGeoJSON($(`upload${index}`));
-    if(select.value.startsWith('stored:')){
-      const id=select.value.slice(7);
-      const ann=(state.storedAnnotations||[]).find(a=>a.id===id);
-      if(!ann) throw new Error(`Annotation ${index} is no longer available.`);
-      return {name:ann.name, storedPath:ann.path};
+    const name=selectedAnnotationName(index);
+    if(name){
+      const imageId=$('imageSelect').value;
+      if(!imageId) throw new Error('Choose an image first.');
+      return {name, geojson:await fetchAnnotationFile(imageId,name)};
     }
     return null;
   }
   async function loadStoredAnnotations(){
     const imageId=$('imageSelect').value;
-    state.storedAnnotations=[];
+    state.annotationFiles=[];
     populateSourceSelectors();
     if(!imageId) return;
     try{
-      const data=await api(`/available-annotations?imageId=${encodeURIComponent(imageId)}`);
-      state.storedAnnotations=data.annotations||[];
+      const response=await fetch(`/api/annotations/${encodeURIComponent(imageId)}/files`,{cache:'no-store'});
+      if(!response.ok){
+        let detail=`${response.status} ${response.statusText}`;
+        try{const body=await response.json();detail=body.detail||JSON.stringify(body);}catch{}
+        throw new Error(detail);
+      }
+      const data=await response.json();
+      state.annotationFiles=Array.isArray(data.files)?data.files.filter(Boolean):[];
       populateSourceSelectors();
-      setMessage(state.storedAnnotations.length ? `${state.storedAnnotations.length} stored annotation${state.storedAnnotations.length===1?'':'s'} found for this image.` : 'No stored annotations were matched to this image. You can use Upload additional GeoJSON.', true);
+      setMessage(
+        state.annotationFiles.length
+          ? `${state.annotationFiles.length} annotation file${state.annotationFiles.length===1?'':'s'} found for this image.`
+          : 'No annotation files were returned for this image. You can use Upload additional GeoJSON.',
+        true
+      );
     }catch(err){
-      setMessage(`Could not load stored annotations: ${err.message}`);
+      setMessage(`Could not load annotation files: ${err.message}`);
     }
   }
   function setMessage(text, ok=false){ $('createMessage').textContent=text||''; $('createMessage').className=`small ${ok?'success':'error'}`; }
@@ -200,6 +224,8 @@
       const label = typeof img === 'string' ? img : (img.displayName || img.name || img.id || img.imageId);
       return `<option value="${esc(id)}">${esc(label)}</option>`;
     }).join('');
+    const requestedImage=new URLSearchParams(window.location.search).get('imageId');
+    if(requestedImage && [...$('imageSelect').options].some(o=>o.value===requestedImage)) $('imageSelect').value=requestedImage;
     await loadStoredAnnotations();
   }
 
@@ -208,8 +234,8 @@
     try{
       const sources=[await readSource(1), await readSource(2), await readSource(3)].filter(Boolean);
       if(sources.length<2 || sources.length>3) throw new Error('Select 2 or 3 annotation sources.');
-      const identities=sources.map(x=>x.storedPath ? `stored:${x.storedPath}` : `upload:${x.name}`);
-      if(new Set(identities).size!==identities.length) throw new Error('Choose different annotations for each candidate.');
+      const sourceValues=[1,2,3].map(i=>$(`source${i}`).value).filter(Boolean);
+      if(new Set(sourceValues).size!==sourceValues.length) throw new Error('Choose different annotations for each candidate.');
       const payload={imageId:$('imageSelect').value,reviewMode:$('reviewMode').value,consensusEnabled:$('consensusEnabled').checked,sources};
       const session=await api('/sessions',{method:'POST',body:JSON.stringify(payload)});
       setMessage('Session created. Choose the class to review.',true);

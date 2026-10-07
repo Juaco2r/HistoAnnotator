@@ -1,113 +1,81 @@
 (() => {
   'use strict';
 
-  const ENTRY_ID = 'multiReviewSettingsEntry';
+  const ENTRY_ID = 'multiReviewAdditionalToolEntry';
   const LABEL = 'Multi-annotator Review';
-  const TARGET = '/static/multi_review.html';
 
-  function isVisible(el) {
-    if (!el || !(el instanceof Element)) return false;
-    const style = getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+  function currentImageId() {
+    const picker = document.getElementById('imageSelect');
+    return String(picker?.value || '').trim();
   }
 
-  function textOf(el) {
-    return [
-      el?.id,
-      el?.className,
-      el?.getAttribute?.('title'),
-      el?.getAttribute?.('aria-label'),
-      el?.textContent,
-    ].filter(Boolean).join(' ').toLowerCase();
+  function targetUrl() {
+    const imageId = currentImageId();
+    return imageId
+      ? `/static/multi_review.html?imageId=${encodeURIComponent(imageId)}`
+      : '/static/multi_review.html';
   }
 
-  function looksLikeSettingsTrigger(el) {
-    const text = textOf(el);
-    return /settings|setting|preferences|configuration|config|gear|connection settings/.test(text)
-      || /⚙|\u2699/.test(el?.textContent || '');
+  function removeIds(node) {
+    if (!(node instanceof Element)) return;
+    node.removeAttribute('id');
+    node.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
   }
 
-  function scoreSurface(el) {
-    if (!isVisible(el) || el === document.body || el === document.documentElement) return -1;
-    const text = textOf(el);
-    let score = 0;
-    if (/settings|preferences|configuration|connection settings/.test(text)) score += 5;
-    if (/server|connection|display|tools|shortcuts|offline/.test(text)) score += 2;
-    if (el.matches?.('[role="menu"], dialog, .modal, .popover, .dropdown-menu, [class*="settings"], [id*="settings"]')) score += 3;
-    const actions = el.querySelectorAll?.('button, a, [role="menuitem"]')?.length || 0;
-    if (actions >= 1 && actions <= 30) score += 2;
-    if (el.children?.length > 80) score -= 3;
-    return score;
+  function imageManagerTool() {
+    return [...document.querySelectorAll('.phase-additional-tool-label')]
+      .map(label => ({label, text:String(label.textContent || '').trim()}))
+      .find(item => item.text === 'Image Manager') || null;
   }
 
-  function findSettingsSurface() {
-    const selectors = [
-      '[role="menu"]', 'dialog', '.modal', '.popover', '.dropdown-menu',
-      '[class*="settings"]', '[id*="settings"]', '[class*="menu"]', '[id*="menu"]'
-    ];
-    const candidates = [...new Set(selectors.flatMap(sel => [...document.querySelectorAll(sel)]))]
-      .map(el => ({el, score: scoreSurface(el)}))
-      .filter(x => x.score >= 5)
-      .sort((a, b) => b.score - a.score);
-    return candidates[0]?.el || null;
-  }
+  function injectIntoAdditionalTools() {
+    if (document.getElementById(ENTRY_ID)) return true;
+    const found = imageManagerTool();
+    if (!found) return false;
 
-  function makeEntry(reference) {
-    const button = document.createElement('button');
-    button.id = ENTRY_ID;
-    button.type = 'button';
-    button.textContent = LABEL;
-    button.title = 'Review multiple GeoJSON annotations for the same image';
-    button.setAttribute('data-multi-review-settings-entry', '1');
-    if (reference?.className) button.className = reference.className;
-    button.style.width = reference ? '' : '100%';
-    button.style.textAlign = reference ? '' : 'left';
-    button.addEventListener('click', () => {
-      window.location.href = TARGET;
-    });
-    return button;
-  }
+    const reference = found.label.closest(
+      'button, a, [role="button"], [role="menuitem"], .phase-additional-tool'
+    ) || found.label.parentElement;
+    if (!reference?.parentElement) return false;
 
-  function injectInto(surface) {
-    if (!surface || surface.querySelector(`#${ENTRY_ID}`)) return false;
-    const reference = surface.querySelector('button, a, [role="menuitem"]');
-    const entry = makeEntry(reference);
+    const entry = reference.cloneNode(true);
+    removeIds(entry);
+    entry.id = ENTRY_ID;
+    entry.setAttribute('data-multi-review-additional-tool', '1');
+    entry.removeAttribute('disabled');
+    entry.removeAttribute('aria-disabled');
+    entry.querySelectorAll('[disabled]').forEach(el => el.removeAttribute('disabled'));
 
-    if (reference?.parentElement && reference.parentElement !== surface && reference.parentElement.children.length <= 30) {
-      reference.parentElement.appendChild(entry);
-    } else {
-      surface.appendChild(entry);
-    }
+    const label = entry.querySelector('.phase-additional-tool-label') || entry;
+    label.textContent = LABEL;
+    entry.setAttribute('title', 'Review 2–3 annotation files for the same image');
+
+    entry.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      window.location.href = targetUrl();
+    }, true);
+
+    reference.insertAdjacentElement('afterend', entry);
     return true;
   }
 
-  function tryInject() {
-    if (document.getElementById(ENTRY_ID)) return true;
-    const surface = findSettingsSurface();
-    return injectInto(surface);
+  function scheduleInjection() {
+    [0, 30, 100, 250, 600].forEach(delay => setTimeout(injectIntoAdditionalTools, delay));
   }
 
   document.addEventListener('click', event => {
-    const path = event.composedPath ? event.composedPath() : [event.target];
-    if (path.some(looksLikeSettingsTrigger)) {
-      [0, 40, 150, 350].forEach(delay => setTimeout(tryInject, delay));
-    }
+    const element = event.target instanceof Element ? event.target : null;
+    const text = String(element?.closest('button, a, [role="button"], [role="menuitem"]')?.textContent || '').trim();
+    if (/Additional Tools/i.test(text) || /Image Manager/i.test(text)) scheduleInjection();
   }, true);
 
-  const observer = new MutationObserver(() => {
-    tryInject();
-  });
-
+  const observer = new MutationObserver(scheduleInjection);
   const start = () => {
-    observer.observe(document.body, {childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'open']});
-    tryInject();
+    observer.observe(document.body, {childList:true, subtree:true});
+    scheduleInjection();
   };
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, {once: true});
-  } else {
-    start();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
+  else start();
 })();
