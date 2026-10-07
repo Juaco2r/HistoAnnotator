@@ -4,9 +4,11 @@ import os
 import tempfile
 from pathlib import Path
 
-# Set a disposable annotation root before importing the module.
+from fastapi import HTTPException
+
 _tmp = tempfile.TemporaryDirectory()
 os.environ['ANNOTATION_ROOT'] = _tmp.name
+os.environ['HISTO_ADMIN_KEY'] = '12345'
 
 MODULE = Path('app/imaging/multi_review.py')
 spec = importlib.util.spec_from_file_location('histo_multi_review_test', MODULE)
@@ -47,6 +49,18 @@ def main():
     order2, colors2 = mr._blind_permutation('seed', 'item-000001', 3)
     assert order1 == order2 and colors1 == colors2
 
+    slots1 = mr._blind_display_slots('seed', 'item-000001', 4)
+    slots2 = mr._blind_display_slots('seed', 'item-000001', 4)
+    assert slots1 == slots2
+    assert sorted(slots1) == [1, 2, 3, 4]
+
+    mr._require_admin_key('12345')
+    try:
+        mr._require_admin_key('wrong')
+        raise AssertionError('wrong labelled-review password was accepted')
+    except HTTPException as exc:
+        assert exc.status_code == 401
+
     root = Path(_tmp.name)
     stored = root / 'Case_01' / 'annotator_A.geojson'
     stored.parent.mkdir(parents=True)
@@ -72,7 +86,7 @@ def main():
     assert path.name == 'annotator_A.geojson'
     assert len(mr._features(doc)) == 1
 
-    print('multi-review v1.1 backend helper tests: PASS')
+    print('multi-review v1.3 backend helper tests: PASS')
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import random
@@ -10,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -27,14 +28,29 @@ router = APIRouter(prefix="/api/multi-review", tags=["multi-review"])
 ANNOTATION_ROOT = Path(os.getenv("ANNOTATION_ROOT", "/data/annotations"))
 REVIEW_ROOT = ANNOTATION_ROOT / "_reviews"
 REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
+ADMIN_KEY = os.getenv("HISTO_ADMIN_KEY", "").strip()
 
 _SOURCE_COLORS = ["#00B8D9", "#FF4D8D", "#F4C430"]
 _CONSENSUS_COLOR = "#7C3AED"
+_BLIND_SLOT_COLORS = ["#00B8D9", "#FF4D8D", "#F4C430", "#7C3AED"]
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _require_admin_key(value: str | None) -> None:
+    if not ADMIN_KEY:
+        raise HTTPException(status_code=503, detail="Labelled review is not configured")
+    provided = str(value or "")
+    if not hmac.compare_digest(provided, ADMIN_KEY):
+        raise HTTPException(status_code=401, detail="Invalid password for Labelled review")
+
+
+def _require_session_access(manifest: dict[str, Any], value: str | None) -> None:
+    if manifest.get("reviewMode") == "labelled":
+        _require_admin_key(value)
 
 
 def _atomic_json(path: Path, payload: Any) -> None:
@@ -327,6 +343,14 @@ def _blind_permutation(seed: str, item_id: str, source_count: int) -> tuple[list
     return order, colors
 
 
+def _blind_display_slots(seed: str, item_id: str, candidate_count: int) -> list[int]:
+    digest = hashlib.sha256(f"{seed}:{item_id}:display".encode("utf-8")).hexdigest()
+    rnd = random.Random(int(digest[:16], 16))
+    slots = list(range(1, candidate_count + 1))
+    rnd.shuffle(slots)
+    return slots
+
+
 def _public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     out = dict(manifest)
     if out.get("reviewMode") == "blind":
@@ -371,12 +395,21 @@ def _public_item(item: dict[str, Any], manifest: dict[str, Any]) -> dict[str, An
     out = {k: v for k, v in item.items() if k != "auditMapping"}
     if manifest.get("reviewMode") == "blind":
         sanitized = []
-        for candidate in out.get("candidates", []):
+        for index, candidate in enumerate(out.get("candidates", []), start=1):
             c = dict(candidate)
             c.pop("sourceIndex", None)
             c.pop("sourceName", None)
+            slot = int(c.get("displaySlot") or index)
+            c["label"] = f"Candidate {slot}"
             sanitized.append(c)
         out["candidates"] = sanitized
+        if isinstance(out.get("consensus"), dict):
+            consensus = dict(out["consensus"])
+            consensus.pop("sourceIndex", None)
+            consensus.pop("sourceName", None)
+            slot = int(consensus.get("displaySlot") or (len(sanitized) + 1))
+            consensus["label"] = f"Candidate {slot}"
+            out["consensus"] = consensus
     return out
 
 
@@ -485,6 +518,12 @@ class ItemDecisionRequest(BaseModel):
     edited: bool | None = None
 
 
+@router.post("/authorize-labelled")
+def authorize_labelled(x_histo_admin_key: str | None = Header(default=None)):
+    _require_admin_key(x_histo_admin_key)
+    return {"ok": True}
+
+
 @router.get("/available-annotations")
 def available_annotations(imageId: str):
     image_id = imageId.strip()
@@ -507,6 +546,7 @@ def list_sessions():
             manifest = _read_json(manifest_path)
             items = _load_items(path)
             public = _public_manifest(manifest)
+            public.pop("sources", None)
             public["progress"] = _progress(items)
             sessions.append(public)
         except Exception:
@@ -515,11 +555,16 @@ def list_sessions():
 
 
 @router.post("/sessions")
-def create_session(req: CreateSessionRequest):
+def create_session(
+    req: CreateSessionRequest,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     if len(req.sources) not in (2, 3):
         raise HTTPException(status_code=400, detail="Select exactly 2 or 3 GeoJSON annotation files")
     if req.reviewMode not in ("blind", "labelled"):
         raise HTTPException(status_code=400, detail="reviewMode must be blind or labelled")
+    if req.reviewMode == "labelled":
+        _require_admin_key(x_histo_admin_key)
     if not req.imageId.strip():
         raise HTTPException(status_code=400, detail="imageId is required")
 
@@ -594,9 +639,13 @@ def create_session(req: CreateSessionRequest):
 
 
 @router.get("/sessions/{session_id}")
-def get_session(session_id: str):
+def get_session(
+    session_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     path = _session_dir(session_id)
     manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
     items = _load_items(path)
     out = _public_manifest(manifest)
     out["progress"] = _progress(items)
@@ -605,9 +654,14 @@ def get_session(session_id: str):
 
 
 @router.post("/sessions/{session_id}/class")
-def select_class(session_id: str, req: SelectClassRequest):
+def select_class(
+    session_id: str,
+    req: SelectClassRequest,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     path = _session_dir(session_id)
     manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
     class_name = req.className.strip()
     if class_name not in manifest.get("classes", []):
         raise HTTPException(status_code=400, detail="Unknown annotation class")
@@ -632,14 +686,24 @@ def select_class(session_id: str, req: SelectClassRequest):
 
         candidates = []
         audit_mapping: dict[str, Any] = {}
+        has_consensus = bool(manifest.get("consensusEnabled"))
+        candidate_count = source_count + (1 if has_consensus else 0)
+        blind_slots = (
+            _blind_display_slots(manifest["seed"], item_id, candidate_count)
+            if manifest["reviewMode"] == "blind"
+            else list(range(1, candidate_count + 1))
+        )
+
         if manifest["reviewMode"] == "blind":
             order, colors = _blind_permutation(manifest["seed"], item_id, source_count)
-            for slot, source_index in enumerate(order):
-                key = chr(ord("A") + slot)
+            for source_slot, source_index in enumerate(order):
+                key = chr(ord("A") + source_slot)
+                display_slot = blind_slots[source_slot]
                 candidate = {
                     "key": key,
-                    "label": f"Candidate {key}",
-                    "color": colors[slot],
+                    "label": f"Candidate {display_slot}",
+                    "displaySlot": display_slot,
+                    "color": _BLIND_SLOT_COLORS[display_slot - 1],
                     "sourceIndex": source_index,
                     "sourceName": manifest["sources"][source_index]["name"],
                     "geometry": _geom_json(source_geoms[source_index]),
@@ -649,6 +713,7 @@ def select_class(session_id: str, req: SelectClassRequest):
                 audit_mapping[key] = {
                     "sourceIndex": source_index,
                     "sourceName": manifest["sources"][source_index]["name"],
+                    "displaySlot": display_slot,
                 }
         else:
             for source_index in range(source_count):
@@ -657,6 +722,7 @@ def select_class(session_id: str, req: SelectClassRequest):
                 candidate = {
                     "key": key,
                     "label": source_name,
+                    "displaySlot": source_index + 1,
                     "color": _SOURCE_COLORS[source_index],
                     "sourceIndex": source_index,
                     "sourceName": source_name,
@@ -667,15 +733,22 @@ def select_class(session_id: str, req: SelectClassRequest):
                 audit_mapping[key] = {
                     "sourceIndex": source_index,
                     "sourceName": source_name,
+                    "displaySlot": source_index + 1,
                 }
 
         consensus = None
-        if manifest.get("consensusEnabled"):
+        if has_consensus:
             consensus_geom = _consensus_geometry(source_geoms)
+            consensus_slot = blind_slots[-1] if manifest["reviewMode"] == "blind" else source_count + 1
             consensus = {
                 "key": "CONSENSUS",
-                "label": "Consensus",
-                "color": _CONSENSUS_COLOR,
+                "label": f"Candidate {consensus_slot}",
+                "displaySlot": consensus_slot,
+                "color": (
+                    _BLIND_SLOT_COLORS[consensus_slot - 1]
+                    if manifest["reviewMode"] == "blind"
+                    else _CONSENSUS_COLOR
+                ),
                 "sourceIndex": None,
                 "sourceName": None,
                 "geometry": _geom_json(consensus_geom),
@@ -712,9 +785,14 @@ def select_class(session_id: str, req: SelectClassRequest):
 
 
 @router.get("/sessions/{session_id}/items/{item_id}")
-def get_item(session_id: str, item_id: str):
+def get_item(
+    session_id: str,
+    item_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     path = _session_dir(session_id)
     manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
     for item in _load_items(path):
         if item.get("id") == item_id:
             return _public_item(item, manifest)
@@ -722,9 +800,15 @@ def get_item(session_id: str, item_id: str):
 
 
 @router.patch("/sessions/{session_id}/items/{item_id}")
-def update_item(session_id: str, item_id: str, req: ItemDecisionRequest):
+def update_item(
+    session_id: str,
+    item_id: str,
+    req: ItemDecisionRequest,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     path = _session_dir(session_id)
     manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
     items = _load_items(path)
     target = next((item for item in items if item.get("id") == item_id), None)
     if target is None:
@@ -771,16 +855,57 @@ def update_item(session_id: str, item_id: str, req: ItemDecisionRequest):
     return result
 
 
-@router.get("/sessions/{session_id}/working-final.geojson")
-def working_final(session_id: str):
+@router.post("/sessions/{session_id}/close")
+def close_session(
+    session_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     path = _session_dir(session_id)
+    manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
+    manifest["closedAt"] = _now()
+    manifest["updatedAt"] = _now()
+    _atomic_json(path / "manifest.json", manifest)
+    out = _public_manifest(manifest)
+    out["progress"] = _progress(_load_items(path))
+    return out
+
+
+@router.post("/sessions/{session_id}/reopen")
+def reopen_session(
+    session_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
+    path = _session_dir(session_id)
+    manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
+    manifest.pop("closedAt", None)
+    manifest["updatedAt"] = _now()
+    _atomic_json(path / "manifest.json", manifest)
+    out = _public_manifest(manifest)
+    out["progress"] = _progress(_load_items(path))
+    return out
+
+
+@router.get("/sessions/{session_id}/working-final.geojson")
+def working_final(
+    session_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
+    path = _session_dir(session_id)
+    manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
     return JSONResponse(_read_json(path / "working_final.geojson"))
 
 
 @router.post("/sessions/{session_id}/finalize")
-def finalize(session_id: str):
+def finalize(
+    session_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     path = _session_dir(session_id)
     manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
     items = _load_items(path)
     progress = _progress(items)
     if progress["pending"] or progress["deferred"]:
@@ -801,8 +926,13 @@ def finalize(session_id: str):
 
 
 @router.get("/sessions/{session_id}/final.geojson")
-def final_geojson(session_id: str):
+def final_geojson(
+    session_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
     path = _session_dir(session_id)
+    manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
     final_path = path / "final.geojson"
     if not final_path.exists():
         raise HTTPException(status_code=404, detail="This review has not been finalized")

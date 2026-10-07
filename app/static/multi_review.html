@@ -9,7 +9,7 @@
     :root{color-scheme:dark;--bg:#101318;--panel:#181d24;--panel2:#20262f;--line:#343c47;--text:#f4f7fb;--muted:#9da8b5;--accent:#65b7ff;--good:#62d28f;--warn:#f4c430;--danger:#ff6b75}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-ui,-apple-system,Segoe UI,sans-serif;height:100vh;overflow:hidden}
     button,select,input{font:inherit}button{border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}button:hover{border-color:#596576}button.primary{background:#1f6fb2;border-color:#2b83ce}button.good{background:#1f7548;border-color:#2d9d65}button.warn{background:#725d13;border-color:#a88c1e}button.danger{background:#7a2c35;border-color:#a13b46}button:disabled{opacity:.45;cursor:not-allowed}
-    select,input[type=text]{background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px}.app{display:grid;grid-template-columns:320px 1fr;height:100vh}.sidebar{border-right:1px solid var(--line);background:#12171d;overflow:auto;padding:14px}.main{display:grid;grid-template-rows:auto auto 1fr auto;min-width:0;min-height:0}.brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}.brand h1{font-size:16px;margin:0}.muted{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}.card h2{font-size:13px;margin:0 0 10px}.field{display:grid;gap:5px;margin:9px 0}.field label{color:#cbd3dc;font-size:12px}.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:8px}.session{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#141a21}.session .title{font-weight:650}.toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#14191f;flex-wrap:wrap}.toolbar .spacer{flex:1}.progressbar{height:5px;background:#282f38;border-radius:6px;overflow:hidden;min-width:130px}.progressbar>div{height:100%;background:var(--good)}.candidatebar{display:flex;gap:7px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161c;flex-wrap:wrap}.candidate-chip{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.viewer-area{min-height:0;position:relative;background:#080a0d}.split-grid{width:100%;height:100%;display:grid;gap:2px;background:#000}.split-grid.n2{grid-template-columns:1fr 1fr}.split-grid.n3{grid-template-columns:1fr 1fr 1fr}.split-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}.view-panel{position:relative;min-width:0;min-height:0;background:#050607}.view-title{position:absolute;z-index:5;left:8px;top:8px;padding:4px 8px;border-radius:7px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);pointer-events:none}.osd{position:absolute;inset:0}.overlay-svg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.overlay-svg.editing{pointer-events:none}.edit-handle{pointer-events:all;cursor:grab}.empty-mask{position:absolute;z-index:5;inset:auto 8px 8px 8px;background:rgba(0,0,0,.58);padding:5px 7px;border-radius:6px;color:#cbd3dc;text-align:center}.actions{padding:10px 12px;border-top:1px solid var(--line);background:#14191f;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.actions .spacer{flex:1}.status-pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.status-pending{color:#d9dfe6}.status-deferred{color:var(--warn)}.status-accepted{color:var(--good)}.hidden{display:none!important}.error{color:#ff9097;white-space:pre-wrap}.success{color:#8ce6ad}.setup-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0a0d11}.setup-box{width:min(560px,96%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}.setup-box h2{margin-top:0}.notice{padding:8px 10px;border-radius:8px;background:#202833;border:1px solid #334153;color:#ced8e3}.kbd{border:1px solid var(--line);background:#0e1217;padding:2px 5px;border-radius:5px}.fileline{display:grid;grid-template-columns:1fr;gap:4px}.source-box{display:grid;gap:6px;padding:8px;border:1px solid var(--line);border-radius:9px;background:#141a21}.source-meta{min-height:17px}.small{font-size:12px}.edit-banner{background:#15304a;color:#d7edff;border:1px solid #285780;border-radius:8px;padding:6px 9px}.blind{color:#c7a7ff}.footer-stat{color:#cbd3dc}@media(max-width:900px){.app{grid-template-columns:250px 1fr}.split-grid.n3,.split-grid.n4{grid-template-columns:1fr 1fr}.view-title{font-size:11px}}
+    select,input[type=text]{background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px}.app{display:grid;grid-template-columns:320px 1fr;height:100vh}.sidebar{border-right:1px solid var(--line);background:#12171d;overflow:auto;padding:14px}.main{display:grid;grid-template-rows:auto auto 1fr auto;min-width:0;min-height:0}.brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}.brand h1{font-size:16px;margin:0}.muted{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}.card h2{font-size:13px;margin:0 0 10px}.field{display:grid;gap:5px;margin:9px 0}.field label{color:#cbd3dc;font-size:12px}.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:8px}.session{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#141a21}.session .title{font-weight:650}.toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#14191f;flex-wrap:wrap}.toolbar .spacer{flex:1}.progressbar{height:5px;background:#282f38;border-radius:6px;overflow:hidden;min-width:130px}.progressbar>div{height:100%;background:var(--good)}.candidatebar{display:flex;gap:7px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161c;flex-wrap:wrap}.candidate-chip{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.viewer-area{min-height:0;position:relative;background:#080a0d}.split-grid{width:100%;height:100%;display:grid;gap:2px;background:#000}.split-grid.n2{grid-template-columns:1fr 1fr}.split-grid.n3{grid-template-columns:1fr 1fr 1fr}.split-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}.view-panel{position:relative;min-width:0;min-height:0;background:#050607}.view-title{position:absolute;z-index:5;left:8px;top:8px;padding:4px 8px;border-radius:7px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);pointer-events:none}.osd{position:absolute;inset:0}.overlay-svg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.overlay-svg.editing{pointer-events:none}.edit-handle{pointer-events:all;cursor:grab}.empty-mask{position:absolute;z-index:5;inset:auto 8px 8px 8px;background:rgba(0,0,0,.58);padding:5px 7px;border-radius:6px;color:#cbd3dc;text-align:center}.actions{padding:10px 12px;border-top:1px solid var(--line);background:#14191f;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.actions .spacer{flex:1}.status-pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.status-pending{color:#d9dfe6}.status-deferred{color:var(--warn)}.status-accepted{color:var(--good)}.hidden{display:none!important}.error{color:#ff9097;white-space:pre-wrap}.success{color:#8ce6ad}.setup-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0a0d11}.setup-box{width:min(560px,96%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}.setup-box h2{margin-top:0}.notice{padding:8px 10px;border-radius:8px;background:#202833;border:1px solid #334153;color:#ced8e3}.kbd{border:1px solid var(--line);background:#0e1217;padding:2px 5px;border-radius:5px}.fileline{display:grid;grid-template-columns:1fr;gap:4px}.source-box{display:grid;gap:6px;padding:8px;border:1px solid var(--line);border-radius:9px;background:#141a21}.source-meta{min-height:17px}.small{font-size:12px}.session.closed{opacity:.68}.session-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);padding:0;box-shadow:0 18px 60px rgba(0,0,0,.55)}dialog::backdrop{background:rgba(0,0,0,.62)}.auth-box{padding:18px;width:min(390px,88vw)}.auth-box h2{margin:0 0 8px}.auth-box input{width:100%;margin:8px 0 10px}.edit-banner{background:#15304a;color:#d7edff;border:1px solid #285780;border-radius:8px;padding:6px 9px}.blind{color:#c7a7ff}.footer-stat{color:#cbd3dc}@media(max-width:900px){.app{grid-template-columns:250px 1fr}.split-grid.n3,.split-grid.n4{grid-template-columns:1fr 1fr}.view-title{font-size:11px}}
   </style>
 </head>
 <body>
@@ -88,6 +88,18 @@
     </div>
   </main>
 </div>
+<dialog id="labelledAuthDialog">
+  <div class="auth-box">
+    <h2>Labelled review access</h2>
+    <div class="small muted">Enter the administrator password to reveal annotation labels.</div>
+    <input id="labelledPassword" type="password" autocomplete="current-password" placeholder="Password">
+    <div id="labelledPasswordError" class="small error"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:10px">
+      <button id="labelledCancelBtn">Cancel</button>
+      <button id="labelledUnlockBtn" class="primary">Unlock labelled review</button>
+    </div>
+  </div>
+</dialog>
 <script>
 (() => {
   'use strict';
@@ -110,13 +122,53 @@
     tileSource: null,
     autosaveTimer: null,
     annotationFiles: [],
+    labelledAdminKey: null,
+    sessionSummaries: new Map(),
   };
 
   function esc(text){ return String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   async function api(path, options={}){
-    const response = await fetch(API + path, {headers:{'Content-Type':'application/json', ...(options.headers||{})}, ...options});
+    const headers={'Content-Type':'application/json', ...(options.headers||{})};
+    if(state.labelledAdminKey && !headers['X-Histo-Admin-Key']) headers['X-Histo-Admin-Key']=state.labelledAdminKey;
+    const response = await fetch(API + path, {...options, headers});
     if(!response.ok){ let detail = `${response.status} ${response.statusText}`; try{ const body=await response.json(); detail=body.detail||JSON.stringify(body); }catch{} throw new Error(detail); }
     return response.json();
+  }
+
+  function askLabelledPassword(){
+    return new Promise(resolve=>{
+      const dialog=$('labelledAuthDialog');
+      const input=$('labelledPassword');
+      const error=$('labelledPasswordError');
+      error.textContent=''; input.value='';
+      const finish=value=>{
+        $('labelledUnlockBtn').onclick=null; $('labelledCancelBtn').onclick=null; input.onkeydown=null;
+        if(dialog.open) dialog.close();
+        resolve(value);
+      };
+      const submit=()=>finish(input.value);
+      $('labelledUnlockBtn').onclick=submit;
+      $('labelledCancelBtn').onclick=()=>finish(null);
+      input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();submit();} if(e.key==='Escape'){e.preventDefault();finish(null);}};
+      dialog.showModal();
+      setTimeout(()=>input.focus(),0);
+    });
+  }
+
+  async function ensureLabelledAuthorized(){
+    if(state.labelledAdminKey) return true;
+    while(true){
+      const key=await askLabelledPassword();
+      if(key===null) return false;
+      try{
+        await api('/authorize-labelled',{method:'POST',headers:{'X-Histo-Admin-Key':key},body:'{}'});
+        state.labelledAdminKey=key;
+        $('labelledPasswordError').textContent='';
+        return true;
+      }catch(err){
+        alert(err.message || 'Invalid password');
+      }
+    }
   }
   async function readUploadedGeoJSON(input){
     const file = input.files?.[0]; if(!file) return null;
@@ -232,6 +284,10 @@
   async function createSession(){
     $('createBtn').disabled=true; setMessage('Preparing annotation sources…');
     try{
+      if($('reviewMode').value==='labelled' && !(await ensureLabelledAuthorized())){
+        $('reviewMode').value='blind';
+        throw new Error('Labelled review was not unlocked.');
+      }
       const sources=[await readSource(1), await readSource(2), await readSource(3)].filter(Boolean);
       if(sources.length<2 || sources.length>3) throw new Error('Select 2 or 3 annotation sources.');
       const sourceValues=[1,2,3].map(i=>$(`source${i}`).value).filter(Boolean);
@@ -248,18 +304,50 @@
   async function loadSessions(){
     const data=await api('/sessions');
     const sessions=data.sessions||[];
+    state.sessionSummaries=new Map(sessions.map(x=>[x.id,x]));
     $('sessions').innerHTML=sessions.length?sessions.map(s=>{
       const p=s.progress||{};
       const mode=s.reviewMode==='blind'?'Blind':'Labelled';
-      return `<div class="session"><div class="title">${esc(s.imageId)}</div><div class="small muted">${esc(s.selectedClass||'Class not selected')} · ${mode}</div><div class="small">${p.accepted||0}/${p.total||0} accepted · ${p.deferred||0} deferred</div><div style="height:6px"></div><button data-open-session="${esc(s.id)}">Resume</button></div>`;
+      const closed=!!s.closedAt;
+      const action=closed
+        ? `<button data-reopen-session="${esc(s.id)}">Reopen</button>`
+        : `<button data-open-session="${esc(s.id)}">Resume</button><button data-close-session="${esc(s.id)}">Close</button>`;
+      return `<div class="session ${closed?'closed':''}"><div class="title">${esc(s.imageId)}</div><div class="small muted">${esc(s.selectedClass||'Class not selected')} · ${mode}${closed?' · Closed':''}</div><div class="small">${p.accepted||0}/${p.total||0} accepted · ${p.deferred||0} deferred</div><div class="session-actions">${action}</div></div>`;
     }).join(''):'<div class="muted small">No saved review sessions.</div>';
     document.querySelectorAll('[data-open-session]').forEach(btn=>btn.addEventListener('click',()=>openSession(btn.dataset.openSession)));
+    document.querySelectorAll('[data-close-session]').forEach(btn=>btn.addEventListener('click',()=>closeSession(btn.dataset.closeSession)));
+    document.querySelectorAll('[data-reopen-session]').forEach(btn=>btn.addEventListener('click',()=>reopenSession(btn.dataset.reopenSession)));
+  }
+
+  async function authorizeForSession(id){
+    const summary=state.sessionSummaries.get(id);
+    if(summary?.reviewMode==='labelled') return ensureLabelledAuthorized();
+    return true;
+  }
+
+  async function closeSession(id){
+    if(!(await authorizeForSession(id))) return;
+    if(!confirm('Close this review session? Progress and files will be kept and the session can be reopened later.')) return;
+    try{
+      await api(`/sessions/${encodeURIComponent(id)}/close`,{method:'POST',body:'{}'});
+      if(state.session?.id===id){ destroyViewers(); state.session=null; state.item=null; $('setupOverlay').classList.remove('hidden'); $('setupTitle').textContent='Session closed'; $('setupText').textContent='The review session was closed. You can reopen it later from Saved sessions.'; }
+      await loadSessions();
+    }catch(err){alert(err.message);}
+  }
+
+  async function reopenSession(id){
+    if(!(await authorizeForSession(id))) return;
+    try{ await api(`/sessions/${encodeURIComponent(id)}/reopen`,{method:'POST',body:'{}'}); await loadSessions(); await openSession(id); }
+    catch(err){alert(err.message);}
   }
 
   async function openSession(id){
+    if(!(await authorizeForSession(id))) return;
     destroyViewers();
+    state.viewMode='split';
     state.session=await api(`/sessions/${encodeURIComponent(id)}`);
     state.item=null; state.selectedKey=null; state.decisionGeometry=null; state.editMode=false;
+    $('splitBtn').classList.add('primary'); $('overlayBtn').classList.remove('primary');
     updateSessionHeader();
     if(!state.session.selectedClass){
       $('setupOverlay').classList.remove('hidden'); $('classSetup').classList.remove('hidden');
@@ -336,9 +424,15 @@
     if(!state.item)return[];
     const list=[...(state.item.candidates||[])];
     if(state.item.consensus) list.push(state.item.consensus);
-    return list;
+    return list.sort((a,b)=>Number(a.displaySlot||999)-Number(b.displaySlot||999));
   }
   function candidateByKey(key){ return candidates().find(c=>c.key===key)||null; }
+  function candidateNumber(candidate,index){ return Number(candidate?.displaySlot||index+1); }
+  function candidateDisplayLabel(candidate,index){
+    const number=candidateNumber(candidate,index);
+    if(state.session?.reviewMode==='blind' || candidate?.key==='CONSENSUS') return `Candidate ${number}`;
+    return `${number} · ${candidate?.label||`Candidate ${number}`}`;
+  }
 
   function updateItemControls(){
     const item=state.item; if(!item)return;
@@ -347,12 +441,13 @@
     $('itemStatus').textContent=item.status;
     $('itemStatus').className=`status-pill status-${item.status}`;
     $('challenging').checked=!!item.challenging;
-    $('preferredButtons').innerHTML=candidates().map(c=>{
+    $('preferredButtons').innerHTML=candidates().map((c,index)=>{
       const selected=state.selectedKey===c.key;
-      return `<button data-prefer="${esc(c.key)}" class="${selected?'primary':''}"><span class="dot" style="background:${c.color}"></span>${esc(c.label)}${c.geometry?'':' · no mask'}</button>`;
+      const number=candidateNumber(c,index);
+      return `<button data-prefer="${esc(c.key)}" class="${selected?'primary':''}" title="Keyboard shortcut ${number}"><span class="kbd">${number}</span><span class="dot" style="background:${c.color}"></span>${esc(candidateDisplayLabel(c,index))}${c.geometry?'':' · no mask'}</button>`;
     }).join('');
     document.querySelectorAll('[data-prefer]').forEach(btn=>btn.addEventListener('click',()=>selectPreferred(btn.dataset.prefer)));
-    $('visibilityControls').innerHTML=candidates().map(c=>`<label class="candidate-chip"><input type="checkbox" data-visible="${esc(c.key)}" ${state.visibility[c.key]?'checked':''}><span class="dot" style="background:${c.color}"></span>${esc(c.label)}</label>`).join('');
+    $('visibilityControls').innerHTML=candidates().map((c,index)=>`<label class="candidate-chip"><input type="checkbox" data-visible="${esc(c.key)}" ${state.visibility[c.key]?'checked':''}><span class="dot" style="background:${c.color}"></span>${esc(candidateDisplayLabel(c,index))}</label>`).join('');
     document.querySelectorAll('[data-visible]').forEach(cb=>cb.addEventListener('change',()=>{state.visibility[cb.dataset.visible]=cb.checked;drawAllOverlays();}));
     $('editBtn').disabled=!state.selectedKey || !state.decisionGeometry;
     $('resetEditBtn').disabled=!state.selectedKey || !state.edited;
@@ -394,10 +489,10 @@
 
   function setAutosave(text,error=false){ $('autosaveState').textContent=text; $('autosaveState').style.color=error?'var(--danger)':''; }
 
-  function enterEdit(){
+  async function enterEdit(){
     if(!state.decisionGeometry)return;
     state.viewMode='overlay'; state.editMode=true; $('splitBtn').classList.remove('primary'); $('overlayBtn').classList.add('primary');
-    renderCurrentView(false); updateItemControls(); setAutosave('Edit mode · drag vertices');
+    await renderCurrentView(true); updateItemControls(); drawAllOverlays(); setAutosave('Edit mode · drag vertices');
   }
   function resetEdit(){
     const c=candidateByKey(state.selectedKey); if(!c)return;
@@ -417,8 +512,10 @@
     try{
       const result=await api(`/sessions/${encodeURIComponent(state.session.id)}/finalize`,{method:'POST',body:'{}'});
       await refreshSession(); await loadSessions();
-      const url=`${API}/sessions/${encodeURIComponent(state.session.id)}/final.geojson`;
-      const a=document.createElement('a'); a.href=url; a.download=`${state.session.imageId}_${state.session.selectedClass}_reviewed.geojson`; document.body.appendChild(a); a.click(); a.remove();
+      const finalData=await api(`/sessions/${encodeURIComponent(state.session.id)}/final.geojson`);
+      const blob=new Blob([JSON.stringify(finalData,null,2)],{type:'application/geo+json'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a'); a.href=url; a.download=`${state.session.imageId}_${state.session.selectedClass}_reviewed.geojson`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
       setAutosave('Final GeoJSON created');
     }catch(err){alert(err.message);}
   }
@@ -469,7 +566,7 @@
     const cs=candidates(); $('splitGrid').className=`split-grid n${Math.min(4,Math.max(2,cs.length))}`;
     cs.forEach((c,i)=>{
       const panel=document.createElement('div'); panel.className='view-panel';
-      panel.innerHTML=`<div class="view-title"><span class="dot" style="background:${c.color}"></span> ${esc(c.label)}</div><div class="osd"></div>${c.geometry?'':'<div class="empty-mask">No annotation in this candidate</div>'}`;
+      panel.innerHTML=`<div class="view-title"><span class="dot" style="background:${c.color}"></span> ${esc(candidateDisplayLabel(c,i))}</div><div class="osd"></div>${c.geometry?'':'<div class="empty-mask">No annotation in this candidate</div>'}`;
       $('splitGrid').appendChild(panel);
       const viewer=createViewer(panel.querySelector('.osd')); viewer._mrPanel=panel; viewer._mrCandidate=c; state.viewers.push(viewer);
       viewer.addHandler('animation',()=>syncFrom(viewer)); viewer.addHandler('pan',()=>syncFrom(viewer)); viewer.addHandler('zoom',()=>syncFrom(viewer));
@@ -479,13 +576,16 @@
     if(fitToItem) fitAllToItem();
     drawAllOverlays();
   }
-  async function renderOverlay(fitToItem){
-    if(!state.overlayViewer){
-      state.overlayViewer=createViewer($('overlayOsd'));
-      ['animation','pan','zoom','resize','open'].forEach(ev=>state.overlayViewer.addHandler(ev,drawAllOverlays));
-      await waitOpen(state.overlayViewer);
-    }
+  async function renderOverlay(fitToItem=true){
+    if(state.overlayViewer){ try{state.overlayViewer.destroy();}catch{} state.overlayViewer=null; }
+    $('overlayOsd').innerHTML='';
+    $('overlayPanel').querySelectorAll(':scope > .overlay-svg').forEach(node=>node.remove());
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    state.overlayViewer=createViewer($('overlayOsd'));
+    ['animation','pan','zoom','resize','open'].forEach(ev=>state.overlayViewer.addHandler(ev,drawAllOverlays));
+    await waitOpen(state.overlayViewer);
     if(fitToItem) fitViewerToItem(state.overlayViewer);
+    state.overlayViewer.forceRedraw?.();
     drawAllOverlays();
   }
 
@@ -500,7 +600,7 @@
   function fitAllToItem(){ state.viewers.forEach(v=>fitViewerToItem(v)); }
   function fitViewerToItem(viewer){
     const b=state.item?.bbox; if(!b||!viewer?.viewport)return;
-    const [minx,miny,maxx,maxy]=b; const pad=Math.max(maxx-minx,maxy-miny)*0.22+20;
+    const [minx,miny,maxx,maxy]=b; const pad=Math.max(maxx-minx,maxy-miny)*0.12+8;
     try{const rect=viewer.viewport.imageToViewportRectangle(minx-pad,miny-pad,(maxx-minx)+2*pad,(maxy-miny)+2*pad);viewer.viewport.fitBounds(rect,true);}catch{}
   }
 
@@ -562,8 +662,24 @@
     window.addEventListener('pointermove',move);window.addEventListener('pointerup',up,{once:true});
   }
 
-  function setView(mode){ state.viewMode=mode; state.editMode=state.editMode&&mode==='overlay'; $('splitBtn').classList.toggle('primary',mode==='split'); $('overlayBtn').classList.toggle('primary',mode==='overlay'); renderCurrentView(false); }
+  async function setView(mode){ state.viewMode=mode; state.editMode=state.editMode&&mode==='overlay'; $('splitBtn').classList.toggle('primary',mode==='split'); $('overlayBtn').classList.toggle('primary',mode==='overlay'); await renderCurrentView(true); }
   function setAllVisibility(value){candidates().forEach(c=>state.visibility[c.key]=value);document.querySelectorAll('[data-visible]').forEach(cb=>cb.checked=value);drawAllOverlays();}
+
+  $('reviewMode').addEventListener('change',async()=>{
+    if($('reviewMode').value==='labelled' && !(await ensureLabelledAuthorized())) $('reviewMode').value='blind';
+  });
+
+  window.addEventListener('keydown',event=>{
+    if(event.ctrlKey||event.metaKey||event.altKey||event.repeat||state.editMode)return;
+    const active=document.activeElement;
+    if(active && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(active.tagName))return;
+    if(!/^[1-4]$/.test(event.key)||!state.item)return;
+    const index=Number(event.key)-1;
+    const candidate=candidates()[index];
+    if(!candidate)return;
+    event.preventDefault();
+    selectPreferred(candidate.key);
+  });
 
   $('imageSelect').addEventListener('change',loadStoredAnnotations);
   for(let i=1;i<=3;i++){

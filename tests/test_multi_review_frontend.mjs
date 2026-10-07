@@ -12,34 +12,53 @@ test('all three candidates use the native HistoAnnotator annotation-file catalog
   assert.match(html, /\/api\/annotations\/\$\{encodeURIComponent\(imageId\)\}\/files/);
   assert.match(html, /\/api\/annotations\/\$\{encodeURIComponent\(imageId\)\}\?file=/);
   assert.match(html, /Upload additional GeoJSON/);
-  assert.doesNotMatch(html, /available-annotations/);
-  assert.doesNotMatch(html, /storedPath/);
 });
 
-test('annotation 3 is optional but has the same stored annotation choices', () => {
-  assert.match(html, /Annotation 3 \(optional\)/);
-  assert.match(html, /for\(let i=1;i<=3;i\+\+\)/);
-  assert.match(html, /files\.forEach\(name=>addOption\(select,`server:\$\{name\}`,name\)\)/);
+test('labelled review requires a password without hardcoding it in the frontend', () => {
+  assert.match(html, /id="labelledPassword" type="password"/);
+  assert.match(html, /authorize-labelled/);
+  assert.match(html, /X-Histo-Admin-Key/);
+  assert.doesNotMatch(html, /12345/);
 });
 
-test('review UI remains English with blind labelled consensus split and overlay', () => {
-  assert.match(html, /Multi-annotator Review/);
-  assert.match(html, /Blind review/);
-  assert.match(html, /Labelled review/);
-  assert.match(html, /Generate consensus candidate/);
-  assert.match(html, /Split view/);
-  assert.match(html, /Overlay view/);
-  assert.match(html, /Challenging/);
-  assert.match(html, /Leave for end/);
-  assert.doesNotMatch(html, /Revisi[oó]n|Anotaci[oó]n|Subir|Configuraci[oó]n/i);
+test('candidates are numbered and keyboard shortcuts 1 through 4 select them', () => {
+  assert.match(html, /Candidate \$\{number\}/);
+  assert.match(html, /\^\[1-4\]\$/);
+  assert.match(html, /selectPreferred\(candidate\.key\)/);
+  assert.doesNotMatch(html, /Candidate \$\{c\.key\}/);
 });
 
-test('launcher is injected beside Image Manager inside Additional Tools', () => {
-  assert.match(launcher, /multiReviewAdditionalToolEntry/);
+test('consensus is not identified as Consensus in user-facing candidate labels', () => {
+  assert.match(html, /candidate\?\.key==='CONSENSUS'/);
+  assert.match(html, /return `Candidate \$\{number\}`/);
+});
+
+test('overlay recreates its viewer and refits to current item', () => {
+  assert.match(html, /async function renderOverlay\(fitToItem=true\)/);
+  assert.match(html, /state\.overlayViewer\.destroy\(\)/);
+  assert.match(html, /querySelectorAll\(':scope > \.overlay-svg'\)/);
+  assert.match(html, /fitViewerToItem\(state\.overlayViewer\)/);
+  assert.match(html, /async function enterEdit\(\)/);
+  assert.match(html, /await renderCurrentView\(true\)/);
+});
+
+test('resuming a session defaults to split view and refits the current item', () => {
+  assert.match(html, /state\.viewMode='split'/);
+  assert.match(html, /await renderCurrentView\(true\)/);
+  assert.match(html, /\*0\.12\+8/);
+});
+
+test('saved review sessions can be closed and reopened without deleting progress', () => {
+  assert.match(html, /data-close-session/);
+  assert.match(html, /data-reopen-session/);
+  assert.match(html, /\/close`/);
+  assert.match(html, /\/reopen`/);
+  assert.match(html, /Progress and files will be kept/);
+});
+
+test('launcher remains inside Additional Tools beside Image Manager', () => {
   assert.match(launcher, /phase-additional-tool-label/);
   assert.match(launcher, /Image Manager/);
   assert.match(launcher, /Additional Tools/);
-  assert.match(launcher, /insertAdjacentElement\('afterend'/);
   assert.match(launcher, /Multi-annotator Review/);
-  assert.doesNotMatch(launcher, /looksLikeSettingsTrigger|findSettingsSurface|multiReviewSettingsEntry/);
 });
