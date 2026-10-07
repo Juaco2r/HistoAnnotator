@@ -824,6 +824,10 @@ def update_item(
         if req.status not in ("pending", "accepted", "deferred"):
             raise HTTPException(status_code=400, detail="Invalid review status")
         target["status"] = req.status
+        if req.status in ("accepted", "deferred"):
+            target["reviewedAt"] = _now()
+        elif req.status == "pending":
+            target.pop("reviewedAt", None)
 
     if req.selectedCandidate is not None:
         valid_keys = {candidate["key"] for candidate in target.get("candidates", [])}
@@ -891,6 +895,50 @@ def freehand_geometry(
     if result is None or result.is_empty:
         raise HTTPException(status_code=400, detail="Freehand edit did not produce a polygonal mask")
     return {"geometry": _geom_json(result), "operation": req.operation}
+
+
+@router.post("/sessions/{session_id}/undo-last")
+def undo_last_decision(
+    session_id: str,
+    x_histo_admin_key: str | None = Header(default=None),
+):
+    path = _session_dir(session_id)
+    manifest = _load_manifest(path)
+    _require_session_access(manifest, x_histo_admin_key)
+    items = _load_items(path)
+
+    completed = [
+        (index, item)
+        for index, item in enumerate(items)
+        if item.get("status") in ("accepted", "deferred")
+    ]
+    if not completed:
+        raise HTTPException(status_code=409, detail="There is no completed review decision to undo")
+
+    stamped = [entry for entry in completed if entry[1].get("reviewedAt")]
+    if stamped:
+        _, target = max(stamped, key=lambda entry: str(entry[1].get("reviewedAt") or ""))
+    else:
+        # Backward-compatible fallback for sessions reviewed before reviewedAt existed.
+        _, target = completed[-1]
+
+    previous_status = target.get("status")
+    target["status"] = "pending"
+    target.pop("reviewedAt", None)
+
+    manifest["updatedAt"] = _now()
+    manifest["status"] = "reviewing"
+    manifest.pop("finalizedAt", None)
+    _atomic_json(path / "manifest.json", manifest)
+    _atomic_json(path / "items.json", items)
+    _write_working_final(path, manifest, items)
+
+    return {
+        "ok": True,
+        "undoneStatus": previous_status,
+        "item": _public_item(target, manifest),
+        "progress": _progress(items),
+    }
 
 
 @router.post("/sessions/{session_id}/close")

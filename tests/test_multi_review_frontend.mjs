@@ -82,3 +82,45 @@ test('selected mask uses freehand Add/Subtract editor', () => {
   assert.match(html, /geometry\/freehand/);
   assert.match(html, /if\(state\.editMode\)\{[\s\S]*state\.decisionGeometry[\s\S]*return;/);
 });
+
+
+test('edit completion advances and general undo reopens the last decision', () => {
+  assert.match(html, /id="undoLastBtn"/);
+  assert.match(html, /Done editing & next/);
+  assert.match(html, /async function finishEdit\(\)[\s\S]*await acceptCurrent\(\)/);
+  assert.match(html, /if\(state\.editMode\)leaveEditModeForAdvance\(\)/);
+  assert.match(html, /preEditViewMode/);
+  assert.match(html, /undo-last/);
+});
+
+test('Enter accepts from edit mode and edit autosave cannot revert accepted status', () => {
+  assert.match(html, /Enter always accepts and advances, including while Freehand Edit is active/);
+  assert.match(html, /if\(state\.editMode\)return;[\s\S]*\^\[1-4\]\$/);
+  assert.match(html, /a delayed edit autosave must not revert an accepted item to pending/);
+  const autosaveBlock = html.match(/function scheduleGeometrySave\(\)\{[\s\S]*?\n  \}/)?.[0] || '';
+  assert.doesNotMatch(autosaveBlock, /status:'pending'/);
+});
+
+
+test('review viewer reuses HistoAnnotator display and multichannel fluorescence settings', () => {
+  assert.match(html, /histoannotator\.display\.v1\./);
+  assert.match(html, /histoannotator\.ifDisplay\.v1:/);
+  assert.match(html, /if_enabled/);
+  assert.match(html, /if_colors/);
+  assert.match(html, /if_min/);
+  assert.match(html, /if_max/);
+  assert.match(html, /if_gamma/);
+  assert.match(html, /if_brightness/);
+  assert.match(html, /display-config/);
+  assert.match(html, /id="displayPanel"/);
+});
+
+test('completion auto-finalizes after ten seconds, saves to HistoAnnotator and archives session', () => {
+  assert.match(html, /Finalizing automatically in/);
+  assert.match(html, /10000/);
+  assert.match(html, /saveFinalToHistoAnnotator/);
+  assert.match(html, /method:'PUT'/);
+  assert.match(html, /\/annotations\/\$\{encodeURIComponent\(imageId\)\}\?file=/);
+  assert.match(html, /\/close`/);
+  assert.match(html, /id="closedSessionsDetails"/);
+});

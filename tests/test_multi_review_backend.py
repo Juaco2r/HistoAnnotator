@@ -99,3 +99,11 @@ def test_freehand_geometry_route_is_available():
     assert '@router.post("/sessions/{session_id}/geometry/freehand")' in source
     assert 'base.union(stroke)' in source
     assert 'base.difference(stroke)' in source
+
+
+def test_general_undo_route_and_review_timestamp_are_available():
+    source = Path("app/imaging/multi_review.py").read_text(encoding="utf-8")
+    assert '@router.post("/sessions/{session_id}/undo-last")' in source
+    assert 'target["reviewedAt"] = _now()' in source
+    assert 'target["status"] = "pending"' in source
+    assert '_write_working_final(path, manifest, items)' in source

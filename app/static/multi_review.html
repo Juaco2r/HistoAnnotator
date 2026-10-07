@@ -9,7 +9,7 @@
     :root{color-scheme:dark;--bg:#101318;--panel:#181d24;--panel2:#20262f;--line:#343c47;--text:#f4f7fb;--muted:#9da8b5;--accent:#65b7ff;--good:#62d28f;--warn:#f4c430;--danger:#ff6b75}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-ui,-apple-system,Segoe UI,sans-serif;height:100vh;overflow:hidden}
     button,select,input{font:inherit}button{border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}button:hover{border-color:#596576}button.primary{background:#1f6fb2;border-color:#2b83ce}button.good{background:#1f7548;border-color:#2d9d65}button.warn{background:#725d13;border-color:#a88c1e}button.danger{background:#7a2c35;border-color:#a13b46}button:disabled{opacity:.45;cursor:not-allowed}
-    select,input[type=text]{background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px}.app{display:grid;grid-template-columns:320px 1fr;height:100vh}.sidebar{border-right:1px solid var(--line);background:#12171d;overflow:auto;padding:14px}.main{display:grid;grid-template-rows:auto auto 1fr auto;min-width:0;min-height:0}.brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}.brand h1{font-size:16px;margin:0}.muted{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}.card h2{font-size:13px;margin:0 0 10px}.field{display:grid;gap:5px;margin:9px 0}.field label{color:#cbd3dc;font-size:12px}.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:8px}.session{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#141a21}.session .title{font-weight:650}.toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#14191f;flex-wrap:wrap}.toolbar .spacer{flex:1}.progressbar{height:5px;background:#282f38;border-radius:6px;overflow:hidden;min-width:130px}.progressbar>div{height:100%;background:var(--good)}.candidatebar{display:flex;gap:7px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161c;flex-wrap:wrap}.candidate-chip{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.viewer-area{min-height:0;position:relative;background:#080a0d}.split-grid{width:100%;height:100%;display:grid;gap:2px;background:#000}.split-grid.n2{grid-template-columns:1fr 1fr}.split-grid.n3{grid-template-columns:1fr 1fr 1fr}.split-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}.view-panel{position:relative;min-width:0;min-height:0;background:#050607}.view-title{position:absolute;z-index:5;left:8px;top:8px;padding:4px 8px;border-radius:7px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);pointer-events:none}.osd{position:absolute;inset:0}#overlayPanel{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:0}#overlayOsd{width:100%;height:100%}.overlay-svg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.overlay-svg.editing{pointer-events:auto;cursor:crosshair;touch-action:none}.edit-handle{pointer-events:all;cursor:grab}.empty-mask{position:absolute;z-index:5;inset:auto 8px 8px 8px;background:rgba(0,0,0,.58);padding:5px 7px;border-radius:6px;color:#cbd3dc;text-align:center}.actions{padding:10px 12px;border-top:1px solid var(--line);background:#14191f;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.actions .spacer{flex:1}.status-pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.status-pending{color:#d9dfe6}.status-deferred{color:var(--warn)}.status-accepted{color:var(--good)}.hidden{display:none!important}.error{color:#ff9097;white-space:pre-wrap}.success{color:#8ce6ad}.setup-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0a0d11}.setup-box{width:min(560px,96%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}.setup-box h2{margin-top:0}.notice{padding:8px 10px;border-radius:8px;background:#202833;border:1px solid #334153;color:#ced8e3}.kbd{border:1px solid var(--line);background:#0e1217;padding:2px 5px;border-radius:5px}.fileline{display:grid;grid-template-columns:1fr;gap:4px}.source-box{display:grid;gap:6px;padding:8px;border:1px solid var(--line);border-radius:9px;background:#141a21}.source-meta{min-height:17px}.small{font-size:12px}.session.closed{opacity:.68}.session-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);padding:0;box-shadow:0 18px 60px rgba(0,0,0,.55)}dialog::backdrop{background:rgba(0,0,0,.62)}.auth-box{padding:18px;width:min(390px,88vw)}.auth-box h2{margin:0 0 8px}.auth-box input{width:100%;margin:8px 0 10px}.edit-banner{background:#15304a;color:#d7edff;border:1px solid #285780;border-radius:8px;padding:6px 9px}.edit-toolbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.edit-operation.active{background:#1f6fb2;border-color:#2b83ce}.edit-freehand-label{font-weight:650}.freehand-preview{fill:rgba(101,183,255,.16);stroke:#65b7ff;stroke-width:2.5;vector-effect:non-scaling-stroke;stroke-dasharray:6 4;pointer-events:none}.blind{color:#c7a7ff}.footer-stat{color:#cbd3dc}@media(max-width:900px){.app{grid-template-columns:250px 1fr}.split-grid.n3,.split-grid.n4{grid-template-columns:1fr 1fr}.view-title{font-size:11px}}
+    select,input[type=text]{background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px}.app{display:grid;grid-template-columns:320px 1fr;height:100vh}.sidebar{border-right:1px solid var(--line);background:#12171d;overflow:auto;padding:14px}.main{display:grid;grid-template-rows:auto auto 1fr auto;min-width:0;min-height:0}.brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}.brand h1{font-size:16px;margin:0}.muted{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}.card h2{font-size:13px;margin:0 0 10px}.field{display:grid;gap:5px;margin:9px 0}.field label{color:#cbd3dc;font-size:12px}.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:8px}.session{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#141a21}.session .title{font-weight:650}.toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#14191f;flex-wrap:wrap}.toolbar .spacer{flex:1}.progressbar{height:5px;background:#282f38;border-radius:6px;overflow:hidden;min-width:130px}.progressbar>div{height:100%;background:var(--good)}.candidatebar{display:flex;gap:7px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161c;flex-wrap:wrap}.candidatebar{position:relative}.display-panel{position:absolute;z-index:30;right:12px;top:calc(100% + 5px);width:min(390px,calc(100vw - 30px));max-height:70vh;overflow:auto;background:#171d24;border:1px solid var(--line);border-radius:11px;padding:11px;box-shadow:0 16px 45px rgba(0,0,0,.55)}.display-grid{display:grid;grid-template-columns:1fr auto;gap:7px 9px;align-items:center}.display-channel{display:grid;grid-template-columns:auto 1fr auto;gap:7px;align-items:center;padding:7px;border:1px solid var(--line);border-radius:8px;margin-top:7px}.display-channel input[type=color]{width:38px;height:30px;padding:1px;border:1px solid var(--line);border-radius:6px;background:#0d1116}.display-channel-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin-top:5px}.display-channel-details label{font-size:11px;color:var(--muted)}.display-channel-details input{width:100%;background:#0d1116;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 5px}.archive-details{margin-top:9px;border-top:1px solid var(--line);padding-top:8px}.archive-details summary{cursor:pointer;color:var(--muted);user-select:none}.final-countdown{font-weight:700;color:var(--good)}.candidate-chip{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.viewer-area{min-height:0;position:relative;background:#080a0d}.split-grid{width:100%;height:100%;display:grid;gap:2px;background:#000}.split-grid.n2{grid-template-columns:1fr 1fr}.split-grid.n3{grid-template-columns:1fr 1fr 1fr}.split-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}.view-panel{position:relative;min-width:0;min-height:0;background:#050607}.view-title{position:absolute;z-index:5;left:8px;top:8px;padding:4px 8px;border-radius:7px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);pointer-events:none}.osd{position:absolute;inset:0}#overlayPanel{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:0}#overlayOsd{width:100%;height:100%}.overlay-svg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.overlay-svg.editing{pointer-events:auto;cursor:crosshair;touch-action:none}.edit-handle{pointer-events:all;cursor:grab}.empty-mask{position:absolute;z-index:5;inset:auto 8px 8px 8px;background:rgba(0,0,0,.58);padding:5px 7px;border-radius:6px;color:#cbd3dc;text-align:center}.actions{padding:10px 12px;border-top:1px solid var(--line);background:#14191f;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.actions .spacer{flex:1}.status-pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.status-pending{color:#d9dfe6}.status-deferred{color:var(--warn)}.status-accepted{color:var(--good)}.hidden{display:none!important}.error{color:#ff9097;white-space:pre-wrap}.success{color:#8ce6ad}.setup-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0a0d11}.setup-box{width:min(560px,96%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}.setup-box h2{margin-top:0}.notice{padding:8px 10px;border-radius:8px;background:#202833;border:1px solid #334153;color:#ced8e3}.kbd{border:1px solid var(--line);background:#0e1217;padding:2px 5px;border-radius:5px}.fileline{display:grid;grid-template-columns:1fr;gap:4px}.source-box{display:grid;gap:6px;padding:8px;border:1px solid var(--line);border-radius:9px;background:#141a21}.source-meta{min-height:17px}.small{font-size:12px}.session.closed{opacity:.68}.session-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);padding:0;box-shadow:0 18px 60px rgba(0,0,0,.55)}dialog::backdrop{background:rgba(0,0,0,.62)}.auth-box{padding:18px;width:min(390px,88vw)}.auth-box h2{margin:0 0 8px}.auth-box input{width:100%;margin:8px 0 10px}.edit-banner{background:#15304a;color:#d7edff;border:1px solid #285780;border-radius:8px;padding:6px 9px}.edit-toolbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.edit-operation.active{background:#1f6fb2;border-color:#2b83ce}.edit-freehand-label{font-weight:650}.freehand-preview{fill:rgba(101,183,255,.16);stroke:#65b7ff;stroke-width:2.5;vector-effect:non-scaling-stroke;stroke-dasharray:6 4;pointer-events:none}.blind{color:#c7a7ff}.footer-stat{color:#cbd3dc}@media(max-width:900px){.app{grid-template-columns:250px 1fr}.split-grid.n3,.split-grid.n4{grid-template-columns:1fr 1fr}.view-title{font-size:11px}}
   </style>
 </head>
 <body>
@@ -30,6 +30,10 @@
     <div class="card">
       <div class="row"><h2 style="margin:0">Saved sessions</h2><span class="spacer"></span><button id="refreshSessions" title="Refresh">↻</button></div>
       <div id="sessions"></div>
+      <details id="closedSessionsDetails" class="archive-details">
+        <summary>Closed / archived sessions <span id="closedSessionCount">0</span></summary>
+        <div id="closedSessions"></div>
+      </details>
     </div>
     <div class="card small muted">
       Progress is stored on the server after each selection, edit, challenging flag, defer and acceptance. Original GeoJSON files are never modified.
@@ -44,13 +48,25 @@
       <span class="spacer"></span>
       <span id="progressText" class="footer-stat">—</span>
       <div class="progressbar"><div id="progressFill" style="width:0%"></div></div>
-      <button id="finalizeBtn" class="good" disabled>Finalize GeoJSON</button>
+      <button id="finalizeBtn" class="good" disabled>Finalize now</button>
     </div>
 
     <div class="candidatebar">
       <div class="row">
         <button id="splitBtn" class="primary">Split view</button>
         <button id="overlayBtn">Overlay view</button>
+        <button id="displayBtn" title="Use the same stain/channel display settings as HistoAnnotator">Display</button>
+      </div>
+      <div id="displayPanel" class="display-panel hidden">
+        <div class="row"><strong>Image display</strong><span class="spacer"></span><button id="closeDisplayBtn">Close</button></div>
+        <div class="display-grid" style="margin-top:9px">
+          <label for="displayImageType">Image type</label>
+          <select id="displayImageType"><option value="he">H&amp;E</option><option value="hdab">H-DAB</option><option value="fluorescence">Fluorescence</option><option value="rgb">RGB</option></select>
+          <label for="displayBrightness">Brightness</label>
+          <div class="row"><input id="displayBrightness" type="range" min="40" max="200" value="100"><span id="displayBrightnessValue">100%</span></div>
+        </div>
+        <div id="displayChannels" style="margin-top:10px"></div>
+        <div class="small muted" style="margin-top:8px">These settings are shared with HistoAnnotator for this image.</div>
       </div>
       <span style="width:1px;height:25px;background:var(--line)"></span>
       <div id="visibilityControls" class="row"></div>
@@ -67,6 +83,10 @@
           <div id="classSetup" class="hidden">
             <div class="field"><label>Class to review</label><select id="classSelect"></select></div>
             <button id="startClassBtn" class="primary">Build review items</button>
+          </div>
+          <div id="completionActions" class="row hidden" style="margin-top:12px">
+            <button id="completionUndoBtn">Undo last decision</button>
+            <button id="completionFinalizeBtn" class="good">Finalize now</button>
           </div>
         </div>
       </div>
@@ -86,9 +106,10 @@
         <span class="edit-banner"><span class="edit-freehand-label">Freehand</span></span>
         <button id="editAddBtn" class="edit-operation primary active">Add</button>
         <button id="editSubtractBtn" class="edit-operation">Subtract</button>
-        <button id="finishEditBtn">Done editing</button>
+        <button id="finishEditBtn" class="good">Done editing & next</button>
       </div>
       <button id="resetEditBtn" disabled>Reset edit</button>
+      <button id="undoLastBtn" disabled title="Reopen the most recently accepted or deferred case">Undo last decision</button>
       <button id="deferBtn" class="warn" disabled>Leave for end</button>
       <button id="acceptBtn" class="good" disabled>Accept & next <span class="kbd">Enter</span></button>
     </div>
@@ -116,6 +137,7 @@
     item: null,
     itemIndex: -1,
     viewMode: 'split',
+    preEditViewMode: 'split',
     visibility: {},
     viewers: [],
     overlayViewer: null,
@@ -134,6 +156,11 @@
     annotationFiles: [],
     labelledAdminKey: null,
     sessionSummaries: new Map(),
+    imageCatalog: new Map(),
+    display: null,
+    finalizeTimer: null,
+    finalizeInterval: null,
+    finalizing: false,
   };
 
   function esc(text){ return String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -281,6 +308,10 @@
   async function loadImages(){
     const data = await fetch('/api/images').then(r=>{if(!r.ok)throw new Error('Could not load image catalog');return r.json();});
     const images = data.images || [];
+    state.imageCatalog=new Map(images.map(img=>{
+      const id=typeof img==='string'?img:(img.id||img.imageId||img.name);
+      return [id,typeof img==='string'?{id,name:img}:img];
+    }));
     $('imageSelect').innerHTML = images.map(img => {
       const id = typeof img === 'string' ? img : (img.id || img.imageId || img.name);
       const label = typeof img === 'string' ? img : (img.displayName || img.name || img.id || img.imageId);
@@ -311,19 +342,30 @@
     finally{$('createBtn').disabled=false;}
   }
 
+  function sessionCard(s,archived=false){
+    const p=s.progress||{};
+    const mode=s.reviewMode==='blind'?'Blind':'Labelled';
+    const finalized=s.status==='finalized';
+    let action='';
+    if(archived){
+      action=finalized
+        ? '<span class="small muted">Finalized</span>'
+        : `<button data-reopen-session="${esc(s.id)}">Reopen</button>`;
+    }else{
+      action=`<button data-open-session="${esc(s.id)}">Resume</button><button data-close-session="${esc(s.id)}">Close</button>`;
+    }
+    return `<div class="session ${archived?'closed':''}"><div class="title">${esc(s.imageId)}</div><div class="small muted">${esc(s.selectedClass||'Class not selected')} · ${mode}${finalized?' · Finalized':archived?' · Closed':''}</div><div class="small">${p.accepted||0}/${p.total||0} accepted · ${p.deferred||0} deferred</div><div class="session-actions">${action}</div></div>`;
+  }
+
   async function loadSessions(){
     const data=await api('/sessions');
     const sessions=data.sessions||[];
     state.sessionSummaries=new Map(sessions.map(x=>[x.id,x]));
-    $('sessions').innerHTML=sessions.length?sessions.map(s=>{
-      const p=s.progress||{};
-      const mode=s.reviewMode==='blind'?'Blind':'Labelled';
-      const closed=!!s.closedAt;
-      const action=closed
-        ? `<button data-reopen-session="${esc(s.id)}">Reopen</button>`
-        : `<button data-open-session="${esc(s.id)}">Resume</button><button data-close-session="${esc(s.id)}">Close</button>`;
-      return `<div class="session ${closed?'closed':''}"><div class="title">${esc(s.imageId)}</div><div class="small muted">${esc(s.selectedClass||'Class not selected')} · ${mode}${closed?' · Closed':''}</div><div class="small">${p.accepted||0}/${p.total||0} accepted · ${p.deferred||0} deferred</div><div class="session-actions">${action}</div></div>`;
-    }).join(''):'<div class="muted small">No saved review sessions.</div>';
+    const active=sessions.filter(s=>!s.closedAt);
+    const archived=sessions.filter(s=>!!s.closedAt);
+    $('sessions').innerHTML=active.length?active.map(s=>sessionCard(s,false)).join(''):'<div class="muted small">No active review sessions.</div>';
+    $('closedSessionCount').textContent=archived.length?`(${archived.length})`:'(0)';
+    $('closedSessions').innerHTML=archived.length?archived.map(s=>sessionCard(s,true)).join(''):'<div class="muted small" style="margin-top:7px">No closed sessions.</div>';
     document.querySelectorAll('[data-open-session]').forEach(btn=>btn.addEventListener('click',()=>openSession(btn.dataset.openSession)));
     document.querySelectorAll('[data-close-session]').forEach(btn=>btn.addEventListener('click',()=>closeSession(btn.dataset.closeSession)));
     document.querySelectorAll('[data-reopen-session]').forEach(btn=>btn.addEventListener('click',()=>reopenSession(btn.dataset.reopenSession)));
@@ -353,6 +395,8 @@
 
   async function openSession(id){
     if(!(await authorizeForSession(id))) return;
+    cancelFinalizeCountdown();
+    $('completionActions').classList.add('hidden');
     destroyViewers();
     state.viewMode='split';
     state.session=await api(`/sessions/${encodeURIComponent(id)}`);
@@ -390,7 +434,7 @@
     const p=s.progress||{total:0,accepted:0,pending:0,deferred:0};
     $('progressText').textContent=`${p.accepted}/${p.total} accepted · ${p.deferred} deferred`;
     $('progressFill').style.width=`${progressPercent(p)}%`;
-    $('finalizeBtn').disabled=!(p.total>0 && p.pending===0 && p.deferred===0);
+    $('finalizeBtn').disabled=!(p.total>0 && p.pending===0 && p.deferred===0)||state.finalizing;
   }
 
   async function refreshSession(){
@@ -407,8 +451,13 @@
     await refreshSession();
     const outstanding=outstandingItems();
     if(!outstanding.length){
-      const accepted=(state.session.items||[]).filter(x=>x.status==='accepted');
-      if(accepted.length){ await loadItem(accepted[accepted.length-1].id); }
+      state.item=null;
+      state.selectedKey=null;
+      state.decisionGeometry=null;
+      state.editMode=false;
+      setEditUi(false);
+      destroyViewers();
+      startAutoFinalizeCountdown();
       return;
     }
     let next=outstanding[0];
@@ -461,6 +510,8 @@
     document.querySelectorAll('[data-visible]').forEach(cb=>cb.addEventListener('change',()=>{state.visibility[cb.dataset.visible]=cb.checked;drawAllOverlays();}));
     $('editBtn').disabled=!state.selectedKey || !state.decisionGeometry;
     $('resetEditBtn').disabled=!state.selectedKey || !state.edited;
+    const hasCompletedDecision=(state.session?.items||[]).some(x=>x.status==='accepted'||x.status==='deferred');
+    $('undoLastBtn').disabled=state.editMode||!hasCompletedDecision;
     $('deferBtn').disabled=false;
     $('acceptBtn').disabled=!state.selectedKey;
   }
@@ -483,18 +534,62 @@
     catch(err){setAutosave(`Save error: ${err.message}`,true);}
   }
 
+  function leaveEditModeForAdvance(){
+    clearTimeout(state.autosaveTimer);
+    state.autosaveTimer=null;
+    state.freehandDrawing=false;
+    state.freehandPoints=[];
+    state.freehandLastClient=null;
+    state.editMode=false;
+    try{state.overlayViewer?.setMouseNavEnabled(true);}catch{}
+    setEditUi(false);
+    const restore=state.preEditViewMode==='overlay'?'overlay':'split';
+    state.viewMode=restore;
+    $('splitBtn').classList.toggle('primary',restore==='split');
+    $('overlayBtn').classList.toggle('primary',restore==='overlay');
+  }
+
   async function deferCurrent(){
-    if(!state.item)return; const current=state.item.id; setAutosave('Deferring…');
-    try{await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(current)}`,{method:'PATCH',body:JSON.stringify({status:'deferred',challenging:$('challenging').checked})});setAutosave('Deferred');await openNextOutstanding(current);await loadSessions();}
-    catch(err){setAutosave(`Save error: ${err.message}`,true);}
+    if(!state.item)return;
+    const current=state.item.id;
+    if(state.editMode)leaveEditModeForAdvance();
+    clearTimeout(state.autosaveTimer); state.autosaveTimer=null;
+    setAutosave('Deferring…');
+    try{
+      await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(current)}`,{method:'PATCH',body:JSON.stringify({status:'deferred',selectedCandidate:state.selectedKey,geometry:state.decisionGeometry,edited:state.edited,challenging:$('challenging').checked})});
+      setAutosave('Deferred');
+      await openNextOutstanding(current);
+      await loadSessions();
+    }catch(err){setAutosave(`Save error: ${err.message}`,true);}
   }
 
   async function acceptCurrent(){
-    if(!state.item||!state.selectedKey)return; const current=state.item.id; setAutosave('Accepting…');
+    if(!state.item||!state.selectedKey)return;
+    const current=state.item.id;
+    if(state.editMode)leaveEditModeForAdvance();
+    clearTimeout(state.autosaveTimer); state.autosaveTimer=null;
+    setAutosave('Accepting…');
     try{
       await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(current)}`,{method:'PATCH',body:JSON.stringify({status:'accepted',selectedCandidate:state.selectedKey,geometry:state.decisionGeometry,edited:state.edited,challenging:$('challenging').checked})});
-      setAutosave('Accepted and saved'); await openNextOutstanding(current); await loadSessions();
+      setAutosave('Accepted and saved');
+      await openNextOutstanding(current);
+      await loadSessions();
     }catch(err){setAutosave(`Save error: ${err.message}`,true);}
+  }
+
+  async function undoLastDecision(){
+    if(!state.session||state.editMode)return;
+    cancelFinalizeCountdown();
+    $('completionActions').classList.add('hidden');
+    $('setupOverlay').classList.add('hidden');
+    setAutosave('Reopening previous decision…');
+    try{
+      const result=await api(`/sessions/${encodeURIComponent(state.session.id)}/undo-last`,{method:'POST',body:'{}'});
+      await refreshSession();
+      await loadItem(result.item.id);
+      await loadSessions();
+      setAutosave('Previous decision reopened');
+    }catch(err){setAutosave(`Undo error: ${err.message}`,true);}
   }
 
   function setAutosave(text,error=false){ $('autosaveState').textContent=text; $('autosaveState').style.color=error?'var(--danger)':''; }
@@ -520,6 +615,7 @@
 
   async function enterEdit(){
     if(!state.decisionGeometry)return;
+    state.preEditViewMode=state.viewMode==='overlay'?'overlay':'split';
     state.viewMode='overlay';
     state.editMode=true;
     state.freehandDrawing=false;
@@ -533,15 +629,10 @@
     drawAllOverlays();
   }
 
-  function finishEdit(){
-    state.freehandDrawing=false;
-    state.freehandPoints=[];
-    state.editMode=false;
-    try{state.overlayViewer?.setMouseNavEnabled(true);}catch{}
-    setEditUi(false);
-    updateItemControls();
-    drawAllOverlays();
-    setAutosave(state.edited?'Edit complete · changes autosaved':'Edit complete');
+  async function finishEdit(){
+    // Done editing is intentionally the same action as Accept & next.
+    if(!state.item||!state.selectedKey)return;
+    await acceptCurrent();
   }
 
   function resetEdit(){
@@ -549,50 +640,278 @@
     state.decisionGeometry=clone(c.geometry); state.edited=false; state.editMode=true; state.freehandPoints=[]; drawAllOverlays(); updateItemControls(); scheduleGeometrySave();
   }
   function scheduleGeometrySave(){
-    clearTimeout(state.autosaveTimer); setAutosave('Editing…');
+    clearTimeout(state.autosaveTimer);
+    setAutosave('Editing…');
+    const itemId=state.item?.id;
+    const selectedCandidate=state.selectedKey;
+    const geometry=clone(state.decisionGeometry);
+    const challenging=$('challenging').checked;
     state.autosaveTimer=setTimeout(async()=>{
-      if(!state.item||!state.selectedKey)return;
-      try{state.item=await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(state.item.id)}`,{method:'PATCH',body:JSON.stringify({status:'pending',selectedCandidate:state.selectedKey,geometry:state.decisionGeometry,edited:true,challenging:$('challenging').checked})});setAutosave('Edit autosaved');}
-      catch(err){setAutosave(`Autosave error: ${err.message}`,true);}
+      if(!itemId||!selectedCandidate||state.item?.id!==itemId)return;
+      try{
+        // Never write status here: a delayed edit autosave must not revert an accepted item to pending.
+        state.item=await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(itemId)}`,{method:'PATCH',body:JSON.stringify({selectedCandidate,geometry,edited:true,challenging})});
+        setAutosave('Edit autosaved');
+      }catch(err){setAutosave(`Autosave error: ${err.message}`,true);}
     },450);
   }
 
-  async function finalize(){
-    if(!state.session)return;
-    try{
-      const result=await api(`/sessions/${encodeURIComponent(state.session.id)}/finalize`,{method:'POST',body:'{}'});
-      await refreshSession(); await loadSessions();
-      const finalData=await api(`/sessions/${encodeURIComponent(state.session.id)}/final.geojson`);
-      const blob=new Blob([JSON.stringify(finalData,null,2)],{type:'application/geo+json'});
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement('a'); a.href=url; a.download=`${state.session.imageId}_${state.session.selectedClass}_reviewed.geojson`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
-      setAutosave('Final GeoJSON created');
-    }catch(err){alert(err.message);}
+  function cancelFinalizeCountdown(){
+    if(state.finalizeTimer){clearTimeout(state.finalizeTimer);state.finalizeTimer=null;}
+    if(state.finalizeInterval){clearInterval(state.finalizeInterval);state.finalizeInterval=null;}
   }
 
-  async function ensureTileSource(){
-    if(state.tileSource && state.imageInfo?.imageId===state.session.imageId)return;
+  function startAutoFinalizeCountdown(){
+    if(!state.session||state.finalizing)return;
+    cancelFinalizeCountdown();
+    $('setupOverlay').classList.remove('hidden');
+    $('classSetup').classList.add('hidden');
+    $('completionActions').classList.remove('hidden');
+    $('setupTitle').textContent='Review complete';
+    let remaining=10;
+    const update=()=>{$('setupText').innerHTML=`All review items are accepted. <span class="final-countdown">Finalizing automatically in ${remaining} second${remaining===1?'':'s'}…</span><br><span class="small muted">Use Undo last decision now if you want to return to the previous case.</span>`;};
+    update();
+    state.finalizeInterval=setInterval(()=>{remaining-=1;if(remaining>0)update();},1000);
+    state.finalizeTimer=setTimeout(()=>{cancelFinalizeCountdown();void finalize(true);},10000);
+  }
+
+  function safeFinalAnnotationName(){
+    const cls=String(state.session?.selectedClass||'Review').replace(/[^A-Za-z0-9 _.-]+/g,' ').replace(/\s+/g,' ').trim()||'Review';
+    const shortId=String(state.session?.id||'session').split('-').slice(-1)[0].slice(0,8);
+    return (`Reviewed ${cls} ${shortId}`).slice(0,80).trim();
+  }
+
+  async function saveFinalToHistoAnnotator(finalData){
     const imageId=state.session.imageId;
-    let info={};
-    try{const r=await fetch(`/api/images/${encodeURIComponent(imageId)}/info`); if(r.ok)info=await r.json();}catch{}
+    const annotationFile=safeFinalAnnotationName();
+    const response=await fetch(`/api/annotations/${encodeURIComponent(imageId)}?file=${encodeURIComponent(annotationFile)}`,{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(finalData),
+    });
+    if(!response.ok){
+      let detail=`${response.status} ${response.statusText}`;
+      try{const body=await response.json();detail=body.detail||JSON.stringify(body);}catch{}
+      throw new Error(`Could not save final GeoJSON to HistoAnnotator: ${detail}`);
+    }
+    return annotationFile;
+  }
+
+  async function finalize(automatic=false){
+    if(!state.session||state.finalizing)return;
+    cancelFinalizeCountdown();
+    state.finalizing=true;
+    $('completionFinalizeBtn').disabled=true;
+    $('finalizeBtn').disabled=true;
+    setAutosave(automatic?'Auto-finalizing review…':'Finalizing review…');
+    try{
+      await api(`/sessions/${encodeURIComponent(state.session.id)}/finalize`,{method:'POST',body:'{}'});
+      const finalData=await api(`/sessions/${encodeURIComponent(state.session.id)}/final.geojson`);
+      const annotationFile=await saveFinalToHistoAnnotator(finalData);
+      await api(`/sessions/${encodeURIComponent(state.session.id)}/close`,{method:'POST',body:'{}'});
+      destroyViewers();
+      const finishedImage=state.session.imageId;
+      state.item=null;
+      state.session=null;
+      $('completionActions').classList.add('hidden');
+      $('setupOverlay').classList.remove('hidden');
+      $('setupTitle').textContent='Review finalized';
+      $('setupText').innerHTML=`Final GeoJSON saved in HistoAnnotator as <strong>${esc(annotationFile)}</strong> for <strong>${esc(finishedImage)}</strong>. The review session is now closed.`;
+      $('sessionTitle').textContent='No review loaded';
+      $('progressText').textContent='—';
+      $('progressFill').style.width='0%';
+      setAutosave('Final GeoJSON saved · session closed');
+      await loadSessions();
+    }catch(err){
+      setAutosave(`Finalization error: ${err.message}`,true);
+      $('setupOverlay').classList.remove('hidden');
+      $('setupTitle').textContent='Finalization needs attention';
+      $('setupText').textContent=err.message;
+      $('completionActions').classList.remove('hidden');
+    }finally{
+      state.finalizing=false;
+      $('completionFinalizeBtn').disabled=false;
+      if(state.session) updateSessionHeader();
+    }
+  }
+
+  function defaultDisplayChannels(){
+    return {
+      he:{hematoxylin:true,eosin:true},
+      hdab:{hematoxylin:true,dab:true},
+      fluorescence:{red:true,green:true,blue:true},
+      rgb:{red:true,green:true,blue:true},
+    };
+  }
+
+  function clamp(value,min,max,fallback){const n=Number(value);return Number.isFinite(n)?Math.max(min,Math.min(max,n)):fallback;}
+  function compactNumber(value){const n=Number(value);if(!Number.isFinite(n))return'0';return Math.abs(n-Math.round(n))<1e-6?String(Math.round(n)):String(Number(n.toFixed(4)));}
+  function displayStorageKey(imageId){return `histoannotator.display.v1.${imageId}`;}
+  function ifDisplayStorageKey(imageId){return `histoannotator.ifDisplay.v1:${imageId}`;}
+
+  function scientificIfMeta(){
+    const meta=state.imageInfo?.multichannel;
+    return state.display?.imageType==='fluorescence'&&meta?.scientificMultichannel&&Array.isArray(meta.channels)&&meta.channels.length?meta:null;
+  }
+
+  function defaultScientificSettings(meta){
+    return {selected:0,channels:meta.channels.map((raw,index)=>{
+      const allowedMin=Number.isFinite(Number(raw.allowedMin))?Number(raw.allowedMin):0;
+      const allowedMax=Number.isFinite(Number(raw.allowedMax))?Number(raw.allowedMax):65535;
+      const autoMin=Number.isFinite(Number(raw.minDisplay))?Number(raw.minDisplay):allowedMin;
+      const autoMax=Number.isFinite(Number(raw.maxDisplay))?Number(raw.maxDisplay):allowedMax;
+      return {index,name:String(raw.name||`Channel ${index+1}`),visible:raw.visible!==false,color:String(raw.color||'#ffffff'),min:autoMin,max:autoMax,autoMin,autoMax,allowedMin,allowedMax,gamma:Number(raw.gamma)||1,brightness:Number(raw.brightness)||100};
+    })};
+  }
+
+  function loadDisplayState(imageId,serverImageType){
+    const displayChannels=defaultDisplayChannels();
+    let imageType=serverImageType||'he';
+    let brightnessPercent=100;
+    try{
+      const saved=JSON.parse(localStorage.getItem(displayStorageKey(imageId))||'null');
+      if(saved?.imageType&&['he','hdab','fluorescence','rgb'].includes(saved.imageType))imageType=saved.imageType;
+      if(Number.isFinite(Number(saved?.brightnessPercent)))brightnessPercent=clamp(saved.brightnessPercent,40,200,100);
+      if(saved?.displayChannels&&typeof saved.displayChannels==='object')Object.assign(displayChannels,saved.displayChannels);
+    }catch{}
+    state.display={imageType,brightnessPercent,displayChannels,ifSettings:null};
+    const meta=state.imageInfo?.multichannel;
+    if(imageType==='fluorescence'&&meta?.scientificMultichannel&&Array.isArray(meta.channels)&&meta.channels.length){
+      const settings=defaultScientificSettings(meta);
+      try{
+        const saved=JSON.parse(localStorage.getItem(ifDisplayStorageKey(imageId))||'null');
+        if(saved&&Array.isArray(saved.channels)&&saved.channels.length===settings.channels.length){
+          settings.selected=clamp(saved.selected,0,settings.channels.length-1,0);
+          settings.channels.forEach((channel,index)=>{
+            const incoming=saved.channels[index]||{};
+            if(typeof incoming.name==='string'&&incoming.name.trim())channel.name=incoming.name.trim();
+            if(typeof incoming.visible==='boolean')channel.visible=incoming.visible;
+            if(typeof incoming.color==='string'&&/^#[0-9a-fA-F]{6}$/.test(incoming.color))channel.color=incoming.color.toLowerCase();
+            channel.min=clamp(incoming.min,channel.allowedMin,channel.allowedMax,channel.min);
+            channel.max=clamp(incoming.max,channel.allowedMin,channel.allowedMax,channel.max);
+            if(channel.max<=channel.min){channel.min=channel.autoMin;channel.max=channel.autoMax;}
+            channel.gamma=clamp(incoming.gamma,0.05,20,channel.gamma);
+            channel.brightness=clamp(incoming.brightness,0,400,channel.brightness);
+          });
+        }
+      }catch{}
+      state.display.ifSettings=settings;
+    }
+  }
+
+  function saveDisplayState(){
+    if(!state.session||!state.display)return;
+    localStorage.setItem(displayStorageKey(state.session.imageId),JSON.stringify({imageType:state.display.imageType,brightnessPercent:state.display.brightnessPercent,displayChannels:state.display.displayChannels}));
+    if(state.display.ifSettings)localStorage.setItem(ifDisplayStorageKey(state.session.imageId),JSON.stringify(state.display.ifSettings));
+  }
+
+  function activeDisplayView(){
+    const type=state.display?.imageType||'he';
+    const channels=state.display?.displayChannels||defaultDisplayChannels();
+    if(type==='he'){
+      const c=channels.he||{};if(c.hematoxylin&&c.eosin)return{view:'original'};if(c.hematoxylin)return{view:'hematoxylin'};if(c.eosin)return{view:'eosin'};return{view:'none'};
+    }
+    if(type==='hdab'){
+      const c=channels.hdab||{};if(c.hematoxylin&&c.dab)return{view:'original'};if(c.hematoxylin)return{view:'hematoxylin'};if(c.dab)return{view:'dab'};return{view:'none'};
+    }
+    const c=channels[type]||channels.rgb||{};
+    const mask=`${c.red?1:0}${c.green?1:0}${c.blue?1:0}`;
+    return mask==='111'?{view:'original'}:{view:'rgbmask',rgb:mask};
+  }
+
+  function displayQueryString(){
+    const display=activeDisplayView();
+    const params=new URLSearchParams();
+    params.set('view',display.view);
+    params.set('image_type',state.display?.imageType||'he');
+    const meta=scientificIfMeta();
+    const settings=state.display?.ifSettings;
+    if(meta&&settings){
+      const channels=settings.channels;
+      params.set('if_enabled',channels.map(c=>c.visible?'1':'0').join(','));
+      params.set('if_min',channels.map(c=>compactNumber(c.min)).join(','));
+      params.set('if_max',channels.map(c=>compactNumber(c.max)).join(','));
+      params.set('if_gamma',channels.map(c=>compactNumber(c.gamma)).join(','));
+      params.set('if_brightness',channels.map(c=>compactNumber(c.brightness)).join(','));
+      params.set('if_colors',channels.map(c=>String(c.color||'#ffffff').replace('#','')).join(','));
+    }else if(display.rgb){params.set('rgb',display.rgb);}
+    const modified=state.imageCatalog.get(state.session?.imageId)?.modifiedUnix;
+    if(modified)params.set('rev',String(modified));
+    return params.toString();
+  }
+
+  function renderDisplayControls(){
+    if(!state.display)return;
+    $('displayImageType').value=state.display.imageType;
+    $('displayBrightness').value=String(state.display.brightnessPercent);
+    $('displayBrightnessValue').textContent=`${state.display.brightnessPercent}%`;
+    const root=$('displayChannels');
+    const meta=scientificIfMeta();
+    if(meta&&state.display.ifSettings){
+      root.innerHTML='<div class="small muted">Scientific fluorescence channels</div>';
+      state.display.ifSettings.channels.forEach((channel,index)=>{
+        const row=document.createElement('div');row.className='display-channel';
+        row.innerHTML=`<input type="checkbox" data-if-visible="${index}" ${channel.visible?'checked':''}><span>${esc(channel.name)}</span><input type="color" data-if-color="${index}" value="${esc(channel.color)}"><div class="display-channel-details" style="grid-column:1/-1"><label>Min<input type="number" step="any" data-if-min="${index}" value="${channel.min}"></label><label>Max<input type="number" step="any" data-if-max="${index}" value="${channel.max}"></label><label>Gamma<input type="number" min="0.05" max="20" step="0.05" data-if-gamma="${index}" value="${channel.gamma}"></label><label>Channel brightness<input type="number" min="0" max="400" step="1" data-if-brightness="${index}" value="${channel.brightness}"></label></div>`;
+        root.appendChild(row);
+      });
+      root.querySelectorAll('[data-if-visible]').forEach(el=>el.addEventListener('change',()=>{state.display.ifSettings.channels[Number(el.dataset.ifVisible)].visible=el.checked;displayChanged();}));
+      root.querySelectorAll('[data-if-color]').forEach(el=>el.addEventListener('change',()=>{state.display.ifSettings.channels[Number(el.dataset.ifColor)].color=el.value;displayChanged();}));
+      for(const [attr,key,min,max] of [['data-if-min','min',null,null],['data-if-max','max',null,null],['data-if-gamma','gamma',0.05,20],['data-if-brightness','brightness',0,400]]){
+        root.querySelectorAll(`[${attr}]`).forEach(el=>el.addEventListener('change',()=>{const i=Number(el.getAttribute(attr));const c=state.display.ifSettings.channels[i];c[key]=clamp(el.value,min??c.allowedMin,max??c.allowedMax,c[key]);if(c.max<=c.min){c.min=c.autoMin;c.max=c.autoMax;}displayChanged();}));
+      }
+      return;
+    }
+    let defs=[];
+    if(state.display.imageType==='he')defs=[['hematoxylin','Hematoxylin','#6f5da8'],['eosin','Eosin','#ef8ea8']];
+    else if(state.display.imageType==='hdab')defs=[['hematoxylin','Hematoxylin','#6f5da8'],['dab','DAB','#9a6a3a']];
+    else defs=[['red','Red','#ff6b6b'],['green','Green','#69db7c'],['blue','Blue','#4dabf7']];
+    const channelState=state.display.displayChannels[state.display.imageType]||state.display.displayChannels.rgb;
+    root.innerHTML=defs.map(([key,label,color])=>`<label class="display-channel"><input type="checkbox" data-simple-channel="${key}" ${channelState[key]?'checked':''}><span><span class="dot" style="background:${color}"></span> ${label}</span></label>`).join('');
+    root.querySelectorAll('[data-simple-channel]').forEach(el=>el.addEventListener('change',()=>{channelState[el.dataset.simpleChannel]=el.checked;displayChanged();}));
+  }
+
+  function applyViewerBrightness(viewer){if(viewer?.canvas)viewer.canvas.style.filter=`brightness(${state.display?.brightnessPercent||100}%)`;}
+
+  async function displayChanged(){
+    if(!state.display||!state.session)return;
+    saveDisplayState();
+    state.tileSource=null;
+    await ensureTileSource(true);
+    renderDisplayControls();
+    if(state.item)await renderCurrentView(true);
+  }
+
+  async function ensureTileSource(force=false){
+    if(!force&&state.tileSource&&state.imageInfo?.imageId===state.session.imageId)return;
+    const imageId=state.session.imageId;
+    let info={};let serverDisplay={};
+    try{
+      const [ir,dr]=await Promise.all([fetch(`/api/images/${encodeURIComponent(imageId)}/info`,{cache:'no-store'}),fetch(`/api/images/${encodeURIComponent(imageId)}/display-config`,{cache:'no-store'})]);
+      if(ir.ok)info=await ir.json();if(dr.ok)serverDisplay=await dr.json();
+    }catch{}
     const width=Number(info.width ?? info.dimensions?.width ?? info.size?.width ?? 0);
     const height=Number(info.height ?? info.dimensions?.height ?? info.size?.height ?? 0);
     const tileSize=Number(info.tileSize ?? info.tile_size ?? 512);
     let maxLevel;
-    if(Array.isArray(info.levels)) maxLevel=info.levels.length-1;
-    else if(Number.isFinite(Number(info.levelCount))) maxLevel=Number(info.levelCount)-1;
-    else if(Number.isFinite(Number(info.levels))) maxLevel=Number(info.levels)-1;
-    else if(width&&height) maxLevel=Math.ceil(Math.log2(Math.max(width,height)));
+    if(Array.isArray(info.levels))maxLevel=info.levels.length-1;
+    else if(Number.isFinite(Number(info.levelCount)))maxLevel=Number(info.levelCount)-1;
+    else if(Number.isFinite(Number(info.levels)))maxLevel=Number(info.levels)-1;
+    else if(width&&height)maxLevel=Math.ceil(Math.log2(Math.max(width,height)));
+    state.imageInfo={...info,imageId,width,height};
+    if(!state.display||state.display._imageId!==imageId){loadDisplayState(imageId,serverDisplay.imageType||'he');state.display._imageId=imageId;}
+    renderDisplayControls();
+    const query=displayQueryString();
     if(width&&height&&Number.isFinite(maxLevel)){
-      state.tileSource={width,height,tileSize,minLevel:0,maxLevel,getTileUrl:(level,x,y)=>`/api/images/${encodeURIComponent(imageId)}/tiles/${level}/${x}_${y}.jpeg`};
+      state.tileSource={width,height,tileSize,tileOverlap:Number(info.tileOverlap||0),minLevel:0,maxLevel,getTileUrl:(level,x,y)=>`/api/images/${encodeURIComponent(imageId)}/tiles/${level}/${x}_${y}.jpeg?${query}`};
     }else{
       state.tileSource=`/api/images/${encodeURIComponent(imageId)}/original`;
     }
-    state.imageInfo={...info,imageId,width,height};
   }
 
   function createViewer(element){
-    return OpenSeadragon({element,tileSources:state.tileSource,showNavigationControl:false,showNavigator:false,gestureSettingsMouse:{clickToZoom:false,dblClickToZoom:true,scrollToZoom:true},gestureSettingsTouch:{pinchToZoom:true,flickEnabled:true}});
+    const viewer=OpenSeadragon({element,tileSources:state.tileSource,showNavigationControl:false,showNavigator:false,gestureSettingsMouse:{clickToZoom:false,dblClickToZoom:true,scrollToZoom:true},gestureSettingsTouch:{pinchToZoom:true,flickEnabled:true}});
+    viewer.addHandler('open',()=>applyViewerBrightness(viewer));
+    return viewer;
   }
   function destroyViewers(){
     [...state.viewers, state.overlayViewer].filter(Boolean).forEach(v=>{try{v.destroy();}catch{}});
@@ -822,13 +1141,26 @@
     if($('reviewMode').value==='labelled' && !(await ensureLabelledAuthorized())) $('reviewMode').value='blind';
   });
 
+  $('displayBtn').addEventListener('click',()=>{$('displayPanel').classList.toggle('hidden');});
+  $('closeDisplayBtn').addEventListener('click',()=>{$('displayPanel').classList.add('hidden');});
+  $('displayBrightness').addEventListener('input',()=>{if(!state.display)return;state.display.brightnessPercent=clamp($('displayBrightness').value,40,200,100);$('displayBrightnessValue').textContent=`${state.display.brightnessPercent}%`;saveDisplayState();[...state.viewers,state.overlayViewer].filter(Boolean).forEach(applyViewerBrightness);});
+  $('displayImageType').addEventListener('change',async()=>{
+    if(!state.display||!state.session)return;
+    state.display.imageType=$('displayImageType').value;
+    const meta=state.imageInfo?.multichannel;
+    if(state.display.imageType==='fluorescence'&&meta?.scientificMultichannel&&Array.isArray(meta.channels)&&meta.channels.length&&!state.display.ifSettings)state.display.ifSettings=defaultScientificSettings(meta);
+    saveDisplayState();
+    try{await fetch(`/api/images/${encodeURIComponent(state.session.imageId)}/display-config`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageType:state.display.imageType})});}catch{}
+    await displayChanged();
+  });
+
   window.addEventListener('keydown',event=>{
-    if(event.ctrlKey||event.metaKey||event.altKey||event.repeat||state.editMode)return;
+    if(event.ctrlKey||event.metaKey||event.altKey||event.repeat)return;
     const active=document.activeElement;
-    if(active && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(active.tagName))return;
+    if(active && (/^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)||active.isContentEditable))return;
     if(!state.item)return;
 
-    // Fast review workflow: 1–4 selects a candidate, Enter accepts it and advances.
+    // Enter always accepts and advances, including while Freehand Edit is active.
     if(event.key==='Enter'){
       if(!state.selectedKey||$('acceptBtn').disabled)return;
       event.preventDefault();
@@ -836,6 +1168,8 @@
       return;
     }
 
+    // Candidate shortcuts remain disabled while editing the chosen mask.
+    if(state.editMode)return;
     if(!/^[1-4]$/.test(event.key))return;
     const index=Number(event.key)-1;
     const candidate=candidates()[index];
@@ -862,9 +1196,12 @@
   $('editSubtractBtn').addEventListener('click',()=>setEditOperation('subtract'));
   $('finishEditBtn').addEventListener('click',finishEdit);
   $('resetEditBtn').addEventListener('click',resetEdit);
+  $('undoLastBtn').addEventListener('click',undoLastDecision);
   $('deferBtn').addEventListener('click',deferCurrent);
   $('acceptBtn').addEventListener('click',acceptCurrent);
-  $('finalizeBtn').addEventListener('click',finalize);
+  $('finalizeBtn').addEventListener('click',()=>finalize(false));
+  $('completionFinalizeBtn').addEventListener('click',()=>finalize(false));
+  $('completionUndoBtn').addEventListener('click',undoLastDecision);
   window.addEventListener('resize',drawAllOverlays);
 
   Promise.all([loadImages(),loadSessions()]).catch(err=>{$('setupText').textContent=err.message;$('setupText').classList.add('error');});
