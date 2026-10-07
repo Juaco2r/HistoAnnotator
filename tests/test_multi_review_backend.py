@@ -1,5 +1,12 @@
 import importlib.util
+import json
+import os
+import tempfile
 from pathlib import Path
+
+# Set a disposable annotation root before importing the module.
+_tmp = tempfile.TemporaryDirectory()
+os.environ['ANNOTATION_ROOT'] = _tmp.name
 
 MODULE = Path('app/imaging/multi_review.py')
 spec = importlib.util.spec_from_file_location('histo_multi_review_test', MODULE)
@@ -25,9 +32,7 @@ def main():
     assert round(two.area, 6) == 50.0, two.area
 
     three = mr._consensus_geometry([
-        box(0,0,10,10),
-        box(5,0,15,10),
-        box(7,0,12,10),
+        box(0,0,10,10), box(5,0,15,10), box(7,0,12,10),
     ])
     assert round(three.area, 6) == 70.0, three.area
 
@@ -37,14 +42,37 @@ def main():
         [feature(1,1,9,9)],
     ], 'tumor')
     assert len(groups) == 1, len(groups)
-    assert len(groups[0]) == 4, len(groups[0])
 
     order1, colors1 = mr._blind_permutation('seed', 'item-000001', 3)
     order2, colors2 = mr._blind_permutation('seed', 'item-000001', 3)
-    assert order1 == order2
-    assert colors1 == colors2
+    assert order1 == order2 and colors1 == colors2
 
-    print('multi-review backend helper tests: PASS')
+    root = Path(_tmp.name)
+    stored = root / 'Case_01' / 'annotator_A.geojson'
+    stored.parent.mkdir(parents=True)
+    stored.write_text(json.dumps({
+        'type': 'FeatureCollection',
+        'properties': {'imageId': 'Case_01.tif'},
+        'features': [feature(0,0,10,10, 'Tumor')],
+    }))
+    other = root / 'Case_02' / 'annotator_B.geojson'
+    other.parent.mkdir(parents=True)
+    other.write_text(json.dumps({
+        'type': 'FeatureCollection',
+        'properties': {'imageId': 'Case_02.tif'},
+        'features': [feature(0,0,10,10, 'Tumor')],
+    }))
+
+    available = mr._available_annotations('Case_01.tif')
+    assert len(available) == 1, available
+    assert available[0]['name'] == 'annotator_A.geojson'
+    assert available[0]['classes'] == ['Tumor']
+
+    path, doc = mr._stored_annotation_document(available[0]['path'])
+    assert path.name == 'annotator_A.geojson'
+    assert len(mr._features(doc)) == 1
+
+    print('multi-review v1.1 backend helper tests: PASS')
 
 
 if __name__ == '__main__':

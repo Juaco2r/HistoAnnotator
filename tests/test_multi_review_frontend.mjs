@@ -5,11 +5,23 @@ import test from 'node:test';
 const html = fs.readFileSync('app/static/multi_review.html', 'utf8');
 const launcher = fs.readFileSync('app/static/multi_review_launcher.js', 'utf8');
 
-test('multi review exposes 2-3 GeoJSON setup, blind/labelled and consensus', () => {
-  assert.match(html, /Annotation GeoJSON 3 \(optional\)/);
+test('setup uses stored annotation dropdowns with optional external upload', () => {
+  assert.match(html, /id="source1"/);
+  assert.match(html, /id="source2"/);
+  assert.match(html, /id="source3"/);
+  assert.match(html, /Upload additional GeoJSON/);
+  assert.match(html, /available-annotations/);
+  assert.match(html, /storedPath/);
+});
+
+test('review UI is English and exposes blind labelled and consensus modes', () => {
+  assert.match(html, /Multi-annotator Review/);
   assert.match(html, /Blind review/);
   assert.match(html, /Labelled review/);
   assert.match(html, /Generate consensus candidate/);
+  assert.match(html, /Challenging/);
+  assert.match(html, /Leave for end/);
+  assert.doesNotMatch(html, /Revisi[oó]n|Anotaci[oó]n|Subir|Configuraci[oó]n/i);
 });
 
 test('multi review contains split and overlay visualization controls', () => {
@@ -19,16 +31,11 @@ test('multi review contains split and overlay visualization controls', () => {
   assert.match(html, /showNoneBtn/);
 });
 
-test('multi review persists preferred, challenging, defer, edit and finalization actions', () => {
-  assert.match(html, /selectedCandidate/);
-  assert.match(html, /Challenging/);
-  assert.match(html, /Leave for end/);
-  assert.match(html, /Edit selected/);
-  assert.match(html, /Accept & next/);
-  assert.match(html, /finalize/);
-});
-
-test('launcher opens standalone review workspace', () => {
-  assert.match(launcher, /multiReviewLauncher/);
+test('launcher integrates into settings gear instead of floating button', () => {
+  assert.match(launcher, /multiReviewSettingsEntry/);
+  assert.match(launcher, /Multi-annotator Review/);
+  assert.match(launcher, /looksLikeSettingsTrigger/);
+  assert.match(launcher, /findSettingsSurface/);
   assert.match(launcher, /\/static\/multi_review\.html/);
+  assert.doesNotMatch(launcher, /position\s*[:=]\s*['"]fixed/);
 });

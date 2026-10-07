@@ -24,7 +24,8 @@ except Exception as exc:  # pragma: no cover - explicit startup error in deploye
 
 
 router = APIRouter(prefix="/api/multi-review", tags=["multi-review"])
-REVIEW_ROOT = Path(os.getenv("ANNOTATION_ROOT", "/data/annotations")) / "_reviews"
+ANNOTATION_ROOT = Path(os.getenv("ANNOTATION_ROOT", "/data/annotations"))
+REVIEW_ROOT = ANNOTATION_ROOT / "_reviews"
 REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
 
 _SOURCE_COLORS = ["#00B8D9", "#FF4D8D", "#F4C430"]
@@ -95,6 +96,96 @@ def _embedded_image_id(geojson: dict[str, Any]) -> str | None:
                 return value.strip()
     return None
 
+
+
+def _normalize_image_token(value: str) -> str:
+    text = str(value or "").strip().lower()
+    for suffix in (".ome.tiff", ".ome.tif", ".tiff", ".tif", ".svs", ".ndpi", ".mrxs", ".png", ".jpg", ".jpeg"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _annotation_matches_image(path: Path, document: dict[str, Any], image_id: str) -> tuple[bool, str]:
+    target = _normalize_image_token(image_id)
+    embedded = _embedded_image_id(document)
+    if embedded:
+        return (_normalize_image_token(embedded) == target, "declared")
+
+    try:
+        relative = path.relative_to(ANNOTATION_ROOT)
+    except ValueError:
+        relative = path
+    tokens = [_normalize_image_token(part) for part in relative.parts]
+    stem_token = _normalize_image_token(path.stem)
+    if target and (target in tokens or stem_token.startswith(target) or target in stem_token):
+        return True, "path"
+    return False, "unverified"
+
+
+def _stored_annotation_path(reference: str) -> Path:
+    if not reference or Path(reference).is_absolute():
+        raise HTTPException(status_code=400, detail="Invalid stored annotation reference")
+    root = ANNOTATION_ROOT.resolve()
+    candidate = (root / reference).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise HTTPException(status_code=400, detail="Stored annotation is outside the annotation root")
+    review_root = REVIEW_ROOT.resolve()
+    if candidate == review_root or review_root in candidate.parents:
+        raise HTTPException(status_code=400, detail="Review output cannot be reused as a source from this selector")
+    if candidate.suffix.lower() not in {".geojson", ".json"}:
+        raise HTTPException(status_code=400, detail="Stored annotation must be a GeoJSON or JSON file")
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Stored annotation file was not found")
+    return candidate
+
+
+def _stored_annotation_document(reference: str) -> tuple[Path, dict[str, Any]]:
+    path = _stored_annotation_path(reference)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read stored annotation: {path.name}") from exc
+    _features(document)
+    return path, document
+
+
+def _available_annotations(image_id: str) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    if not ANNOTATION_ROOT.exists():
+        return results
+    scanned = 0
+    for path in sorted(ANNOTATION_ROOT.rglob("*"), key=lambda p: str(p).casefold()):
+        if scanned >= 10000:
+            break
+        if not path.is_file() or path.suffix.lower() not in {".geojson", ".json"}:
+            continue
+        try:
+            relative = path.relative_to(ANNOTATION_ROOT)
+        except ValueError:
+            continue
+        if any(part.startswith("_") for part in relative.parts[:-1]):
+            continue
+        scanned += 1
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            feats = _features(document)
+        except Exception:
+            continue
+        matches, match_type = _annotation_matches_image(path, document, image_id)
+        if not matches:
+            continue
+        classes = sorted({name for feature in feats if (name := _classification_name(feature))}, key=str.casefold)
+        results.append({
+            "id": relative.as_posix(),
+            "name": path.name,
+            "path": relative.as_posix(),
+            "featureCount": len(feats),
+            "classes": classes,
+            "matchType": match_type,
+        })
+    return results
 
 def _safe_shape(geometry: dict[str, Any]):
     try:
@@ -370,8 +461,9 @@ def _write_working_final(path: Path, manifest: dict[str, Any], items: list[dict[
 
 
 class SourcePayload(BaseModel):
-    name: str
-    geojson: dict[str, Any]
+    name: str | None = None
+    geojson: dict[str, Any] | None = None
+    storedPath: str | None = None
 
 
 class CreateSessionRequest(BaseModel):
@@ -391,6 +483,15 @@ class ItemDecisionRequest(BaseModel):
     geometry: dict[str, Any] | None = None
     challenging: bool | None = None
     edited: bool | None = None
+
+
+@router.get("/available-annotations")
+def available_annotations(imageId: str):
+    image_id = imageId.strip()
+    if not image_id:
+        raise HTTPException(status_code=400, detail="imageId is required")
+    annotations = _available_annotations(image_id)
+    return {"imageId": image_id, "annotations": annotations, "count": len(annotations)}
 
 
 @router.get("/sessions")
@@ -425,14 +526,31 @@ def create_session(req: CreateSessionRequest):
     all_classes: set[str] = set()
     embedded_ids: set[str] = set()
     source_documents: list[dict[str, Any]] = []
+    source_names: list[str] = []
+    source_origins: list[dict[str, Any]] = []
     for source in req.sources:
-        document = source.geojson
-        _features(document)
+        has_stored = bool(source.storedPath)
+        has_upload = source.geojson is not None
+        if has_stored == has_upload:
+            raise HTTPException(status_code=400, detail="Each source must use either storedPath or uploaded GeoJSON")
+        if has_stored:
+            stored_path, document = _stored_annotation_document(str(source.storedPath))
+            matches, _ = _annotation_matches_image(stored_path, document, req.imageId)
+            if not matches:
+                raise HTTPException(status_code=400, detail=f"Stored annotation does not match the selected image: {stored_path.name}")
+            name = (source.name or stored_path.name).strip()
+            source_origins.append({"type": "stored", "path": str(source.storedPath)})
+        else:
+            document = source.geojson or {}
+            _features(document)
+            name = (source.name or "Uploaded annotation").strip()
+            source_origins.append({"type": "upload"})
         source_documents.append(document)
+        source_names.append(name)
         for feature in _features(document):
-            name = _classification_name(feature)
-            if name:
-                all_classes.add(name)
+            class_name = _classification_name(feature)
+            if class_name:
+                all_classes.add(class_name)
         embedded = _embedded_image_id(document)
         if embedded:
             embedded_ids.add(embedded)
@@ -450,10 +568,10 @@ def create_session(req: CreateSessionRequest):
     path.mkdir(parents=True, exist_ok=False)
 
     sources_meta = []
-    for index, (source, document) in enumerate(zip(req.sources, source_documents, strict=True), start=1):
+    for index, (name, document, origin) in enumerate(zip(source_names, source_documents, source_origins, strict=True), start=1):
         filename = f"source_{index}.geojson"
         _atomic_json(path / filename, document)
-        sources_meta.append({"index": index - 1, "name": source.name, "file": filename})
+        sources_meta.append({"index": index - 1, "name": name, "file": filename, "origin": origin})
 
     manifest = {
         "id": session_id,
