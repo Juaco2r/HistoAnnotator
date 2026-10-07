@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HistoAnnotator · Multi-annotator Review</title>
+  <script src="/static/vendor/openseadragon/openseadragon.min.js"></script>
+  <style>
+    :root{color-scheme:dark;--bg:#101318;--panel:#181d24;--panel2:#20262f;--line:#343c47;--text:#f4f7fb;--muted:#9da8b5;--accent:#65b7ff;--good:#62d28f;--warn:#f4c430;--danger:#ff6b75}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-ui,-apple-system,Segoe UI,sans-serif;height:100vh;overflow:hidden}
+    button,select,input{font:inherit}button{border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}button:hover{border-color:#596576}button.primary{background:#1f6fb2;border-color:#2b83ce}button.good{background:#1f7548;border-color:#2d9d65}button.warn{background:#725d13;border-color:#a88c1e}button.danger{background:#7a2c35;border-color:#a13b46}button:disabled{opacity:.45;cursor:not-allowed}
+    select,input[type=text]{background:#11151a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px}.app{display:grid;grid-template-columns:320px 1fr;height:100vh}.sidebar{border-right:1px solid var(--line);background:#12171d;overflow:auto;padding:14px}.main{display:grid;grid-template-rows:auto auto 1fr auto;min-width:0;min-height:0}.brand{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}.brand h1{font-size:16px;margin:0}.muted{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}.card h2{font-size:13px;margin:0 0 10px}.field{display:grid;gap:5px;margin:9px 0}.field label{color:#cbd3dc;font-size:12px}.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.stack{display:grid;gap:8px}.session{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#141a21}.session .title{font-weight:650}.toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#14191f;flex-wrap:wrap}.toolbar .spacer{flex:1}.progressbar{height:5px;background:#282f38;border-radius:6px;overflow:hidden;min-width:130px}.progressbar>div{height:100%;background:var(--good)}.candidatebar{display:flex;gap:7px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161c;flex-wrap:wrap}.candidate-chip{display:inline-flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%;display:inline-block}.viewer-area{min-height:0;position:relative;background:#080a0d}.split-grid{width:100%;height:100%;display:grid;gap:2px;background:#000}.split-grid.n2{grid-template-columns:1fr 1fr}.split-grid.n3{grid-template-columns:1fr 1fr 1fr}.split-grid.n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}.view-panel{position:relative;min-width:0;min-height:0;background:#050607}.view-title{position:absolute;z-index:5;left:8px;top:8px;padding:4px 8px;border-radius:7px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);pointer-events:none}.osd{position:absolute;inset:0}.overlay-svg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.overlay-svg.editing{pointer-events:none}.edit-handle{pointer-events:all;cursor:grab}.empty-mask{position:absolute;z-index:5;inset:auto 8px 8px 8px;background:rgba(0,0,0,.58);padding:5px 7px;border-radius:6px;color:#cbd3dc;text-align:center}.actions{padding:10px 12px;border-top:1px solid var(--line);background:#14191f;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.actions .spacer{flex:1}.status-pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.status-pending{color:#d9dfe6}.status-deferred{color:var(--warn)}.status-accepted{color:var(--good)}.hidden{display:none!important}.error{color:#ff9097;white-space:pre-wrap}.success{color:#8ce6ad}.setup-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#0a0d11}.setup-box{width:min(560px,96%);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}.setup-box h2{margin-top:0}.notice{padding:8px 10px;border-radius:8px;background:#202833;border:1px solid #334153;color:#ced8e3}.kbd{border:1px solid var(--line);background:#0e1217;padding:2px 5px;border-radius:5px}.fileline{display:grid;grid-template-columns:1fr;gap:4px}.small{font-size:12px}.edit-banner{background:#15304a;color:#d7edff;border:1px solid #285780;border-radius:8px;padding:6px 9px}.blind{color:#c7a7ff}.footer-stat{color:#cbd3dc}@media(max-width:900px){.app{grid-template-columns:250px 1fr}.split-grid.n3,.split-grid.n4{grid-template-columns:1fr 1fr}.view-title{font-size:11px}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><h1>Multi-annotator Review</h1><a href="/" style="color:#8ac7ff">Annotator</a></div>
+    <div class="card">
+      <h2>New review session</h2>
+      <div class="field"><label>Image</label><select id="imageSelect"></select></div>
+      <div class="field"><label>Annotation GeoJSON 1</label><input id="file1" type="file" accept=".geojson,.json,application/geo+json,application/json"></div>
+      <div class="field"><label>Annotation GeoJSON 2</label><input id="file2" type="file" accept=".geojson,.json,application/geo+json,application/json"></div>
+      <div class="field"><label>Annotation GeoJSON 3 (optional)</label><input id="file3" type="file" accept=".geojson,.json,application/geo+json,application/json"></div>
+      <div class="field"><label>Review mode</label><select id="reviewMode"><option value="blind">Blind review</option><option value="labelled">Labelled review</option></select></div>
+      <label class="row"><input id="consensusEnabled" type="checkbox"> Generate consensus candidate</label>
+      <div style="height:9px"></div><button id="createBtn" class="primary">Create review session</button>
+      <div id="createMessage" class="small" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="row"><h2 style="margin:0">Saved sessions</h2><span class="spacer"></span><button id="refreshSessions" title="Refresh">↻</button></div>
+      <div id="sessions"></div>
+    </div>
+    <div class="card small muted">
+      Progress is stored on the server after each selection, edit, challenging flag, defer and acceptance. Original GeoJSON files are never modified.
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="toolbar">
+      <strong id="sessionTitle">No review loaded</strong>
+      <span id="modeLabel" class="status-pill"></span>
+      <span id="classLabel" class="status-pill"></span>
+      <span class="spacer"></span>
+      <span id="progressText" class="footer-stat">—</span>
+      <div class="progressbar"><div id="progressFill" style="width:0%"></div></div>
+      <button id="finalizeBtn" class="good" disabled>Finalize GeoJSON</button>
+    </div>
+
+    <div class="candidatebar">
+      <div class="row">
+        <button id="splitBtn" class="primary">Split view</button>
+        <button id="overlayBtn">Overlay view</button>
+      </div>
+      <span style="width:1px;height:25px;background:var(--line)"></span>
+      <div id="visibilityControls" class="row"></div>
+      <div class="row"><button id="showAllBtn">All</button><button id="showNoneBtn">None</button></div>
+      <span class="spacer"></span>
+      <span id="autosaveState" class="small muted">Autosave ready</span>
+    </div>
+
+    <div id="viewerArea" class="viewer-area">
+      <div id="setupOverlay" class="setup-overlay">
+        <div class="setup-box">
+          <h2 id="setupTitle">Create or resume a review</h2>
+          <div id="setupText" class="notice">Choose 2–3 GeoJSON annotation files for the same image, or resume a saved session.</div>
+          <div id="classSetup" class="hidden">
+            <div class="field"><label>Class to review</label><select id="classSelect"></select></div>
+            <button id="startClassBtn" class="primary">Build review items</button>
+          </div>
+        </div>
+      </div>
+      <div id="splitGrid" class="split-grid hidden"></div>
+      <div id="overlayPanel" class="view-panel hidden"><div class="view-title">Overlay</div><div id="overlayOsd" class="osd"></div></div>
+    </div>
+
+    <div class="actions">
+      <span id="itemStatus" class="status-pill status-pending">—</span>
+      <strong id="itemCounter">—</strong>
+      <span style="width:1px;height:25px;background:var(--line)"></span>
+      <span>Preferred:</span><div id="preferredButtons" class="row"></div>
+      <span class="spacer"></span>
+      <label class="row"><input id="challenging" type="checkbox"> Challenging</label>
+      <button id="editBtn" disabled>Edit selected</button>
+      <button id="resetEditBtn" disabled>Reset edit</button>
+      <button id="deferBtn" class="warn" disabled>Leave for end</button>
+      <button id="acceptBtn" class="good" disabled>Accept & next</button>
+    </div>
+  </main>
+</div>
+<script>
+(() => {
+  'use strict';
+  const API = '/api/multi-review';
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    session: null,
+    item: null,
+    itemIndex: -1,
+    viewMode: 'split',
+    visibility: {},
+    viewers: [],
+    overlayViewer: null,
+    syncGuard: false,
+    selectedKey: null,
+    decisionGeometry: null,
+    edited: false,
+    editMode: false,
+    imageInfo: null,
+    tileSource: null,
+    autosaveTimer: null,
+  };
+
+  function esc(text){ return String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  async function api(path, options={}){
+    const response = await fetch(API + path, {headers:{'Content-Type':'application/json', ...(options.headers||{})}, ...options});
+    if(!response.ok){ let detail = `${response.status} ${response.statusText}`; try{ const body=await response.json(); detail=body.detail||JSON.stringify(body); }catch{} throw new Error(detail); }
+    return response.json();
+  }
+  async function readGeoJSON(input){
+    const file = input.files?.[0]; if(!file) return null;
+    const text = await file.text();
+    try { return {name:file.name, geojson:JSON.parse(text)}; } catch { throw new Error(`${file.name}: invalid JSON`); }
+  }
+  function setMessage(text, ok=false){ $('createMessage').textContent=text||''; $('createMessage').className=`small ${ok?'success':'error'}`; }
+  function clone(value){ return value == null ? value : JSON.parse(JSON.stringify(value)); }
+  function progressPercent(p){ return !p?.total ? 0 : Math.round((p.accepted / p.total) * 100); }
+
+  async function loadImages(){
+    const data = await fetch('/api/images').then(r=>{if(!r.ok)throw new Error('Could not load image catalog');return r.json();});
+    const images = data.images || [];
+    $('imageSelect').innerHTML = images.map(img => {
+      const id = typeof img === 'string' ? img : (img.id || img.imageId || img.name);
+      const label = typeof img === 'string' ? img : (img.displayName || img.name || img.id || img.imageId);
+      return `<option value="${esc(id)}">${esc(label)}</option>`;
+    }).join('');
+  }
+
+  async function createSession(){
+    $('createBtn').disabled=true; setMessage('Reading annotations…');
+    try{
+      const sources=[await readGeoJSON($('file1')), await readGeoJSON($('file2')), await readGeoJSON($('file3'))].filter(Boolean);
+      if(sources.length<2 || sources.length>3) throw new Error('Select 2 or 3 GeoJSON files.');
+      const payload={imageId:$('imageSelect').value,reviewMode:$('reviewMode').value,consensusEnabled:$('consensusEnabled').checked,sources};
+      const session=await api('/sessions',{method:'POST',body:JSON.stringify(payload)});
+      setMessage('Session created. Choose the class to review.',true);
+      await loadSessions();
+      await openSession(session.id);
+    }catch(err){ setMessage(err.message); }
+    finally{$('createBtn').disabled=false;}
+  }
+
+  async function loadSessions(){
+    const data=await api('/sessions');
+    const sessions=data.sessions||[];
+    $('sessions').innerHTML=sessions.length?sessions.map(s=>{
+      const p=s.progress||{};
+      const mode=s.reviewMode==='blind'?'Blind':'Labelled';
+      return `<div class="session"><div class="title">${esc(s.imageId)}</div><div class="small muted">${esc(s.selectedClass||'Class not selected')} · ${mode}</div><div class="small">${p.accepted||0}/${p.total||0} accepted · ${p.deferred||0} deferred</div><div style="height:6px"></div><button data-open-session="${esc(s.id)}">Resume</button></div>`;
+    }).join(''):'<div class="muted small">No saved review sessions.</div>';
+    document.querySelectorAll('[data-open-session]').forEach(btn=>btn.addEventListener('click',()=>openSession(btn.dataset.openSession)));
+  }
+
+  async function openSession(id){
+    destroyViewers();
+    state.session=await api(`/sessions/${encodeURIComponent(id)}`);
+    state.item=null; state.selectedKey=null; state.decisionGeometry=null; state.editMode=false;
+    updateSessionHeader();
+    if(!state.session.selectedClass){
+      $('setupOverlay').classList.remove('hidden'); $('classSetup').classList.remove('hidden');
+      $('setupTitle').textContent='Choose the annotation class';
+      $('setupText').textContent='Review items are built only for the selected class. The source GeoJSON files remain unchanged.';
+      $('classSelect').innerHTML=(state.session.classes||[]).map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+      return;
+    }
+    $('setupOverlay').classList.add('hidden'); $('classSetup').classList.add('hidden');
+    await ensureTileSource();
+    await openNextOutstanding();
+  }
+
+  async function buildClass(){
+    $('startClassBtn').disabled=true;
+    try{
+      state.session=await api(`/sessions/${encodeURIComponent(state.session.id)}/class`,{method:'POST',body:JSON.stringify({className:$('classSelect').value})});
+      $('setupOverlay').classList.add('hidden'); $('classSetup').classList.add('hidden');
+      updateSessionHeader(); await ensureTileSource(); await openNextOutstanding(); await loadSessions();
+    }catch(err){ alert(err.message); }
+    finally{$('startClassBtn').disabled=false;}
+  }
+
+  function updateSessionHeader(){
+    const s=state.session; if(!s)return;
+    $('sessionTitle').textContent=`${s.imageId} · ${s.id}`;
+    $('modeLabel').textContent=s.reviewMode==='blind'?'Blind review':'Labelled review';
+    $('modeLabel').className=`status-pill ${s.reviewMode==='blind'?'blind':''}`;
+    $('classLabel').textContent=s.selectedClass||'No class';
+    const p=s.progress||{total:0,accepted:0,pending:0,deferred:0};
+    $('progressText').textContent=`${p.accepted}/${p.total} accepted · ${p.deferred} deferred`;
+    $('progressFill').style.width=`${progressPercent(p)}%`;
+    $('finalizeBtn').disabled=!(p.total>0 && p.pending===0 && p.deferred===0);
+  }
+
+  async function refreshSession(){
+    state.session=await api(`/sessions/${encodeURIComponent(state.session.id)}`); updateSessionHeader();
+  }
+
+  function outstandingItems(){
+    const items=state.session?.items||[];
+    const pending=items.filter(x=>x.status==='pending');
+    if(pending.length) return pending;
+    return items.filter(x=>x.status==='deferred');
+  }
+  async function openNextOutstanding(afterId=null){
+    await refreshSession();
+    const outstanding=outstandingItems();
+    if(!outstanding.length){
+      const accepted=(state.session.items||[]).filter(x=>x.status==='accepted');
+      if(accepted.length){ await loadItem(accepted[accepted.length-1].id); }
+      return;
+    }
+    let next=outstanding[0];
+    if(afterId){ const idx=outstanding.findIndex(x=>x.id===afterId); if(idx>=0 && idx+1<outstanding.length) next=outstanding[idx+1]; }
+    await loadItem(next.id);
+  }
+
+  async function loadItem(itemId){
+    const item=await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(itemId)}`);
+    state.item=item;
+    state.itemIndex=(state.session.items||[]).findIndex(x=>x.id===itemId);
+    state.selectedKey=item.selectedCandidate||null;
+    state.decisionGeometry=clone(item.decisionGeometry);
+    state.edited=!!item.edited;
+    state.editMode=false;
+    const allCandidates=candidates();
+    state.visibility={}; allCandidates.forEach(c=>state.visibility[c.key]=true);
+    updateItemControls();
+    await renderCurrentView(true);
+  }
+
+  function candidates(){
+    if(!state.item)return[];
+    const list=[...(state.item.candidates||[])];
+    if(state.item.consensus) list.push(state.item.consensus);
+    return list;
+  }
+  function candidateByKey(key){ return candidates().find(c=>c.key===key)||null; }
+
+  function updateItemControls(){
+    const item=state.item; if(!item)return;
+    const total=state.session.items?.length||0;
+    $('itemCounter').textContent=`${state.itemIndex+1} / ${total} · ${item.id}`;
+    $('itemStatus').textContent=item.status;
+    $('itemStatus').className=`status-pill status-${item.status}`;
+    $('challenging').checked=!!item.challenging;
+    $('preferredButtons').innerHTML=candidates().map(c=>{
+      const selected=state.selectedKey===c.key;
+      return `<button data-prefer="${esc(c.key)}" class="${selected?'primary':''}"><span class="dot" style="background:${c.color}"></span>${esc(c.label)}${c.geometry?'':' · no mask'}</button>`;
+    }).join('');
+    document.querySelectorAll('[data-prefer]').forEach(btn=>btn.addEventListener('click',()=>selectPreferred(btn.dataset.prefer)));
+    $('visibilityControls').innerHTML=candidates().map(c=>`<label class="candidate-chip"><input type="checkbox" data-visible="${esc(c.key)}" ${state.visibility[c.key]?'checked':''}><span class="dot" style="background:${c.color}"></span>${esc(c.label)}</label>`).join('');
+    document.querySelectorAll('[data-visible]').forEach(cb=>cb.addEventListener('change',()=>{state.visibility[cb.dataset.visible]=cb.checked;drawAllOverlays();}));
+    $('editBtn').disabled=!state.selectedKey || !state.decisionGeometry;
+    $('resetEditBtn').disabled=!state.selectedKey || !state.edited;
+    $('deferBtn').disabled=false;
+    $('acceptBtn').disabled=!state.selectedKey;
+  }
+
+  async function selectPreferred(key){
+    const candidate=candidateByKey(key); if(!candidate)return;
+    state.selectedKey=key; state.decisionGeometry=clone(candidate.geometry); state.edited=false; state.editMode=false;
+    setAutosave('Saving selection…');
+    try{
+      state.item=await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(state.item.id)}`,{method:'PATCH',body:JSON.stringify({status:'pending',selectedCandidate:key,edited:false})});
+      setAutosave('Selection saved');
+    }catch(err){setAutosave(`Save error: ${err.message}`,true);}
+    updateItemControls(); drawAllOverlays();
+  }
+
+  async function toggleChallenging(){
+    if(!state.item)return;
+    const value=$('challenging').checked; setAutosave('Saving challenging flag…');
+    try{state.item=await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(state.item.id)}`,{method:'PATCH',body:JSON.stringify({challenging:value})});setAutosave('Challenging flag saved');}
+    catch(err){setAutosave(`Save error: ${err.message}`,true);}
+  }
+
+  async function deferCurrent(){
+    if(!state.item)return; const current=state.item.id; setAutosave('Deferring…');
+    try{await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(current)}`,{method:'PATCH',body:JSON.stringify({status:'deferred',challenging:$('challenging').checked})});setAutosave('Deferred');await openNextOutstanding(current);await loadSessions();}
+    catch(err){setAutosave(`Save error: ${err.message}`,true);}
+  }
+
+  async function acceptCurrent(){
+    if(!state.item||!state.selectedKey)return; const current=state.item.id; setAutosave('Accepting…');
+    try{
+      await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(current)}`,{method:'PATCH',body:JSON.stringify({status:'accepted',selectedCandidate:state.selectedKey,geometry:state.decisionGeometry,edited:state.edited,challenging:$('challenging').checked})});
+      setAutosave('Accepted and saved'); await openNextOutstanding(current); await loadSessions();
+    }catch(err){setAutosave(`Save error: ${err.message}`,true);}
+  }
+
+  function setAutosave(text,error=false){ $('autosaveState').textContent=text; $('autosaveState').style.color=error?'var(--danger)':''; }
+
+  function enterEdit(){
+    if(!state.decisionGeometry)return;
+    state.viewMode='overlay'; state.editMode=true; $('splitBtn').classList.remove('primary'); $('overlayBtn').classList.add('primary');
+    renderCurrentView(false); updateItemControls(); setAutosave('Edit mode · drag vertices');
+  }
+  function resetEdit(){
+    const c=candidateByKey(state.selectedKey); if(!c)return;
+    state.decisionGeometry=clone(c.geometry); state.edited=false; state.editMode=true; drawAllOverlays(); updateItemControls(); scheduleGeometrySave();
+  }
+  function scheduleGeometrySave(){
+    clearTimeout(state.autosaveTimer); setAutosave('Editing…');
+    state.autosaveTimer=setTimeout(async()=>{
+      if(!state.item||!state.selectedKey)return;
+      try{state.item=await api(`/sessions/${encodeURIComponent(state.session.id)}/items/${encodeURIComponent(state.item.id)}`,{method:'PATCH',body:JSON.stringify({status:'pending',selectedCandidate:state.selectedKey,geometry:state.decisionGeometry,edited:true,challenging:$('challenging').checked})});setAutosave('Edit autosaved');}
+      catch(err){setAutosave(`Autosave error: ${err.message}`,true);}
+    },450);
+  }
+
+  async function finalize(){
+    if(!state.session)return;
+    try{
+      const result=await api(`/sessions/${encodeURIComponent(state.session.id)}/finalize`,{method:'POST',body:'{}'});
+      await refreshSession(); await loadSessions();
+      const url=`${API}/sessions/${encodeURIComponent(state.session.id)}/final.geojson`;
+      const a=document.createElement('a'); a.href=url; a.download=`${state.session.imageId}_${state.session.selectedClass}_reviewed.geojson`; document.body.appendChild(a); a.click(); a.remove();
+      setAutosave('Final GeoJSON created');
+    }catch(err){alert(err.message);}
+  }
+
+  async function ensureTileSource(){
+    if(state.tileSource && state.imageInfo?.imageId===state.session.imageId)return;
+    const imageId=state.session.imageId;
+    let info={};
+    try{const r=await fetch(`/api/images/${encodeURIComponent(imageId)}/info`); if(r.ok)info=await r.json();}catch{}
+    const width=Number(info.width ?? info.dimensions?.width ?? info.size?.width ?? 0);
+    const height=Number(info.height ?? info.dimensions?.height ?? info.size?.height ?? 0);
+    const tileSize=Number(info.tileSize ?? info.tile_size ?? 512);
+    let maxLevel;
+    if(Array.isArray(info.levels)) maxLevel=info.levels.length-1;
+    else if(Number.isFinite(Number(info.levelCount))) maxLevel=Number(info.levelCount)-1;
+    else if(Number.isFinite(Number(info.levels))) maxLevel=Number(info.levels)-1;
+    else if(width&&height) maxLevel=Math.ceil(Math.log2(Math.max(width,height)));
+    if(width&&height&&Number.isFinite(maxLevel)){
+      state.tileSource={width,height,tileSize,minLevel:0,maxLevel,getTileUrl:(level,x,y)=>`/api/images/${encodeURIComponent(imageId)}/tiles/${level}/${x}_${y}.jpeg`};
+    }else{
+      state.tileSource=`/api/images/${encodeURIComponent(imageId)}/original`;
+    }
+    state.imageInfo={...info,imageId,width,height};
+  }
+
+  function createViewer(element){
+    return OpenSeadragon({element,tileSources:state.tileSource,showNavigationControl:false,showNavigator:false,gestureSettingsMouse:{clickToZoom:false,dblClickToZoom:true,scrollToZoom:true},gestureSettingsTouch:{pinchToZoom:true,flickEnabled:true}});
+  }
+  function destroyViewers(){
+    [...state.viewers, state.overlayViewer].filter(Boolean).forEach(v=>{try{v.destroy();}catch{}});
+    state.viewers=[]; state.overlayViewer=null; $('splitGrid').innerHTML=''; $('overlayOsd').innerHTML='';
+  }
+
+  async function renderCurrentView(fitToItem){
+    if(!state.item)return;
+    if(state.viewMode==='split'){
+      $('splitGrid').classList.remove('hidden'); $('overlayPanel').classList.add('hidden');
+      await renderSplit(fitToItem);
+    }else{
+      $('splitGrid').classList.add('hidden'); $('overlayPanel').classList.remove('hidden');
+      await renderOverlay(fitToItem);
+    }
+  }
+
+  function waitOpen(viewer){ return new Promise(resolve=>{ if(viewer.world.getItemCount())resolve(); else viewer.addOnceHandler('open',resolve); }); }
+  async function renderSplit(fitToItem){
+    state.viewers.forEach(v=>{try{v.destroy();}catch{}}); state.viewers=[]; $('splitGrid').innerHTML='';
+    const cs=candidates(); $('splitGrid').className=`split-grid n${Math.min(4,Math.max(2,cs.length))}`;
+    cs.forEach((c,i)=>{
+      const panel=document.createElement('div'); panel.className='view-panel';
+      panel.innerHTML=`<div class="view-title"><span class="dot" style="background:${c.color}"></span> ${esc(c.label)}</div><div class="osd"></div>${c.geometry?'':'<div class="empty-mask">No annotation in this candidate</div>'}`;
+      $('splitGrid').appendChild(panel);
+      const viewer=createViewer(panel.querySelector('.osd')); viewer._mrPanel=panel; viewer._mrCandidate=c; state.viewers.push(viewer);
+      viewer.addHandler('animation',()=>syncFrom(viewer)); viewer.addHandler('pan',()=>syncFrom(viewer)); viewer.addHandler('zoom',()=>syncFrom(viewer));
+      ['animation','pan','zoom','resize','open'].forEach(ev=>viewer.addHandler(ev,()=>drawViewerOverlay(viewer,c.geometry,c.color,false)));
+    });
+    await Promise.all(state.viewers.map(waitOpen));
+    if(fitToItem) fitAllToItem();
+    drawAllOverlays();
+  }
+  async function renderOverlay(fitToItem){
+    if(!state.overlayViewer){
+      state.overlayViewer=createViewer($('overlayOsd'));
+      ['animation','pan','zoom','resize','open'].forEach(ev=>state.overlayViewer.addHandler(ev,drawAllOverlays));
+      await waitOpen(state.overlayViewer);
+    }
+    if(fitToItem) fitViewerToItem(state.overlayViewer);
+    drawAllOverlays();
+  }
+
+  function syncFrom(source){
+    if(state.syncGuard||state.viewMode!=='split')return;
+    state.syncGuard=true;
+    try{
+      const center=source.viewport.getCenter(); const zoom=source.viewport.getZoom();
+      state.viewers.forEach(v=>{if(v!==source){v.viewport.panTo(center,true);v.viewport.zoomTo(zoom,null,true);}});
+    }finally{state.syncGuard=false;}
+  }
+  function fitAllToItem(){ state.viewers.forEach(v=>fitViewerToItem(v)); }
+  function fitViewerToItem(viewer){
+    const b=state.item?.bbox; if(!b||!viewer?.viewport)return;
+    const [minx,miny,maxx,maxy]=b; const pad=Math.max(maxx-minx,maxy-miny)*0.22+20;
+    try{const rect=viewer.viewport.imageToViewportRectangle(minx-pad,miny-pad,(maxx-minx)+2*pad,(maxy-miny)+2*pad);viewer.viewport.fitBounds(rect,true);}catch{}
+  }
+
+  function ensureSvg(viewer){
+    const panel=viewer._mrPanel || $('overlayPanel'); let svg=panel.querySelector(':scope > .overlay-svg');
+    if(!svg){svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.classList.add('overlay-svg');panel.appendChild(svg);} return svg;
+  }
+  function drawViewerOverlay(viewer,geometry,color,editable){
+    if(!viewer?.viewport)return; const svg=ensureSvg(viewer); svg.innerHTML='';
+    if(geometry) appendGeometry(svg,viewer,geometry,color,editable);
+  }
+  function drawAllOverlays(){
+    if(!state.item)return;
+    if(state.viewMode==='split'){
+      state.viewers.forEach(v=>drawViewerOverlay(v,v._mrCandidate?.geometry,v._mrCandidate?.color,false));
+      return;
+    }
+    const v=state.overlayViewer; if(!v)return; const svg=ensureSvg(v); svg.innerHTML='';
+    candidates().forEach(c=>{if(state.visibility[c.key]&&c.geometry)appendGeometry(svg,v,c.geometry,c.color,false);});
+    if(state.selectedKey&&state.decisionGeometry){
+      appendGeometry(svg,v,state.decisionGeometry,'#ffffff',state.editMode,true);
+    }
+  }
+
+  function ringsOfGeometry(geometry){
+    if(!geometry)return[];
+    if(geometry.type==='Polygon') return geometry.coordinates.map((ring,ri)=>({path:[ri],ring}));
+    if(geometry.type==='MultiPolygon'){
+      const out=[]; geometry.coordinates.forEach((poly,pi)=>poly.forEach((ring,ri)=>out.push({path:[pi,ri],ring}))); return out;
+    }
+    return [];
+  }
+  function imageToElement(viewer,coord){ return viewer.viewport.imageToViewerElementCoordinates(new OpenSeadragon.Point(Number(coord[0]),Number(coord[1]))); }
+  function appendGeometry(svg,viewer,geometry,color,editable,selected=false){
+    const ns='http://www.w3.org/2000/svg';
+    ringsOfGeometry(geometry).forEach(({path:ringPath,ring})=>{
+      if(!Array.isArray(ring)||ring.length<3)return;
+      const d=ring.map((pt,i)=>{const p=imageToElement(viewer,pt);return `${i?'L':'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`;}).join(' ')+' Z';
+      const path=document.createElementNS(ns,'path');path.setAttribute('d',d);path.setAttribute('fill','none');path.setAttribute('stroke',color);path.setAttribute('stroke-width',selected?'4':'2.4');path.setAttribute('vector-effect','non-scaling-stroke');path.setAttribute('opacity',selected?'.95':'.88');svg.appendChild(path);
+      if(editable){
+        const count=Math.max(0,ring.length-1);
+        for(let i=0;i<count;i++){
+          const p=imageToElement(viewer,ring[i]); const circle=document.createElementNS(ns,'circle');circle.setAttribute('cx',p.x);circle.setAttribute('cy',p.y);circle.setAttribute('r','5');circle.setAttribute('fill','#fff');circle.setAttribute('stroke','#111');circle.setAttribute('stroke-width','1.5');circle.classList.add('edit-handle');circle.dataset.ringPath=ringPath.join(',');circle.dataset.vertex=String(i);circle.addEventListener('pointerdown',e=>startVertexDrag(e,viewer,ringPath,i));svg.appendChild(circle);
+        }
+      }
+    });
+  }
+  function coordinateRing(geometry,path){
+    if(geometry.type==='Polygon') return geometry.coordinates[path[0]];
+    if(geometry.type==='MultiPolygon') return geometry.coordinates[path[0]][path[1]];
+    return null;
+  }
+  function startVertexDrag(event,viewer,ringPath,vertexIndex){
+    event.preventDefault(); event.stopPropagation(); if(!state.editMode)return;
+    viewer.setMouseNavEnabled(false); const ring=coordinateRing(state.decisionGeometry,ringPath); if(!ring)return;
+    const rect=viewer.element.getBoundingClientRect();
+    const move=(e)=>{const point=viewer.viewport.viewerElementToImageCoordinates(new OpenSeadragon.Point(e.clientX-rect.left,e.clientY-rect.top));ring[vertexIndex]=[point.x,point.y];if(vertexIndex===0)ring[ring.length-1]=[point.x,point.y];state.edited=true;drawAllOverlays();};
+    const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);viewer.setMouseNavEnabled(true);updateItemControls();scheduleGeometrySave();};
+    window.addEventListener('pointermove',move);window.addEventListener('pointerup',up,{once:true});
+  }
+
+  function setView(mode){ state.viewMode=mode; state.editMode=state.editMode&&mode==='overlay'; $('splitBtn').classList.toggle('primary',mode==='split'); $('overlayBtn').classList.toggle('primary',mode==='overlay'); renderCurrentView(false); }
+  function setAllVisibility(value){candidates().forEach(c=>state.visibility[c.key]=value);document.querySelectorAll('[data-visible]').forEach(cb=>cb.checked=value);drawAllOverlays();}
+
+  $('createBtn').addEventListener('click',createSession);
+  $('refreshSessions').addEventListener('click',loadSessions);
+  $('startClassBtn').addEventListener('click',buildClass);
+  $('splitBtn').addEventListener('click',()=>setView('split'));
+  $('overlayBtn').addEventListener('click',()=>setView('overlay'));
+  $('showAllBtn').addEventListener('click',()=>setAllVisibility(true));
+  $('showNoneBtn').addEventListener('click',()=>setAllVisibility(false));
+  $('challenging').addEventListener('change',toggleChallenging);
+  $('editBtn').addEventListener('click',enterEdit);
+  $('resetEditBtn').addEventListener('click',resetEdit);
+  $('deferBtn').addEventListener('click',deferCurrent);
+  $('acceptBtn').addEventListener('click',acceptCurrent);
+  $('finalizeBtn').addEventListener('click',finalize);
+  window.addEventListener('resize',drawAllOverlays);
+
+  Promise.all([loadImages(),loadSessions()]).catch(err=>{$('setupText').textContent=err.message;$('setupText').classList.add('error');});
+})();
+</script>
+</body>
+</html>

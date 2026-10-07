@@ -50,6 +50,14 @@ else:
 
 router = APIRouter()
 
+# MULTI_ANNOTATOR_REVIEW_ROUTER_V1
+try:
+    from .multi_review import router as multi_review_router
+except ImportError:
+    from app.imaging.multi_review import router as multi_review_router
+router.include_router(multi_review_router)
+
+
 
 def annotation_path(relative: str, annotation_file: str = "Default") -> Path:
     return _storage_annotation_path(ANNOTATION_ROOT, relative, annotation_file)
