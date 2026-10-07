@@ -84,7 +84,7 @@
       <button id="editBtn" disabled>Edit selected</button>
       <button id="resetEditBtn" disabled>Reset edit</button>
       <button id="deferBtn" class="warn" disabled>Leave for end</button>
-      <button id="acceptBtn" class="good" disabled>Accept & next</button>
+      <button id="acceptBtn" class="good" disabled>Accept & next <span class="kbd">Enter</span></button>
     </div>
   </main>
 </div>
@@ -677,7 +677,17 @@
     if(event.ctrlKey||event.metaKey||event.altKey||event.repeat||state.editMode)return;
     const active=document.activeElement;
     if(active && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(active.tagName))return;
-    if(!/^[1-4]$/.test(event.key)||!state.item)return;
+    if(!state.item)return;
+
+    // Fast review workflow: 1–4 selects a candidate, Enter accepts it and advances.
+    if(event.key==='Enter'){
+      if(!state.selectedKey||$('acceptBtn').disabled)return;
+      event.preventDefault();
+      acceptCurrent();
+      return;
+    }
+
+    if(!/^[1-4]$/.test(event.key))return;
     const index=Number(event.key)-1;
     const candidate=candidates()[index];
     if(!candidate)return;

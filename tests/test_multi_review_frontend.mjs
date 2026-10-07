@@ -62,3 +62,11 @@ test('launcher remains inside Additional Tools beside Image Manager', () => {
   assert.match(launcher, /Additional Tools/);
   assert.match(launcher, /Multi-annotator Review/);
 });
+
+
+test('Enter accepts the selected candidate and advances to the next item', () => {
+  assert.match(html, /event\.key==='Enter'/);
+  assert.match(html, /!state\.selectedKey\|\|\$\('acceptBtn'\)\.disabled/);
+  assert.match(html, /acceptCurrent\(\)/);
+  assert.match(html, /Accept & next <span class="kbd">Enter<\/span>/);
+});
