@@ -626,6 +626,31 @@ def put_annotations(
     return response
 
 
+
+# REVIEW_PREPARATION_V2_INSTALL_V2
+# 8023-first experiment:
+# curator preparation + blinded reviewer-only link.
+#
+# Register directly on the FastAPI app here, after
+# put_annotations() has been defined. The imaging router
+# was already included earlier in startup.
+try:
+    from .imaging.review_v2 import (
+        install_review_v2 as _install_review_v2
+    )
+except ImportError:
+    from imaging.review_v2 import (
+        install_review_v2 as _install_review_v2
+    )
+
+_install_review_v2(
+    app,
+    annotation_root=ANNOTATION_ROOT,
+    put_annotations=put_annotations,
+    static_root=Path(__file__).parent / "static",
+)
+
+
 @app.get("/api/annotations/{image_id}/download")
 def download_annotations(image_id: str, file: str = Query("Default")) -> Response:
     _, relative = safe_image_path(image_id)

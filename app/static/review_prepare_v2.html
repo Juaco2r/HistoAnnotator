@@ -1,0 +1,1443 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HistoAnnotator · Review Preparation</title>
+  <script src="/static/vendor/openseadragon/openseadragon.min.js"></script>
+  <style>
+    :root{color-scheme:dark;--bg:#0d1117;--panel:#151b23;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--good:#3fb950;--danger:#f85149}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.35 system-ui,-apple-system,Segoe UI,sans-serif}
+    button,select,input,textarea{font:inherit;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:7px 9px}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}.good{border-color:#2ea043;background:#17351f}.danger{border-color:#8b3030;background:#351a1a}
+    .top{height:54px;display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--line);background:#11161d}.top h1{font-size:16px;margin:0}.top a{color:#8ac7ff}.layout{height:calc(100vh - 54px);display:grid;grid-template-columns:300px 1fr 340px;min-height:0}
+    .side,.right{overflow:auto;padding:12px;background:#11161d}.side{border-right:1px solid var(--line)}.right{border-left:1px solid var(--line)}.viewer-wrap{min-width:0;min-height:0;position:relative}.viewer{position:absolute;inset:0}.overlay{position:absolute;inset:0;pointer-events:none}.overlay path{vector-effect:non-scaling-stroke;stroke-width:2;fill-opacity:.12}.overlay path.clickable{pointer-events:all;cursor:pointer}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px}.title{font-weight:700}.muted{color:var(--muted)}.small{font-size:12px}.sessions,.groups{display:grid;gap:6px}.session,.group{padding:8px;border:1px solid var(--line);border-radius:8px;background:#10151b;cursor:pointer}.session.active,.group.active{border-color:var(--accent)}.group.prepared{box-shadow:inset 3px 0 var(--good)}
+    .row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.field{display:grid;gap:4px;margin:8px 0}.field label{font-size:12px;color:#c8d1da}.source-tabs{display:flex;gap:5px;flex-wrap:wrap}.source-tab{position:relative}.source-tab.active{border-color:#f0f6fc;background:#233142;box-shadow:0 0 0 1px #f0f6fc55 inset}.source-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}.feature-list{display:grid;gap:4px;max-height:34vh;overflow:auto}.feature-row{display:flex;align-items:center;gap:7px;padding:6px;border:1px solid #272d35;border-radius:6px;cursor:pointer}.feature-row.selected{border-color:#8ac7ff;background:#152538}.feature-row:hover{border-color:#8b949e}.display-channel{display:grid;grid-template-columns:auto minmax(0,1fr) 38px;align-items:center;gap:7px;margin:7px 0}.display-channel input[type="color"]{width:36px;height:30px;padding:2px}.display-channel-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.display-channel-details label{display:grid;gap:3px;font-size:11px;color:#aab4bf}.display-channel-details input{width:100%;min-width:0;padding:5px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%}.status{padding:7px;border-radius:7px;background:#10151b;white-space:pre-wrap}.status.error{border:1px solid var(--danger)}.status.good{border:1px solid var(--good)}.share{word-break:break-all;color:#8ac7ff}
+    @media(max-width:1050px){.layout{grid-template-columns:250px 1fr}.right{position:absolute;right:0;top:54px;bottom:0;width:330px;z-index:20;box-shadow:-8px 0 20px #0008}.viewer-wrap{margin-right:330px}}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h1>Review Preparation</h1><span class="muted">Admin / curator mode</span>
+    <a href="/static/multi_review.html">Multi Review</a><a href="/">Annotator</a><span style="flex:1"></span>
+    <button id="publish" class="good" disabled>Generate reviewer link</button>
+  </div>
+  <div class="layout">
+    <aside class="side">
+      <div class="card"><div class="title">Source session</div><div id="sessions" class="sessions" style="margin-top:8px"></div></div>
+      <div id="setupCard" class="card" hidden>
+        <div class="title">Annotation sources</div>
+        <div class="field"><label>Source count</label><select id="sourceCount"><option value="2">2</option><option value="3">3</option></select></div>
+        <div id="sourceSelects"></div>
+        <div class="field"><label>Output Annotation File</label><input id="outputFile" type="text"></div>
+        <button id="saveSetup">Save preparation</button>
+      </div>
+      <div id="displayCard" class="card" hidden>
+        <div class="title">Display</div>
+
+        <div class="field">
+          <label for="displayImageType">Image type</label>
+          <select id="displayImageType">
+            <option value="he">H&amp;E</option>
+            <option value="hdab">H-DAB</option>
+            <option value="fluorescence">Fluorescence</option>
+            <option value="rgb">RGB</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="displayBrightness">Viewer brightness</label>
+          <div class="row">
+            <input
+              id="displayBrightness"
+              type="range"
+              min="40"
+              max="200"
+              value="100"
+              style="flex:1"
+            >
+            <span id="displayBrightnessValue">100%</span>
+          </div>
+        </div>
+
+        <div id="displayChannels"></div>
+      </div>
+
+      <div id="groupsCard" class="card" hidden>
+        <div class="row" style="justify-content:space-between"><div class="title">Groups</div><button id="newGroup">＋ New</button></div>
+        <div id="groups" class="groups" style="margin-top:8px"></div>
+      </div>
+    </aside>
+    <main class="viewer-wrap"><div id="viewer" class="viewer"></div><svg id="overlay" class="overlay"></svg></main>
+    <aside class="right">
+      <div class="card"><div class="title" id="groupTitle">Select a source session</div><div id="groupMeta" class="muted small"></div></div>
+      <div id="editCard" class="card" hidden>
+        <div class="title">Group membership</div><div id="sourceTabs" class="source-tabs" style="margin:8px 0"></div>
+        <div class="row"><button id="editSource">Edit this source</button><button id="useAutomatic">Use automatic</button><button id="noAnnotation">No annotation</button></div>
+        <div id="editHint" class="small muted" style="margin-top:7px"></div><div id="featureList" class="feature-list" style="margin-top:8px"></div>
+      </div>
+      <div id="groupActions" class="card" hidden>
+        <div class="field"><label>Preparation note (admin only)</label><textarea id="groupNote" rows="3"></textarea></div>
+        <div class="row"><button id="prevGroup">← Previous</button><button id="markPrepared" class="good">✓ Mark prepared</button><button id="nextGroup">Next →</button></div>
+        <div class="row" style="margin-top:8px"><button id="deleteGroup" class="danger">Delete group</button></div>
+      </div>
+      <div class="card"><div class="title">Status</div><div id="status" class="status muted" style="margin-top:7px">Ready.</div>
+        <div id="shareBox" hidden style="margin-top:10px"><div class="small muted">Reviewer link</div><div id="shareLink" class="share"></div><button id="copyLink" style="margin-top:7px">Copy link</button></div>
+      </div>
+    </aside>
+  </div>
+<script>
+(() => {
+  "use strict";
+  const $=id=>document.getElementById(id), palette=["#ff6b6b","#4dabf7","#69db7c"];
+  const state={sessions:[],session:null,prep:null,groupIndex:-1,sourceIndex:0,catalog:[],sourceFeatures:new Map(),viewer:null,tileSource:null,editingSource:false,imageInfo:null,display:null};
+  const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  function setStatus(text,kind=""){const el=$("status");el.textContent=text;el.className="status "+kind;}
+  async function json(url,options={}){const r=await fetch(url,{cache:"no-store",headers:{"Content-Type":"application/json",...(options.headers||{})},...options});if(!r.ok){let d=`HTTP ${r.status}`;try{const p=await r.json();d=p.detail||d;}catch{}throw new Error(d);}return r.json();}
+  const sessionId=s=>String(s?.id||s?.sessionId||s?.reviewSessionId||"");
+  const itemCandidates=item=>Array.isArray(item?.candidates)?item.candidates.filter(c=>c&&typeof c==="object"):[];
+  const candidateGeometry=c=>c?.geometry||c?.decisionGeometry||null;
+  const isConsensus=c=>/consensus|majority|intersection/i.test(String(c?.kind||c?.type||c?.label||c?.source||""));
+  function featureClass(feature){const p=feature?.properties||{};return String(p?.classification?.name||p?.histoannotator?.className||p?.className||p?.class||p?.label||"").trim();}
+  function polygons(g){if(!g)return[];if(g.type==="Polygon")return[g.coordinates||[]];if(g.type==="MultiPolygon")return g.coordinates||[];if(g.type==="GeometryCollection")return(g.geometries||[]).flatMap(polygons);return[];}
+  function bbox(g){let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity,ok=false;for(const poly of polygons(g))for(const ring of poly||[])for(const p of ring||[]){const x=Number(p?.[0]),y=Number(p?.[1]);if(!Number.isFinite(x)||!Number.isFinite(y))continue;ok=true;a=Math.min(a,x);b=Math.min(b,y);c=Math.max(c,x);d=Math.max(d,y);}return ok?[a,b,c,d]:null;}
+  function combine(values){const coords=[];for(const g of values||[])for(const poly of polygons(g))coords.push(poly);return coords.length?{type:"MultiPolygon",coordinates:coords}:null;}
+  function expanded(box,ratio=.35){if(!box)return null;const w=Math.max(1,box[2]-box[0]),h=Math.max(1,box[3]-box[1]);return[box[0]-w*ratio,box[1]-h*ratio,box[2]+w*ratio,box[3]+h*ratio];}
+  const intersects=(a,b)=>!!a&&!!b&&a[0]<=b[2]&&a[2]>=b[0]&&a[1]<=b[3]&&a[3]>=b[1];
+  const currentGroup=()=>state.prep?.groups?.[state.groupIndex]||null;
+  const currentMember=()=>currentGroup()?.members?.find(m=>Number(m.sourceIndex)===state.sourceIndex)||null;
+  const currentCandidate=()=>currentGroup()?.candidates?.find(c=>Number(c.sourceIndex)===state.sourceIndex)||null;
+
+  function inferSourceNames(session){for(const key of ["sourceFiles","annotationFiles","sources"]){const value=session?.[key];if(Array.isArray(value)){const names=value.map(v=>typeof v==="string"?v:String(v?.annotationFile||v?.file||v?.name||"")).filter(Boolean);if(names.length>=2)return names.slice(0,3);}}return[];}
+  function makePrep(session){
+    const items=Array.isArray(session?.items)?session.items:[], inferred=inferSourceNames(session);
+    const rawCandidates=items.flatMap(item=>itemCandidates(item).filter(c=>!isConsensus(c)));
+    const explicitIndexes=rawCandidates.map(c=>Number(c?.sourceIndex)).filter(Number.isInteger);
+    const inferredCount=explicitIndexes.length?Math.max(...explicitIndexes)+1:Math.max(2,...items.map(item=>itemCandidates(item).filter(c=>!isConsensus(c)).length));
+    const sourceCount=Math.min(3,Math.max(2,inferred.length||inferredCount)), sourceFiles=Array.from({length:sourceCount},(_,i)=>inferred[i]||"");
+    const groups=items.map((item,index)=>{
+      const cs=itemCandidates(item).filter(c=>!isConsensus(c));
+      const bySource=new Map();
+      cs.forEach((candidate,position)=>{const explicit=Number(candidate?.sourceIndex);const sourceIndex=Number.isInteger(explicit)?explicit:position;if(sourceIndex>=0&&sourceIndex<sourceCount&&!bySource.has(sourceIndex))bySource.set(sourceIndex,candidate);});
+      const candidates=Array.from({length:sourceCount},(_,sourceIndex)=>{const geometry=candidateGeometry(bySource.get(sourceIndex));return{sourceIndex,geometry,autoGeometry:geometry};});
+      const bb=Array.isArray(item?.bbox)&&item.bbox.length===4?item.bbox:(candidates.map(c=>bbox(c.geometry)).find(Boolean)||null);
+      return{id:String(item?.id||item?.itemId||`group-${index+1}`),sourceItemId:item?.id||item?.itemId||null,prepared:false,bbox:bb,candidates,members:Array.from({length:sourceCount},(_,sourceIndex)=>({sourceIndex,featureIndexes:[],edited:false})),note:""};
+    });
+    return{schemaVersion:2,sessionId:sessionId(session),imageId:String(session?.imageId||""),selectedClass:String(session?.selectedClass||"").trim(),sourceFiles,groups,outputAnnotationFile:`Reviewed ${String(session?.selectedClass||"Annotations")} v2`};
+  }
+
+  async function loadSessions(){setStatus("Loading Multi Review sessions…");const p=await json("/api/review-v2/source-sessions");state.sessions=Array.isArray(p?.sessions)?p.sessions:[];$("sessions").innerHTML=state.sessions.length?state.sessions.map(s=>`<div class="session" data-session="${esc(s.id)}"><div class="title">${esc(s.imageId)}</div><div class="small muted">${esc(s.selectedClass||"")} · ${Number(s.itemCount||0)} groups</div></div>`).join(""):'<div class="muted small">No Multi Review sessions found.</div>';$("sessions").querySelectorAll("[data-session]").forEach(el=>el.addEventListener("click",()=>openSession(el.dataset.session)));setStatus("Select a source session.");}
+  async function openSession(id){try{setStatus("Loading source session…");const session=await json(`/api/review-v2/source-sessions/${encodeURIComponent(id)}`);state.session=session;state.sourceFeatures.clear();let prep;try{prep=await json(`/api/review-v2/preparations/${encodeURIComponent(id)}`);}catch{prep=makePrep(session);}state.prep=prep;state.groupIndex=prep.groups?.length?0:-1;state.sourceIndex=0;state.editingSource=false;await loadCatalog();renderSetup();renderGroups();await loadViewer();if(state.groupIndex>=0)await showGroup(0);document.querySelectorAll(".session").forEach(el=>el.classList.toggle("active",el.dataset.session===id));$("setupCard").hidden=false;$("groupsCard").hidden=false;$("editCard").hidden=false;$("groupActions").hidden=false;setStatus("Preparation loaded. Check every group and mark it prepared.","good");}catch(error){setStatus(error.message,"error");}}
+  function originalSessionSource(index){const sources=Array.isArray(state.session?.sources)?state.session.sources:[];return sources.find(source=>Number(source?.index)===Number(index))||sources[Number(index)]||null;}
+  function sourceDisplayName(index){const file=String(state.prep?.sourceFiles?.[index]||"");const source=originalSessionSource(index);if(source&&String(source?.file||"")===file)return `${String(source?.name||`Source ${Number(index)+1}`)} · archived session source`;return file||`Source ${Number(index)+1}`;}
+  async function loadCatalog(){const p=await json(`/api/annotations/${encodeURIComponent(state.prep.imageId)}/files`);state.catalog=Array.isArray(p?.files)?p.files.map(v=>typeof v==="string"?v:String(v?.name||v)).filter(Boolean):[];for(let i=0;i<state.prep.sourceFiles.length;i++)if(!state.prep.sourceFiles[i]&&state.catalog[i])state.prep.sourceFiles[i]=state.catalog[i];}
+  function renderSetup(){$("sourceCount").value=String(state.prep.sourceFiles.length);$("outputFile").value=state.prep.outputAnnotationFile||"";$("sourceSelects").innerHTML=state.prep.sourceFiles.map((name,i)=>{const options=[...state.catalog];if(name&&!options.includes(name))options.unshift(name);const original=originalSessionSource(i);return`<div class="field"><label>Source ${i+1} · ${esc(sourceDisplayName(i))}</label><select data-source-file="${i}">${options.map(file=>{const archived=original&&String(original?.file||"")===file;const text=archived?`${String(original?.name||file)} [session copy]`:file;return`<option value="${esc(file)}" ${file===name?"selected":""}>${esc(text)}</option>`;}).join("")}</select></div>`;}).join("");$("sourceSelects").querySelectorAll("[data-source-file]").forEach(sel=>sel.addEventListener("change",()=>{const i=Number(sel.dataset.sourceFile);state.prep.sourceFiles[i]=sel.value;state.prep.groups.forEach(g=>{g.prepared=false;const m=g.members.find(x=>x.sourceIndex===i);if(m){m.edited=false;m.featureIndexes=[];}});state.sourceFeatures.delete(i);renderGroups();showGroup(state.groupIndex);setStatus(`Source ${i+1} changed. Re-check all groups.`);}));}
+  function resizeSources(count){count=Number(count);const old=state.prep.sourceFiles.slice();state.prep.sourceFiles=Array.from({length:count},(_,i)=>old[i]||state.catalog[i]||"");for(const g of state.prep.groups){g.prepared=false;const oldC=g.candidates||[],oldM=g.members||[];g.candidates=Array.from({length:count},(_,i)=>oldC.find(x=>Number(x.sourceIndex)===i)||{sourceIndex:i,geometry:null,autoGeometry:null});g.members=Array.from({length:count},(_,i)=>oldM.find(x=>Number(x.sourceIndex)===i)||{sourceIndex:i,featureIndexes:[],edited:false});}state.sourceIndex=Math.min(state.sourceIndex,count-1);renderSetup();renderGroups();showGroup(state.groupIndex);}
+  function renderGroups(){const gs=state.prep?.groups||[];$("groups").innerHTML=gs.map((g,i)=>`<div class="group ${g.prepared?"prepared":""} ${i===state.groupIndex?"active":""}" data-group="${i}"><div class="title">Group ${i+1}</div><div class="small muted">${g.prepared?"Prepared":"Needs check"} · ${g.candidates.filter(c=>c.geometry).length}/${state.prep.sourceFiles.length} with annotation</div></div>`).join("");$("groups").querySelectorAll("[data-group]").forEach(el=>el.addEventListener("click",()=>showGroup(Number(el.dataset.group))));$("publish").disabled=!gs.length||gs.some(g=>!g.prepared);}
+
+
+
+  const clamp=(value,min,max,fallback)=>{
+    const n=Number(value);
+    if(!Number.isFinite(n))return Number(fallback);
+    return Math.max(Number(min),Math.min(Number(max),n));
+  };
+
+  const compactNumber=value=>{
+    const n=Number(value);
+    if(!Number.isFinite(n))return "0";
+    if(Math.abs(n-Math.round(n))<1e-6)return String(Math.round(n));
+    return String(Number(n.toFixed(4)));
+  };
+
+  function defaultDisplayChannels(){
+    return{
+      he:{hematoxylin:true,eosin:true},
+      hdab:{hematoxylin:true,dab:true},
+      fluorescence:{red:true,green:true,blue:true},
+      rgb:{red:true,green:true,blue:true}
+    };
+  }
+
+  const displayStorageKey=imageId=>
+    `histoannotator.display.v1.${imageId}`;
+
+  const ifDisplayStorageKey=imageId=>
+    `histoannotator.ifDisplay.v1:${imageId}`;
+
+  function scientificIfMeta(){
+    const meta=state.imageInfo?.multichannel;
+
+    if(
+      state.display?.imageType!=="fluorescence"||
+      !meta?.scientificMultichannel||
+      !Array.isArray(meta.channels)||
+      !meta.channels.length
+    ){
+      return null;
+    }
+
+    return meta;
+  }
+
+  function defaultScientificChannel(metaChannel,index){
+    const allowedMin=Number.isFinite(Number(metaChannel?.allowedMin))
+      ?Number(metaChannel.allowedMin)
+      :0;
+
+    const allowedMax=Number.isFinite(Number(metaChannel?.allowedMax))
+      ?Number(metaChannel.allowedMax)
+      :65535;
+
+    const autoMin=Number.isFinite(Number(metaChannel?.minDisplay))
+      ?Number(metaChannel.minDisplay)
+      :allowedMin;
+
+    const autoMax=Number.isFinite(Number(metaChannel?.maxDisplay))
+      ?Number(metaChannel.maxDisplay)
+      :allowedMax;
+
+    return{
+      index,
+      name:String(metaChannel?.name||`Channel ${index+1}`),
+      visible:metaChannel?.visible!==false,
+      color:String(metaChannel?.color||"#ffffff"),
+      min:autoMin,
+      max:autoMax,
+      autoMin,
+      autoMax,
+      allowedMin,
+      allowedMax,
+      gamma:Number(metaChannel?.gamma)||1,
+      brightness:Number(metaChannel?.brightness)||100
+    };
+  }
+
+  function loadDisplayState(imageId,fallbackType="he"){
+    const displayChannels=defaultDisplayChannels();
+
+    let imageType=
+      ["he","hdab","fluorescence","rgb"].includes(fallbackType)
+        ?fallbackType
+        :"he";
+
+    let brightnessPercent=100;
+
+    try{
+      const saved=JSON.parse(
+        localStorage.getItem(
+          displayStorageKey(imageId)
+        )||"null"
+      );
+
+      if(
+        saved?.imageType&&
+        ["he","hdab","fluorescence","rgb"].includes(saved.imageType)
+      ){
+        imageType=saved.imageType;
+      }
+
+      if(Number.isFinite(Number(saved?.brightnessPercent))){
+        brightnessPercent=clamp(
+          saved.brightnessPercent,
+          40,
+          200,
+          100
+        );
+      }
+
+      if(
+        saved?.displayChannels&&
+        typeof saved.displayChannels==="object"
+      ){
+        Object.assign(
+          displayChannels,
+          saved.displayChannels
+        );
+      }
+    }catch{}
+
+    state.display={
+      _imageId:imageId,
+      imageType,
+      brightnessPercent,
+      displayChannels,
+      ifSettings:null
+    };
+
+    const meta=state.imageInfo?.multichannel;
+
+    if(
+      meta?.scientificMultichannel&&
+      Array.isArray(meta.channels)&&
+      meta.channels.length
+    ){
+      const settings={
+        selected:0,
+        channels:meta.channels.map(
+          defaultScientificChannel
+        )
+      };
+
+      try{
+        const saved=JSON.parse(
+          localStorage.getItem(
+            ifDisplayStorageKey(imageId)
+          )||"null"
+        );
+
+        if(
+          saved&&
+          Array.isArray(saved.channels)&&
+          saved.channels.length===settings.channels.length
+        ){
+          settings.selected=clamp(
+            saved.selected,
+            0,
+            settings.channels.length-1,
+            0
+          );
+
+          settings.channels.forEach(
+            (channel,index)=>{
+              const incoming=saved.channels[index]||{};
+
+              if(
+                typeof incoming.name==="string"&&
+                incoming.name.trim()
+              ){
+                channel.name=incoming.name.trim();
+              }
+
+              if(typeof incoming.visible==="boolean"){
+                channel.visible=incoming.visible;
+              }
+
+              if(
+                typeof incoming.color==="string"&&
+                /^#[0-9a-fA-F]{6}$/.test(incoming.color)
+              ){
+                channel.color=incoming.color.toLowerCase();
+              }
+
+              channel.min=clamp(
+                incoming.min,
+                channel.allowedMin,
+                channel.allowedMax,
+                channel.min
+              );
+
+              channel.max=clamp(
+                incoming.max,
+                channel.allowedMin,
+                channel.allowedMax,
+                channel.max
+              );
+
+              if(channel.max<=channel.min){
+                channel.min=channel.autoMin;
+                channel.max=channel.autoMax;
+              }
+
+              channel.gamma=clamp(
+                incoming.gamma,
+                .05,
+                20,
+                channel.gamma
+              );
+
+              channel.brightness=clamp(
+                incoming.brightness,
+                0,
+                400,
+                channel.brightness
+              );
+            }
+          );
+        }
+      }catch{}
+
+      state.display.ifSettings=settings;
+    }
+  }
+
+  function saveDisplayState(){
+    if(!state.prep?.imageId||!state.display)return;
+
+    const imageId=state.prep.imageId;
+
+    localStorage.setItem(
+      displayStorageKey(imageId),
+      JSON.stringify({
+        imageType:state.display.imageType,
+        brightnessPercent:state.display.brightnessPercent,
+        displayChannels:state.display.displayChannels
+      })
+    );
+
+    if(state.display.ifSettings){
+      localStorage.setItem(
+        ifDisplayStorageKey(imageId),
+        JSON.stringify(
+          state.display.ifSettings
+        )
+      );
+    }
+  }
+
+  function activeDisplayView(){
+    const type=state.display?.imageType||"he";
+    const channels=
+      state.display?.displayChannels||
+      defaultDisplayChannels();
+
+    if(type==="he"){
+      const c=channels.he||{};
+      if(c.hematoxylin&&c.eosin)return{view:"original"};
+      if(c.hematoxylin)return{view:"hematoxylin"};
+      if(c.eosin)return{view:"eosin"};
+      return{view:"none"};
+    }
+
+    if(type==="hdab"){
+      const c=channels.hdab||{};
+      if(c.hematoxylin&&c.dab)return{view:"original"};
+      if(c.hematoxylin)return{view:"hematoxylin"};
+      if(c.dab)return{view:"dab"};
+      return{view:"none"};
+    }
+
+    const c=channels[type]||channels.rgb||{};
+    const mask=`${c.red?1:0}${c.green?1:0}${c.blue?1:0}`;
+
+    return mask==="111"
+      ?{view:"original"}
+      :{view:"rgbmask",rgb:mask};
+  }
+
+  function displayQueryString(){
+    const display=activeDisplayView();
+    const params=new URLSearchParams();
+
+    params.set("view",display.view);
+    params.set(
+      "image_type",
+      state.display?.imageType||"he"
+    );
+
+    const meta=scientificIfMeta();
+    const settings=state.display?.ifSettings;
+
+    if(meta&&settings){
+      const channels=settings.channels;
+
+      params.set(
+        "if_enabled",
+        channels.map(c=>c.visible?"1":"0").join(",")
+      );
+
+      params.set(
+        "if_min",
+        channels.map(c=>compactNumber(c.min)).join(",")
+      );
+
+      params.set(
+        "if_max",
+        channels.map(c=>compactNumber(c.max)).join(",")
+      );
+
+      params.set(
+        "if_gamma",
+        channels.map(c=>compactNumber(c.gamma)).join(",")
+      );
+
+      params.set(
+        "if_brightness",
+        channels.map(c=>compactNumber(c.brightness)).join(",")
+      );
+
+      params.set(
+        "if_colors",
+        channels
+          .map(c=>String(c.color||"#ffffff").replace("#",""))
+          .join(",")
+      );
+    }else if(display.rgb){
+      params.set(
+        "rgb",
+        display.rgb
+      );
+    }
+
+    return params.toString();
+  }
+
+  function renderDisplayControls(){
+    if(!state.display)return;
+
+    $("displayImageType").value=
+      state.display.imageType;
+
+    $("displayBrightness").value=
+      String(state.display.brightnessPercent);
+
+    $("displayBrightnessValue").textContent=
+      `${state.display.brightnessPercent}%`;
+
+    const root=$("displayChannels");
+    const meta=scientificIfMeta();
+
+    if(meta&&state.display.ifSettings){
+      root.innerHTML=
+        '<div class="small muted">Scientific fluorescence channels</div>';
+
+      state.display.ifSettings.channels.forEach(
+        (channel,index)=>{
+          const row=document.createElement("div");
+
+          row.className="display-channel";
+
+          row.innerHTML=`
+            <input
+              type="checkbox"
+              data-if-visible="${index}"
+              ${channel.visible?"checked":""}
+            >
+            <span>${esc(channel.name)}</span>
+            <input
+              type="color"
+              data-if-color="${index}"
+              value="${esc(channel.color)}"
+            >
+            <div
+              class="display-channel-details"
+              style="grid-column:1/-1"
+            >
+              <label>
+                Min
+                <input
+                  type="number"
+                  step="any"
+                  data-if-min="${index}"
+                  value="${channel.min}"
+                >
+              </label>
+
+              <label>
+                Max
+                <input
+                  type="number"
+                  step="any"
+                  data-if-max="${index}"
+                  value="${channel.max}"
+                >
+              </label>
+
+              <label>
+                Gamma
+                <input
+                  type="number"
+                  min="0.05"
+                  max="20"
+                  step="0.05"
+                  data-if-gamma="${index}"
+                  value="${channel.gamma}"
+                >
+              </label>
+
+              <label>
+                Channel brightness
+                <input
+                  type="number"
+                  min="0"
+                  max="400"
+                  step="1"
+                  data-if-brightness="${index}"
+                  value="${channel.brightness}"
+                >
+              </label>
+            </div>
+          `;
+
+          root.appendChild(row);
+        }
+      );
+
+      root
+        .querySelectorAll("[data-if-visible]")
+        .forEach(el=>
+          el.addEventListener(
+            "change",
+            ()=>{
+              state.display.ifSettings.channels[
+                Number(el.dataset.ifVisible)
+              ].visible=el.checked;
+
+              displayChanged();
+            }
+          )
+        );
+
+      root
+        .querySelectorAll("[data-if-color]")
+        .forEach(el=>
+          el.addEventListener(
+            "change",
+            ()=>{
+              state.display.ifSettings.channels[
+                Number(el.dataset.ifColor)
+              ].color=el.value;
+
+              displayChanged();
+            }
+          )
+        );
+
+      for(
+        const [attr,key,min,max] of [
+          ["data-if-min","min",null,null],
+          ["data-if-max","max",null,null],
+          ["data-if-gamma","gamma",.05,20],
+          ["data-if-brightness","brightness",0,400]
+        ]
+      ){
+        root
+          .querySelectorAll(`[${attr}]`)
+          .forEach(el=>
+            el.addEventListener(
+              "change",
+              ()=>{
+                const index=Number(
+                  el.getAttribute(attr)
+                );
+
+                const channel=
+                  state.display.ifSettings.channels[index];
+
+                channel[key]=clamp(
+                  el.value,
+                  min??channel.allowedMin,
+                  max??channel.allowedMax,
+                  channel[key]
+                );
+
+                if(channel.max<=channel.min){
+                  channel.min=channel.autoMin;
+                  channel.max=channel.autoMax;
+                }
+
+                displayChanged();
+              }
+            )
+          );
+      }
+
+      return;
+    }
+
+    let defs=[];
+
+    if(state.display.imageType==="he"){
+      defs=[
+        ["hematoxylin","Hematoxylin","#6f5da8"],
+        ["eosin","Eosin","#ef8ea8"]
+      ];
+    }else if(state.display.imageType==="hdab"){
+      defs=[
+        ["hematoxylin","Hematoxylin","#6f5da8"],
+        ["dab","DAB","#9a6a3a"]
+      ];
+    }else{
+      defs=[
+        ["red","Red","#ff6b6b"],
+        ["green","Green","#69db7c"],
+        ["blue","Blue","#4dabf7"]
+      ];
+    }
+
+    const channelState=
+      state.display.displayChannels[
+        state.display.imageType
+      ]||
+      state.display.displayChannels.rgb;
+
+    root.innerHTML=defs.map(
+      ([key,label,color])=>`
+        <label class="display-channel">
+          <input
+            type="checkbox"
+            data-simple-channel="${key}"
+            ${channelState[key]?"checked":""}
+          >
+          <span>
+            <span
+              class="dot"
+              style="background:${color}"
+            ></span>
+            ${label}
+          </span>
+        </label>
+      `
+    ).join("");
+
+    root
+      .querySelectorAll("[data-simple-channel]")
+      .forEach(el=>
+        el.addEventListener(
+          "change",
+          ()=>{
+            channelState[
+              el.dataset.simpleChannel
+            ]=el.checked;
+
+            displayChanged();
+          }
+        )
+      );
+  }
+
+  function applyViewerBrightness(){
+    if(state.viewer?.canvas){
+      state.viewer.canvas.style.filter=
+        `brightness(${state.display?.brightnessPercent||100}%)`;
+    }
+  }
+
+  function buildTileSource(){
+    const info=state.imageInfo||{};
+    const imageId=state.prep.imageId;
+
+    const width=Number(info.width||0);
+    const height=Number(info.height||0);
+    const tileSize=Number(info.tileSize||512);
+
+    const maxLevel=
+      Number.isFinite(Number(info.levelCount))
+        ?Number(info.levelCount)-1
+        :Math.ceil(
+            Math.log2(
+              Math.max(width,height)
+            )
+          );
+
+    if(info.directRaster){
+      return{
+        type:"image",
+        url:
+          `/api/images/${encodeURIComponent(imageId)}/original`
+      };
+    }
+
+    const query=
+      displayQueryString();
+
+    return{
+      width,
+      height,
+      tileSize,
+      tileOverlap:Number(info.tileOverlap||0),
+      minLevel:0,
+      maxLevel,
+      getTileUrl:(level,x,y)=>
+        `/api/images/${encodeURIComponent(imageId)}`+
+        `/tiles/${level}/${x}_${y}.jpeg?${query}`
+    };
+  }
+
+  async function displayChanged(){
+    if(!state.viewer||!state.display)return;
+
+    saveDisplayState();
+    renderDisplayControls();
+
+    const center=
+      state.viewer.viewport?.getCenter?.();
+
+    const zoom=
+      state.viewer.viewport?.getZoom?.();
+
+    state.tileSource=
+      buildTileSource();
+
+    state.viewer.addOnceHandler(
+      "open",
+      ()=>{
+        applyViewerBrightness();
+
+        if(center&&Number.isFinite(zoom)){
+          state.viewer.viewport.panTo(
+            center,
+            true
+          );
+
+          state.viewer.viewport.zoomTo(
+            zoom,
+            null,
+            true
+          );
+        }
+
+        drawOverlay();
+      }
+    );
+
+    state.viewer.open(
+      state.tileSource
+    );
+  }
+
+  function installViewerControls(){
+    const host=$("viewer");
+
+    if(!host||!state.viewer)return;
+
+    host.querySelector(
+      ".review-osd-controls"
+    )?.remove();
+
+    const bar=document.createElement(
+      "div"
+    );
+
+    bar.className=
+      "review-osd-controls";
+
+    Object.assign(
+      bar.style,
+      {
+        position:"absolute",
+        top:"10px",
+        left:"10px",
+        zIndex:"1000",
+        display:"flex",
+        gap:"5px",
+        padding:"5px",
+        borderRadius:"8px",
+        background:"rgba(10,15,22,.78)",
+        boxShadow:
+          "0 2px 10px rgba(0,0,0,.35)"
+      }
+    );
+
+    const actions=[
+      {
+        label:"＋",
+        title:"Zoom in",
+        run:()=>{
+          state.viewer.viewport.zoomBy(
+            1.5
+          );
+          state.viewer.viewport.applyConstraints();
+        }
+      },
+      {
+        label:"−",
+        title:"Zoom out",
+        run:()=>{
+          state.viewer.viewport.zoomBy(
+            1/1.5
+          );
+          state.viewer.viewport.applyConstraints();
+        }
+      },
+      {
+        label:"⌂",
+        title:"Go home",
+        run:()=>{
+          state.viewer.viewport.goHome();
+        }
+      },
+      {
+        label:"⛶",
+        title:"Toggle full screen",
+        run:()=>{
+          state.viewer.setFullScreen(
+            !state.viewer.isFullPage()
+          );
+        }
+      }
+    ];
+
+    for(const action of actions){
+      const button=
+        document.createElement(
+          "button"
+        );
+
+      button.type="button";
+      button.textContent=
+        action.label;
+
+      button.title=
+        action.title;
+
+      button.setAttribute(
+        "aria-label",
+        action.title
+      );
+
+      Object.assign(
+        button.style,
+        {
+          width:"34px",
+          height:"34px",
+          padding:"0",
+          border:
+            "1px solid rgba(255,255,255,.2)",
+          borderRadius:"6px",
+          background:"#17202b",
+          color:"#fff",
+          fontSize:"21px",
+          lineHeight:"30px",
+          cursor:"pointer"
+        }
+      );
+
+      button.addEventListener(
+        "click",
+        event=>{
+          event.preventDefault();
+          event.stopPropagation();
+          action.run();
+        }
+      );
+
+      bar.appendChild(
+        button
+      );
+    }
+
+    host.appendChild(
+      bar
+    );
+  }
+
+  async function loadViewer(){
+    const imageId=state.prep.imageId;
+
+    const [
+      info,
+      serverDisplay
+    ]=await Promise.all([
+      json(
+        `/api/images/${encodeURIComponent(imageId)}/info`
+      ),
+      json(
+        `/api/images/${encodeURIComponent(imageId)}/display-config`
+      ).catch(()=>({imageType:"he"}))
+    ]);
+
+    state.imageInfo={
+      ...info,
+      imageId
+    };
+
+    loadDisplayState(
+      imageId,
+      String(serverDisplay?.imageType||"he")
+    );
+
+    renderDisplayControls();
+
+    state.tileSource=
+      buildTileSource();
+
+    if(state.viewer){
+      try{
+        state.viewer.destroy();
+      }catch{}
+    }
+
+    state.viewer=OpenSeadragon({
+      element:$("viewer"),
+      tileSources:state.tileSource,
+      showNavigator:true,
+      showNavigationControl:false,
+      gestureSettingsMouse:{
+        clickToZoom:false,
+        scrollToZoom:true,
+        dblClickToZoom:true
+      }
+    });
+
+    installViewerControls();
+
+    state.viewer.addHandler(
+      "open",
+      ()=>{
+        applyViewerBrightness();
+        drawOverlay();
+      }
+    );
+
+    [
+      "animation",
+      "pan",
+      "zoom",
+      "resize"
+    ].forEach(
+      event=>
+        state.viewer.addHandler(
+          event,
+          drawOverlay
+        )
+    );
+
+    $("displayCard").hidden=false;
+  }
+  function svgPoint(p){const q=state.viewer.viewport.imageToViewerElementCoordinates(new OpenSeadragon.Point(Number(p[0]),Number(p[1])));return[q.x,q.y];}
+  function geometryPath(g){let d="";for(const poly of polygons(g))for(const ring of poly||[]){if(!ring?.length)continue;let p=svgPoint(ring[0]);d+=`M ${p[0]} ${p[1]} `;for(let i=1;i<ring.length;i++){p=svgPoint(ring[i]);d+=`L ${p[0]} ${p[1]} `;}d+="Z ";}return d;}
+  async function sourceFeatureData(sourceIndex){if(state.sourceFeatures.has(sourceIndex))return state.sourceFeatures.get(sourceIndex);const file=state.prep.sourceFiles[sourceIndex];if(!file)return[];const original=originalSessionSource(sourceIndex);let fc;if(original&&String(original?.file||"")===String(file)){fc=await json(`/api/review-v2/source-sessions/${encodeURIComponent(state.prep.sessionId)}/sources/${encodeURIComponent(sourceIndex)}`);}else{fc=await json(`/api/annotations/${encodeURIComponent(state.prep.imageId)}?file=${encodeURIComponent(file)}`);}const selectedClass=state.prep.selectedClass.toLowerCase();const features=(Array.isArray(fc?.features)?fc.features:[]).map((feature,index)=>({feature,index,geometry:feature?.geometry,bbox:bbox(feature?.geometry)})).filter(item=>item.geometry&&(!selectedClass||featureClass(item.feature).toLowerCase()===selectedClass));state.sourceFeatures.set(sourceIndex,features);return features;}
+  async function visibleFeatures(){
+    if(!state.editingSource)return[];
+
+    const features=
+      await sourceFeatureData(
+        state.sourceIndex
+      );
+
+    const windowBox=
+      expanded(
+        currentGroup()?.bbox,
+        1.5
+      );
+
+    return windowBox
+      ?features.filter(
+          item=>
+            intersects(
+              item.bbox,
+              windowBox
+            )
+        )
+      :features;
+  }
+  async function drawOverlay(){
+    if(!state.viewer?.world?.getItemCount())return;
+
+    const svg=$("overlay");
+    const rect=$("viewer").getBoundingClientRect();
+
+    svg.setAttribute(
+      "viewBox",
+      `0 0 ${Math.max(1,rect.width)} ${Math.max(1,rect.height)}`
+    );
+
+    svg.innerHTML="";
+
+    const group=currentGroup();
+
+    if(!group)return;
+
+    for(const candidate of group.candidates||[]){
+      if(!candidate.geometry)continue;
+
+      const sourceIndex=
+        Number(candidate.sourceIndex);
+
+      const active=
+        sourceIndex===state.sourceIndex;
+
+      const path=document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path"
+      );
+
+      path.setAttribute(
+        "d",
+        geometryPath(
+          candidate.geometry
+        )
+      );
+
+      path.setAttribute(
+        "stroke",
+        active
+          ?"#ffffff"
+          :palette[sourceIndex%palette.length]
+      );
+
+      path.setAttribute(
+        "stroke-width",
+        active?"4":"1.4"
+      );
+
+      path.setAttribute(
+        "stroke-opacity",
+        active?"1":".32"
+      );
+
+      path.setAttribute(
+        "fill",
+        palette[sourceIndex%palette.length]
+      );
+
+      path.setAttribute(
+        "fill-opacity",
+        active?".24":".035"
+      );
+
+      svg.appendChild(path);
+    }
+
+    if(!state.editingSource)return;
+
+    const member=currentMember();
+
+    const selected=new Set(
+      member?.featureIndexes||[]
+    );
+
+    for(
+      const item
+      of await visibleFeatures()
+    ){
+      const on=
+        selected.has(item.index);
+
+      const path=document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path"
+      );
+
+      path.setAttribute(
+        "d",
+        geometryPath(item.geometry)
+      );
+
+      path.setAttribute(
+        "stroke",
+        on
+          ?"#ffffff"
+          :"#b7c0ca"
+      );
+
+      path.setAttribute(
+        "stroke-width",
+        on?"4":"2"
+      );
+
+      path.setAttribute(
+        "stroke-opacity",
+        on?"1":".72"
+      );
+
+      if(!on){
+        path.setAttribute(
+          "stroke-dasharray",
+          "5 4"
+        );
+      }
+
+      path.setAttribute(
+        "fill",
+        on
+          ?palette[
+              state.sourceIndex%
+              palette.length
+            ]
+          :"#ffffff"
+      );
+
+      path.setAttribute(
+        "fill-opacity",
+        on?".30":".035"
+      );
+
+      path.classList.add(
+        "clickable"
+      );
+
+      path.addEventListener(
+        "click",
+        event=>{
+          event.preventDefault();
+          event.stopPropagation();
+
+          toggleFeature(
+            item.index
+          );
+        }
+      );
+
+      svg.appendChild(path);
+    }
+  }
+  function fitGroup(){const g=currentGroup();if(!g?.bbox||!state.viewer?.viewport)return;const[x1,y1,x2,y2]=g.bbox,w=Math.max(1,x2-x1),h=Math.max(1,y2-y1),pad=Math.max(w,h)*.18+8;try{state.viewer.viewport.fitBounds(state.viewer.viewport.imageToViewportRectangle(x1-pad,y1-pad,w+2*pad,h+2*pad),true);}catch{}}
+  async function showGroup(index){const gs=state.prep?.groups||[];if(!gs.length)return;state.groupIndex=Math.max(0,Math.min(gs.length-1,Number(index)||0));state.editingSource=false;const g=currentGroup();$("groupTitle").textContent=`Group ${state.groupIndex+1} / ${gs.length}`;$("groupMeta").textContent=g.prepared?"Prepared":"Needs preparation";$("groupNote").value=g.note||"";renderSourceTabs();renderGroups();renderFeatureList();setTimeout(fitGroup,40);await drawOverlay();}
+  function renderSourceTabs(){
+    $("sourceTabs").innerHTML=
+      state.prep.sourceFiles.map(
+        (file,index)=>{
+          const candidate=
+            currentGroup()?.candidates?.find(
+              item=>
+                Number(item.sourceIndex)===index
+            );
+
+          const member=
+            currentGroup()?.members?.find(
+              item=>
+                Number(item.sourceIndex)===index
+            );
+
+          const active=
+            index===state.sourceIndex;
+
+          const color=
+            palette[index%palette.length];
+
+          return`
+            <button
+              class="source-tab ${active?"active":""}"
+              data-source="${index}"
+              aria-pressed="${active?"true":"false"}"
+              title="Highlight Source ${index+1}"
+            >
+              <span
+                class="source-dot"
+                style="background:${color}"
+              ></span>
+              Source ${index+1}
+              ${candidate?.geometry?" ●":" ○"}
+              ${member?.edited?" *":""}
+            </button>
+          `;
+        }
+      ).join("");
+
+    $("sourceTabs")
+      .querySelectorAll(
+        "[data-source]"
+      )
+      .forEach(
+        element=>
+          element.addEventListener(
+            "click",
+            ()=>{
+              state.sourceIndex=
+                Number(
+                  element.dataset.source
+                );
+
+              state.editingSource=false;
+
+              renderSourceTabs();
+              renderFeatureList();
+              drawOverlay();
+
+              setStatus(
+                `Source ${state.sourceIndex+1} highlighted.`
+              );
+            }
+          )
+      );
+
+    $("editHint").textContent=
+      `${sourceDisplayName(state.sourceIndex)} · `+
+      `${currentMember()?.edited
+        ?"Manual membership"
+        :"Automatic candidate"}`;
+  }
+  async function startEdit(){
+    state.editingSource=true;
+
+    const member=currentMember();
+    const candidate=currentCandidate();
+
+    if(!member||!candidate)return;
+
+    const features=
+      await sourceFeatureData(
+        state.sourceIndex
+      );
+
+    if(
+      !member.edited&&
+      !member.featureIndexes.length
+    ){
+      const automatic=
+        candidate.autoGeometry||
+        candidate.geometry;
+
+      const exact=
+        JSON.stringify(
+          automatic||null
+        );
+
+      member.featureIndexes=
+        features
+          .filter(
+            item=>
+              JSON.stringify(
+                item.geometry||null
+              )===exact
+          )
+          .map(
+            item=>item.index
+          );
+    }
+
+    renderSourceTabs();
+    await renderFeatureList();
+    await drawOverlay();
+
+    const possible=
+      await visibleFeatures();
+
+    setStatus(
+      `Edit Source ${state.sourceIndex+1}: `+
+      `${possible.length} nearby annotation`+
+      `${possible.length===1?"":"s"} available. `+
+      `Click an outline or checkbox to add/remove it.`
+    );
+  }
+  async function rebuildCurrentManualCandidate(){const member=currentMember(),candidate=currentCandidate();if(!member||!candidate)return;const features=await sourceFeatureData(state.sourceIndex),selected=new Set(member.featureIndexes||[]);candidate.geometry=combine(features.filter(item=>selected.has(item.index)).map(item=>item.geometry));const boxes=(currentGroup().candidates||[]).map(c=>bbox(c.geometry)).filter(Boolean);if(boxes.length)currentGroup().bbox=[Math.min(...boxes.map(b=>b[0])),Math.min(...boxes.map(b=>b[1])),Math.max(...boxes.map(b=>b[2])),Math.max(...boxes.map(b=>b[3]))];}
+  async function toggleFeature(index){const member=currentMember();if(!member)return;member.edited=true;currentGroup().prepared=false;const set=new Set(member.featureIndexes||[]);set.has(index)?set.delete(index):set.add(index);member.featureIndexes=[...set].sort((a,b)=>a-b);await rebuildCurrentManualCandidate();renderSourceTabs();renderFeatureList();renderGroups();drawOverlay();}
+  async function renderFeatureList(){
+    const root=$("featureList");
+
+    root.innerHTML="";
+
+    if(!state.editingSource){
+      root.innerHTML=
+        '<div class="muted small">'+
+        'Select a Source to highlight it, then click '+
+        '“Edit this source” to show nearby annotations.'+
+        '</div>';
+
+      return;
+    }
+
+    try{
+      const features=
+        await visibleFeatures();
+
+      const selected=
+        new Set(
+          currentMember()?.featureIndexes||
+          []
+        );
+
+      const selectedCount=
+        features.filter(
+          item=>
+            selected.has(item.index)
+        ).length;
+
+      root.innerHTML=
+        `<div class="small muted">`+
+        `${features.length} nearby · `+
+        `${selectedCount} selected`+
+        `</div>`+
+        (
+          features.length
+            ?features.map(
+                item=>{
+                  const on=
+                    selected.has(
+                      item.index
+                    );
+
+                  return`
+                    <label
+                      class="feature-row ${on?"selected":""}"
+                    >
+                      <input
+                        type="checkbox"
+                        data-feature="${item.index}"
+                        ${on?"checked":""}
+                      >
+                      <span
+                        class="source-dot"
+                        style="background:${
+                          palette[
+                            state.sourceIndex%
+                            palette.length
+                          ]
+                        }"
+                      ></span>
+                      <span>
+                        Annotation ${item.index+1}
+                        <span class="small muted">
+                          · ${on?"Selected":"Available"}
+                        </span>
+                      </span>
+                    </label>
+                  `;
+                }
+              ).join("")
+            :'<div class="muted small">'+
+             'No class-matching annotations near this group.'+
+             '</div>'
+        );
+
+      root
+        .querySelectorAll(
+          "[data-feature]"
+        )
+        .forEach(
+          element=>
+            element.addEventListener(
+              "change",
+              ()=>
+                toggleFeature(
+                  Number(
+                    element.dataset.feature
+                  )
+                )
+            )
+        );
+    }catch(error){
+      root.innerHTML=
+        `<div class="small">${esc(error.message)}</div>`;
+    }
+  }
+  async function useAutomatic(){const member=currentMember(),candidate=currentCandidate();if(!member||!candidate)return;member.edited=false;member.featureIndexes=[];candidate.geometry=candidate.autoGeometry||null;currentGroup().prepared=false;state.editingSource=false;renderSourceTabs();renderFeatureList();renderGroups();drawOverlay();setStatus("Automatic candidate restored. Re-check this group.");}
+  async function noAnnotation(){const member=currentMember(),candidate=currentCandidate();if(!member||!candidate)return;member.edited=true;member.featureIndexes=[];candidate.geometry=null;currentGroup().prepared=false;state.editingSource=true;renderSourceTabs();renderFeatureList();renderGroups();drawOverlay();setStatus("This source is set to No annotation for the current group.");}
+  async function savePreparation(){if(!state.prep)return;state.prep.outputAnnotationFile=$("outputFile").value.trim()||state.prep.outputAnnotationFile;const payload=structuredClone(state.prep);for(const g of payload.groups)for(const m of g.members||[]){if(!m.edited)continue;const features=await sourceFeatureData(Number(m.sourceIndex)),selected=new Set(m.featureIndexes||[]);m.geometries=features.filter(item=>selected.has(item.index)).map(item=>item.geometry);}const saved=await json(`/api/review-v2/preparations/${encodeURIComponent(state.prep.sessionId)}`,{method:"PUT",body:JSON.stringify(payload)});state.prep=saved;renderSetup();renderGroups();renderSourceTabs();setStatus("Preparation saved.","good");return saved;}
+  async function markPrepared(){const g=currentGroup();if(!g)return;g.note=$("groupNote").value;g.prepared=true;try{await savePreparation();renderGroups();setStatus(`Group ${state.groupIndex+1} marked prepared.`,"good");if(state.groupIndex<state.prep.groups.length-1)showGroup(state.groupIndex+1);}catch(error){g.prepared=false;setStatus(error.message,"error");}}
+  function addGroup(){const count=state.prep.sourceFiles.length,n=state.prep.groups.length+1;state.prep.groups.push({id:`manual-${Date.now()}-${n}`,sourceItemId:null,prepared:false,bbox:currentGroup()?.bbox||null,candidates:Array.from({length:count},(_,i)=>({sourceIndex:i,geometry:null,autoGeometry:null})),members:Array.from({length:count},(_,i)=>({sourceIndex:i,featureIndexes:[],edited:true})),note:""});renderGroups();showGroup(state.prep.groups.length-1);setStatus("Blank manual group added. Select annotations from each source.");}
+  function deleteGroup(){if(!currentGroup()||!confirm("Delete this preparation group? Original GeoJSON files are not modified."))return;state.prep.groups.splice(state.groupIndex,1);state.groupIndex=Math.min(state.groupIndex,state.prep.groups.length-1);renderGroups();if(state.groupIndex>=0)showGroup(state.groupIndex);else $("groupTitle").textContent="No groups";setStatus("Group removed from preparation. Original annotations are unchanged.");}
+  async function publish(){try{await savePreparation();const p=await json(`/api/review-v2/preparations/${encodeURIComponent(state.prep.sessionId)}/publish`,{method:"POST",body:"{}"}),link=location.origin+p.reviewerPath;$("shareLink").textContent=link;$("shareBox").hidden=false;setStatus("Reviewer link generated. Reviewer payload contains no annotation-file identities.","good");}catch(error){setStatus(error.message,"error");}}
+
+
+  $("displayBrightness").addEventListener(
+    "input",
+    ()=>{
+      if(!state.display)return;
+
+      state.display.brightnessPercent=
+        clamp(
+          $("displayBrightness").value,
+          40,
+          200,
+          100
+        );
+
+      $("displayBrightnessValue").textContent=
+        `${state.display.brightnessPercent}%`;
+
+      saveDisplayState();
+      applyViewerBrightness();
+    }
+  );
+
+  $("displayImageType").addEventListener(
+    "change",
+    async()=>{
+      if(!state.display)return;
+
+      state.display.imageType=
+        $("displayImageType").value;
+
+      await displayChanged();
+    }
+  );
+
+  $("sourceCount").addEventListener("change",()=>resizeSources($("sourceCount").value));$("saveSetup").addEventListener("click",async()=>{try{await savePreparation();}catch(e){setStatus(e.message,"error");}});$("editSource").addEventListener("click",()=>startEdit().catch(e=>setStatus(e.message,"error")));$("useAutomatic").addEventListener("click",()=>useAutomatic().catch(e=>setStatus(e.message,"error")));$("noAnnotation").addEventListener("click",()=>noAnnotation().catch(e=>setStatus(e.message,"error")));$("markPrepared").addEventListener("click",markPrepared);$("prevGroup").addEventListener("click",()=>showGroup(state.groupIndex-1));$("nextGroup").addEventListener("click",()=>showGroup(state.groupIndex+1));$("newGroup").addEventListener("click",addGroup);$("deleteGroup").addEventListener("click",deleteGroup);$("publish").addEventListener("click",publish);$("groupNote").addEventListener("input",()=>{const g=currentGroup();if(g){g.note=$("groupNote").value;g.prepared=false;renderGroups();}});$("copyLink").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("shareLink").textContent);setStatus("Reviewer link copied.","good");}catch{setStatus("Could not copy automatically; select the link manually.");}});
+  loadSessions().catch(error=>setStatus(error.message,"error"));
+})();
+</script>
+</body>
+</html>
