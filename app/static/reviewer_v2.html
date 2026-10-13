@@ -5,63 +5,4813 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>HistoAnnotator · Review</title>
   <script src="/static/vendor/openseadragon/openseadragon.min.js"></script>
+
   <style>
-    :root{color-scheme:dark;--bg:#0d1117;--panel:#151b23;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--good:#3fb950}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.35 system-ui,-apple-system,Segoe UI,sans-serif}
-    button,textarea{font:inherit;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:7px 9px}button{cursor:pointer}button:disabled{opacity:.45}.good{background:#17351f;border-color:#2ea043}
-    .app{height:100vh;display:grid;grid-template-rows:auto 1fr auto;min-height:0}.top{display:flex;align-items:center;gap:10px;padding:9px 12px;background:#11161d;border-bottom:1px solid var(--line)}.top h1{font-size:16px;margin:0}.muted{color:var(--muted)}.small{font-size:12px}.main{display:grid;grid-template-columns:1fr 300px;min-height:0}.viewer-area{min-width:0;min-height:0;position:relative;padding:8px}.side{border-left:1px solid var(--line);background:#11161d;padding:12px;overflow:auto}
-    .split{height:100%;display:grid;gap:8px}.split.n2{grid-template-columns:1fr 1fr}.split.n3{grid-template-columns:repeat(3,1fr)}.view{position:relative;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#080b0f}.osd{position:absolute;inset:30px 0 0}.view-title{height:30px;display:flex;align-items:center;gap:6px;padding:0 8px;background:#141a21}.dot{width:9px;height:9px;border-radius:50%}.overlay-svg{position:absolute;inset:30px 0 0;pointer-events:none}.overlay-svg path{fill-opacity:.14;stroke-width:2.5;vector-effect:non-scaling-stroke}.overlay-panel{height:100%;position:relative;border:1px solid var(--line);border-radius:9px;overflow:hidden}.overlay-panel .osd{inset:0}.overlay-panel .overlay-svg{inset:0}
-    .card{padding:10px;background:var(--panel);border:1px solid var(--line);border-radius:9px;margin-bottom:10px}.title{font-weight:700}.candidates{display:grid;gap:6px;margin-top:8px}.candidate{display:flex;gap:7px;align-items:center;padding:7px;border:1px solid var(--line);border-radius:7px}.candidate.selected{border-color:var(--accent)}textarea{width:100%;resize:vertical}.footer{display:flex;align-items:center;gap:8px;padding:9px 12px;border-top:1px solid var(--line);background:#11161d}.footer .spacer{flex:1}.status{font-size:12px}.complete{color:#7ee787}
-    @media(max-width:850px){.main{grid-template-columns:1fr}.side{position:absolute;right:8px;top:58px;width:280px;max-height:65vh;z-index:30;border:1px solid var(--line);border-radius:10px}.split.n3{grid-template-columns:1fr 1fr}}
+    :root{
+      color-scheme:dark;
+      --bg:#0d1117;
+      --panel:#151b23;
+      --panel2:#11161d;
+      --line:#30363d;
+      --text:#e6edf3;
+      --muted:#8b949e;
+      --accent:#58a6ff;
+      --good:#3fb950;
+      --warn:#d29922;
+      --danger:#f85149
+    }
+
+    *{box-sizing:border-box}
+
+    html,body{
+      width:100%;
+      height:100%;
+      margin:0
+    }
+
+    body{
+      background:var(--bg);
+      color:var(--text);
+      font:14px/1.35 system-ui,-apple-system,Segoe UI,sans-serif
+    }
+
+    button,
+    select,
+    input,
+    textarea{
+      font:inherit
+    }
+
+    button,
+    select,
+    input[type=number],
+    textarea{
+      background:#0d1117;
+      color:var(--text);
+      border:1px solid var(--line);
+      border-radius:7px;
+      padding:7px 9px
+    }
+
+    button{cursor:pointer}
+
+    button:disabled{
+      opacity:.42;
+      cursor:default
+    }
+
+    button.primary{
+      background:#173b63;
+      border-color:#2f81f7
+    }
+
+    button.good{
+      background:#17351f;
+      border-color:#2ea043
+    }
+
+    button.warn{
+      background:#352a14;
+      border-color:#9e6a03
+    }
+
+    button.danger{
+      background:#3b1719;
+      border-color:#da3633
+    }
+
+    .hidden{display:none!important}
+    .small{font-size:12px}
+    .muted{color:var(--muted)}
+    .good-text{color:#7ee787}
+    .error{color:#ff9097}
+    .spacer{flex:1}
+
+    .app{
+      width:100%;
+      height:100vh;
+      min-height:0;
+      display:grid;
+      grid-template-rows:auto auto minmax(0,1fr) auto;
+      overflow:hidden
+    }
+
+    .toolbar,
+    .candidatebar,
+    .actions{
+      display:flex;
+      gap:8px;
+      align-items:center;
+      flex-wrap:wrap;
+      background:var(--panel2);
+      padding:9px 12px;
+      border-color:var(--line)
+    }
+
+    .toolbar{
+      border-bottom:1px solid var(--line);
+      position:relative;
+      z-index:40
+    }
+
+    .toolbar h1{
+      font-size:16px;
+      margin:0
+    }
+
+    .candidatebar{
+      border-bottom:1px solid var(--line);
+      min-height:48px
+    }
+
+    .actions{
+      border-top:1px solid var(--line)
+    }
+
+    .status-pill{
+      border:1px solid var(--line);
+      border-radius:999px;
+      padding:3px 8px;
+      font-size:12px
+    }
+
+    .status-pending{color:#d9dfe6}
+    .status-deferred{color:#e3b341}
+    .status-accepted{color:#7ee787}
+
+    .kbd{
+      border:1px solid var(--line);
+      border-radius:5px;
+      padding:1px 5px;
+      background:#0e1217;
+      font-size:11px
+    }
+
+    .dot{
+      width:9px;
+      height:9px;
+      border-radius:50%;
+      display:inline-block;
+      flex:0 0 auto
+    }
+
+    .candidate-button{
+      display:inline-flex;
+      gap:6px;
+      align-items:center
+    }
+
+    .candidate-button.selected{
+      border-color:#8ac7ff;
+      box-shadow:0 0 0 1px #8ac7ff inset
+    }
+
+    .visibility{
+      display:flex;
+      align-items:center;
+      gap:7px;
+      flex-wrap:wrap
+    }
+
+    .visibility label{
+      display:inline-flex;
+      gap:5px;
+      align-items:center;
+      color:#cbd3dc;
+      font-size:12px
+    }
+
+    .content{
+      min-width:0;
+      min-height:0;
+      display:grid;
+      grid-template-columns:minmax(0,1fr) 310px;
+      overflow:hidden
+    }
+
+    .viewer-area{
+      min-width:0;
+      min-height:0;
+      position:relative;
+      overflow:hidden;
+      background:#050607
+    }
+
+    .side{
+      min-height:0;
+      overflow:auto;
+      border-left:1px solid var(--line);
+      background:#11161d;
+      padding:10px
+    }
+
+    .card{
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:10px;
+      padding:10px;
+      margin-bottom:10px
+    }
+
+    .card .title{
+      font-weight:700;
+      margin-bottom:7px
+    }
+
+    textarea{
+      width:100%;
+      resize:vertical
+    }
+
+    .split-grid{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      min-width:0;
+      min-height:0;
+      display:grid;
+      gap:2px;
+      background:#000
+    }
+
+    .split-grid.n2{
+      grid-template-columns:1fr 1fr
+    }
+
+    .split-grid.n3{
+      grid-template-columns:repeat(3,1fr)
+    }
+
+    .split-grid.n4{
+      grid-template-columns:1fr 1fr;
+      grid-template-rows:1fr 1fr
+    }
+
+    .view-panel{
+      position:relative;
+      min-width:0;
+      min-height:0;
+      overflow:hidden;
+      background:#050607
+    }
+
+    .view-title{
+      position:absolute;
+      z-index:8;
+      top:8px;
+      left:8px;
+      padding:4px 8px;
+      border-radius:7px;
+      background:rgba(10,12,15,.84);
+      border:1px solid rgba(255,255,255,.16);
+      pointer-events:none
+    }
+
+    .osd{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%
+    }
+
+    #overlayPanel{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      min-width:0;
+      min-height:0;
+      overflow:hidden;
+      background:#050607
+    }
+
+    #overlayOsd{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%
+    }
+
+    .overlay-svg{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      z-index:6;
+      pointer-events:none;
+      overflow:visible
+    }
+
+    .overlay-svg.editing{
+      pointer-events:auto;
+      cursor:crosshair;
+      touch-action:none
+    }
+
+    .freehand-preview{
+      fill:rgba(101,183,255,.14);
+      stroke:#65b7ff;
+      stroke-width:2.5;
+      vector-effect:non-scaling-stroke;
+      stroke-dasharray:6 4;
+      pointer-events:none
+    }
+
+    .empty-mask{
+      position:absolute;
+      z-index:7;
+      left:8px;
+      right:8px;
+      bottom:8px;
+      padding:5px 7px;
+      border-radius:6px;
+      background:rgba(0,0,0,.6);
+      color:#cbd3dc;
+      text-align:center;
+      pointer-events:none
+    }
+
+    .edit-toolbar{
+      display:flex;
+      gap:7px;
+      align-items:center;
+      flex-wrap:wrap
+    }
+
+    .edit-banner{
+      padding:6px 9px;
+      border:1px solid #285780;
+      border-radius:8px;
+      background:#15304a;
+      color:#d7edff
+    }
+
+    .display-panel{
+      position:absolute;
+      z-index:100;
+      right:12px;
+      top:calc(100% + 5px);
+      width:min(400px,calc(100vw - 30px));
+      max-height:72vh;
+      overflow:auto;
+      background:#171d24;
+      border:1px solid var(--line);
+      border-radius:11px;
+      padding:11px;
+      box-shadow:0 16px 45px rgba(0,0,0,.55)
+    }
+
+    .display-grid{
+      display:grid;
+      grid-template-columns:1fr auto;
+      gap:7px 9px;
+      align-items:center
+    }
+
+    .display-channel{
+      display:grid;
+      grid-template-columns:auto 1fr auto;
+      gap:7px;
+      align-items:center;
+      padding:7px;
+      border:1px solid var(--line);
+      border-radius:8px;
+      margin-top:7px
+    }
+
+    .display-channel input[type=color]{
+      width:38px;
+      height:30px;
+      padding:1px
+    }
+
+    .display-channel-details{
+      grid-column:1/-1;
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:5px
+    }
+
+    .display-channel-details label{
+      font-size:11px;
+      color:var(--muted)
+    }
+
+    .display-channel-details input{
+      width:100%
+    }
+
+    .completion-overlay{
+      position:absolute;
+      inset:0;
+      z-index:50;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+      background:rgba(8,11,15,.88)
+    }
+
+    .completion-box{
+      width:min(520px,94%);
+      padding:18px;
+      border:1px solid var(--line);
+      border-radius:14px;
+      background:var(--panel)
+    }
+
+    .completion-box h2{
+      margin-top:0
+    }
+
+    .final-countdown{
+      color:#7ee787;
+      font-weight:700
+    }
+
+    #autosaveState{
+      min-width:130px
+    }
+
+    @media(max-width:900px){
+      .content{
+        grid-template-columns:1fr
+      }
+
+      .side{
+        position:absolute;
+        z-index:30;
+        right:8px;
+        top:105px;
+        width:290px;
+        max-height:60vh;
+        border:1px solid var(--line);
+        border-radius:10px
+      }
+
+      .split-grid.n3,
+      .split-grid.n4{
+        grid-template-columns:1fr 1fr
+      }
+    }
   </style>
 </head>
+
 <body>
 <div class="app">
-  <header class="top"><h1>Review</h1><span id="progress" class="muted"></span><span style="flex:1"></span><button id="splitBtn">Split</button><button id="overlayBtn">Overlay</button></header>
-  <div class="main">
-    <section class="viewer-area"><div id="split" class="split"></div><div id="overlayPanel" class="overlay-panel" hidden><div id="overlayOsd" class="osd"></div></div></section>
-    <aside class="side">
-      <div class="card"><div class="title">Choose the best candidate</div><div id="candidateList" class="candidates"></div></div>
-      <div class="card"><label><input id="challenging" type="checkbox"> Challenging case</label></div>
-      <div class="card"><div class="title">Comment</div><textarea id="comment" rows="5" placeholder="Optional comment for this case"></textarea></div>
-      <div class="card"><div class="title">General review comment</div><textarea id="generalComment" rows="4" placeholder="Optional overall comment"></textarea></div>
-      <div id="status" class="status muted">Loading…</div>
-    </aside>
+
+  <header class="toolbar">
+    <h1>Review</h1>
+
+    <span id="progressText" class="muted"></span>
+
+    <span id="itemStatus"
+          class="status-pill status-pending">
+      pending
+    </span>
+
+    <span class="spacer"></span>
+
+    <button id="splitBtn" class="primary">
+      Split view
+    </button>
+
+    <button id="overlayBtn">
+      Overlay view
+    </button>
+
+    <button id="displayBtn">
+      Display
+    </button>
+
+    <div id="displayPanel"
+         class="display-panel hidden">
+
+      <div style="display:flex;align-items:center;gap:8px">
+        <strong>Display</strong>
+        <span class="spacer"></span>
+        <button id="closeDisplayBtn">Close</button>
+      </div>
+
+      <div class="display-grid"
+           style="margin-top:10px">
+
+        <label for="displayImageType">
+          Image type
+        </label>
+
+        <select id="displayImageType">
+          <option value="he">H&amp;E</option>
+          <option value="hdab">H-DAB</option>
+          <option value="fluorescence">
+            Fluorescence
+          </option>
+          <option value="rgb">RGB</option>
+        </select>
+
+        <label for="displayBrightness">
+          Viewer brightness
+        </label>
+
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="displayBrightness"
+                 type="range"
+                 min="40"
+                 max="200"
+                 value="100">
+          <span id="displayBrightnessValue">
+            100%
+          </span>
+        </div>
+
+      </div>
+
+      <div id="displayChannels"
+           style="margin-top:10px">
+      </div>
+
+    </div>
+  </header>
+
+
+  <div class="candidatebar">
+
+    <div id="preferredButtons"
+         style="display:flex;gap:6px;flex-wrap:wrap">
+    </div>
+
+    <span class="spacer"></span>
+
+    <div id="visibilityControls"
+         class="visibility">
+    </div>
+
+    <button id="showAllBtn">
+      Show all
+    </button>
+
+    <button id="showNoneBtn">
+      Hide all
+    </button>
+
   </div>
-  <footer class="footer"><button id="prev">← Previous</button><button id="defer">Defer</button><span class="spacer"></span><button id="accept" class="good">Accept & next</button><button id="finish" class="good" disabled>Finish review</button></footer>
+
+
+  <div class="content">
+
+    <section class="viewer-area">
+
+      <div id="splitGrid"
+           class="split-grid n2">
+      </div>
+
+      <div id="overlayPanel"
+           class="hidden">
+
+        <div class="view-title">
+          Overlay
+        </div>
+
+        <div id="overlayOsd"></div>
+      </div>
+
+
+      <div id="completionOverlay"
+           class="completion-overlay hidden">
+
+        <div class="completion-box">
+
+          <h2>Review complete</h2>
+
+          <div id="completionText">
+            All cases are reviewed.
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:14px">
+            <button id="completionUndoBtn">
+              Undo last decision
+            </button>
+
+            <span class="spacer"></span>
+
+            <button id="completionFinishBtn"
+                    class="good">
+              Finish now
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+    </section>
+
+
+    <aside class="side">
+
+      <div class="card">
+        <div class="title">
+          Selected candidate
+        </div>
+
+        <div id="selectedSummary"
+             class="muted">
+          None selected
+        </div>
+
+        <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px">
+          <button id="editBtn">
+            Edit selected
+          </button>
+
+          <button id="resetEditBtn">
+            Reset edit
+          </button>
+        </div>
+      </div>
+
+
+      <div class="card">
+        <label>
+          <input id="challenging"
+                 type="checkbox">
+          Challenging case
+        </label>
+      </div>
+
+
+      <div class="card">
+        <div class="title">
+          Comment
+        </div>
+
+        <textarea id="comment"
+                  rows="5"
+                  placeholder="Optional comment for this case"></textarea>
+      </div>
+
+
+      <div class="card">
+        <div class="title">
+          General review comment
+        </div>
+
+        <textarea id="generalComment"
+                  rows="4"
+                  placeholder="Optional overall comment"></textarea>
+      </div>
+
+
+      <div class="card small">
+        <div>
+          <span class="kbd">1–4</span>
+          choose candidate
+        </div>
+
+        <div style="margin-top:5px">
+          <span class="kbd">Enter</span>
+          accept &amp; next
+        </div>
+      </div>
+
+    </aside>
+
+  </div>
+
+
+  <footer class="actions">
+
+    <button id="prevBtn">
+      ← Previous
+    </button>
+
+    <button id="undoLastBtn">
+      Undo last decision
+    </button>
+
+    <button id="deferBtn"
+            class="warn">
+      Leave for end
+    </button>
+
+
+    <div id="freehandEditControls"
+         class="edit-toolbar hidden">
+
+      <span class="edit-banner">
+        Freehand edit
+      </span>
+
+      <button id="editAddBtn"
+              class="primary">
+        Add
+      </button>
+
+      <button id="editSubtractBtn">
+        Subtract
+      </button>
+
+      <button id="resetEditInlineBtn">
+        Reset
+      </button>
+
+      <button id="finishEditBtn"
+              class="good">
+        Done editing &amp; next
+      </button>
+
+    </div>
+
+
+    <span class="spacer"></span>
+
+    <span id="autosaveState"
+          class="small muted">
+      Loading…
+    </span>
+
+    <button id="acceptBtn"
+            class="good"
+            disabled>
+      Accept &amp; next
+      <span class="kbd">Enter</span>
+    </button>
+
+    <button id="finishBtn"
+            class="good"
+            disabled>
+      Finish review
+    </button>
+
+  </footer>
+
 </div>
+
+
 <script>
 (() => {
   "use strict";
-  const $=id=>document.getElementById(id), token=decodeURIComponent(location.pathname.split("/").filter(Boolean).pop()||"");
-  const state={payload:null,index:0,selected:null,mode:"split",viewers:[],overlayViewer:null,tileSource:null,saveTimer:null,generalTimer:null};
-  async function json(url,options={}){const r=await fetch(url,{cache:"no-store",headers:{"Content-Type":"application/json",...(options.headers||{})},...options});if(!r.ok){let d=`HTTP ${r.status}`;try{const p=await r.json();d=p.detail||d;}catch{}throw new Error(d);}return r.json();}
-  const api=path=>`/api/review-v2/share/${encodeURIComponent(token)}${path}`;
-  const current=()=>state.payload?.groups?.[state.index]||null;
-  function polygons(g){if(!g)return[];if(g.type==="Polygon")return[g.coordinates||[]];if(g.type==="MultiPolygon")return g.coordinates||[];if(g.type==="GeometryCollection")return(g.geometries||[]).flatMap(polygons);return[];}
-  function setStatus(text){$("status").textContent=text;}
-  function updateProgress(){const p=state.payload.progress||{};$("progress").textContent=`Case ${Math.min(state.index+1,p.total||0)} / ${p.total||0} · ${p.accepted||0} accepted${p.deferred?` · ${p.deferred} deferred`:""}`;$("finish").disabled=(p.accepted||0)!==(p.total||0);}
-  async function buildTileSource(){const imageId=state.payload.imageId,info=await json(`/api/images/${encodeURIComponent(imageId)}/info`);let display={imageType:"he"};try{display=await json(`/api/images/${encodeURIComponent(imageId)}/display-config`);}catch{}if(info.directRaster){state.tileSource={type:"image",url:`/api/images/${encodeURIComponent(imageId)}/original`};return;}const width=Number(info.width||0),height=Number(info.height||0),max=Number(info.levelCount)-1,query=new URLSearchParams({view:"original",image_type:String(display.imageType||"he")}).toString();state.tileSource={width,height,tileSize:Number(info.tileSize||512),tileOverlap:Number(info.tileOverlap||0),minLevel:0,maxLevel:Number.isFinite(max)?max:Math.ceil(Math.log2(Math.max(width,height))),getTileUrl:(level,x,y)=>`/api/images/${encodeURIComponent(imageId)}/tiles/${level}/${x}_${y}.jpeg?${query}`};}
-  const createViewer=el=>OpenSeadragon({element:el,tileSources:state.tileSource,showNavigationControl:false,showNavigator:false,gestureSettingsMouse:{clickToZoom:false,dblClickToZoom:true,scrollToZoom:true},gestureSettingsTouch:{pinchToZoom:true,flickEnabled:true}});
-  function svgPoint(v,p){const q=v.viewport.imageToViewerElementCoordinates(new OpenSeadragon.Point(Number(p[0]),Number(p[1])));return[q.x,q.y];}
-  function pathD(v,g){let d="";for(const poly of polygons(g))for(const ring of poly||[]){if(!ring?.length)continue;let p=svgPoint(v,ring[0]);d+=`M ${p[0]} ${p[1]} `;for(let i=1;i<ring.length;i++){p=svgPoint(v,ring[i]);d+=`L ${p[0]} ${p[1]} `;}d+="Z ";}return d;}
-  function addOverlay(v,g,color,panel,full=false){let svg=panel.querySelector(":scope > .overlay-svg");if(!svg){svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.classList.add("overlay-svg");panel.appendChild(svg);}const rect=(full?panel:panel.querySelector(".osd")).getBoundingClientRect();svg.setAttribute("viewBox",`0 0 ${Math.max(1,rect.width)} ${Math.max(1,rect.height)}`);if(!g)return;const p=document.createElementNS("http://www.w3.org/2000/svg","path");p.setAttribute("d",pathD(v,g));p.setAttribute("stroke",color);p.setAttribute("fill",color);svg.appendChild(p);}
-  function fit(v){const b=current()?.bbox;if(!b||!v?.viewport)return;const[x1,y1,x2,y2]=b,w=Math.max(1,x2-x1),h=Math.max(1,y2-y1),pad=Math.max(w,h)*.15+8;try{v.viewport.fitBounds(v.viewport.imageToViewportRectangle(x1-pad,y1-pad,w+2*pad,h+2*pad),true);}catch{}}
-  function destroy(){for(const v of state.viewers){try{v.destroy();}catch{}}state.viewers=[];if(state.overlayViewer){try{state.overlayViewer.destroy();}catch{}state.overlayViewer=null;}$("split").innerHTML="";$("overlayPanel").querySelectorAll(":scope > .overlay-svg").forEach(x=>x.remove());$("overlayOsd").innerHTML="";}
-  function sync(source){if(state.mode!=="split"||source._syncing)return;const center=source.viewport.getCenter(),zoom=source.viewport.getZoom();for(const v of state.viewers){if(v===source)continue;v._syncing=true;v.viewport.panTo(center,true);v.viewport.zoomTo(zoom,null,true);v._syncing=false;}}
-  async function render(){destroy();const g=current();if(!g)return;if(state.mode==="split"){$("split").hidden=false;$("overlayPanel").hidden=true;const cs=g.candidates||[];$("split").className=`split n${Math.max(2,Math.min(3,cs.length))}`;cs.forEach(c=>{const panel=document.createElement("div");panel.className="view";panel.innerHTML=`<div class="view-title"><span class="dot" style="background:${c.color}"></span>${c.label}${c.empty?" · No annotation":""}</div><div class="osd"></div>`;$("split").appendChild(panel);const v=createViewer(panel.querySelector(".osd"));state.viewers.push(v);const draw=()=>{const svg=panel.querySelector(":scope > .overlay-svg");if(svg)svg.innerHTML="";addOverlay(v,c.geometry,c.color,panel);};v.addHandler("open",()=>{fit(v);draw();});["animation","pan","zoom","resize"].forEach(ev=>v.addHandler(ev,()=>{draw();if(["animation","pan","zoom"].includes(ev))sync(v);}));});}else{$("split").hidden=true;$("overlayPanel").hidden=false;const panel=$("overlayPanel");state.overlayViewer=createViewer($("overlayOsd"));const draw=()=>{let svg=panel.querySelector(":scope > .overlay-svg");if(svg)svg.innerHTML="";for(const c of g.candidates||[])addOverlay(state.overlayViewer,c.geometry,c.color,panel,true);};state.overlayViewer.addHandler("open",()=>{fit(state.overlayViewer);draw();});["animation","pan","zoom","resize"].forEach(ev=>state.overlayViewer.addHandler(ev,draw));}}
-  function renderControls(){const g=current();if(!g)return;const d=g.decision||{};state.selected=Number.isInteger(d.decisionCandidate)?d.decisionCandidate:null;$("candidateList").innerHTML=(g.candidates||[]).map(c=>`<label class="candidate ${state.selected===c.index?"selected":""}"><input type="radio" name="candidate" value="${c.index}" ${state.selected===c.index?"checked":""}><span class="dot" style="background:${c.color}"></span><span>${c.label}${c.empty?" · No annotation":""}</span></label>`).join("");$("candidateList").querySelectorAll('input[name="candidate"]').forEach(el=>el.addEventListener("change",()=>{state.selected=Number(el.value);renderControls();}));$("challenging").checked=Boolean(d.challenging);$("comment").value=d.comment||"";updateProgress();}
-  async function saveDecision({deferred=false,advance=false}={}){const g=current();if(!g)return;if(!deferred&&!Number.isInteger(state.selected)){setStatus("Choose a candidate first.");return;}const result=await json(api(`/groups/${encodeURIComponent(g.id)}`),{method:"PUT",body:JSON.stringify({decisionCandidate:deferred?null:state.selected,challenging:$("challenging").checked,deferred,comment:$("comment").value})});g.decision=result.decision;state.payload.progress=result.progress;updateProgress();setStatus(deferred?"Deferred.":"Decision saved.");if(advance){const next=nextUnresolved(state.index+1);if(next>=0){state.index=next;renderControls();await render();}else setStatus("All non-deferred cases reviewed. Resolve deferred cases before finishing.");}}
-  function nextUnresolved(start=0){const gs=state.payload.groups||[];for(let k=0;k<gs.length;k++){const i=(start+k)%gs.length,d=gs[i].decision||{};if(!Number.isInteger(d.decisionCandidate))return i;}return -1;}
-  async function load(){try{state.payload=await json(api(""));await buildTileSource();const next=nextUnresolved(0);state.index=next>=0?next:0;renderControls();$("generalComment").value=state.payload.generalComment||"";await render();setStatus("Reviewer mode. Source identities are not included in this page.");}catch(e){setStatus(e.message);}}
-  $("splitBtn").addEventListener("click",()=>{state.mode="split";render();});$("overlayBtn").addEventListener("click",()=>{state.mode="overlay";render();});$("prev").addEventListener("click",()=>{if(!state.payload)return;state.index=(state.index-1+state.payload.groups.length)%state.payload.groups.length;renderControls();render();});$("defer").addEventListener("click",()=>saveDecision({deferred:true,advance:true}).catch(e=>setStatus(e.message)));$("accept").addEventListener("click",()=>saveDecision({advance:true}).catch(e=>setStatus(e.message)));
-  $("challenging").addEventListener("change",()=>{clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>saveDecision({advance:false}).catch(()=>{}),250);});
-  $("comment").addEventListener("input",()=>{clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>{const g=current();if(!g)return;json(api(`/groups/${encodeURIComponent(g.id)}`),{method:"PUT",body:JSON.stringify({decisionCandidate:Number.isInteger(state.selected)?state.selected:null,challenging:$("challenging").checked,deferred:Boolean(g.decision?.deferred),comment:$("comment").value})}).then(r=>{g.decision=r.decision;state.payload.progress=r.progress;updateProgress();}).catch(()=>{});},450);});
-  $("generalComment").addEventListener("input",()=>{clearTimeout(state.generalTimer);state.generalTimer=setTimeout(()=>json(api("/general-comment"),{method:"PUT",body:JSON.stringify({comment:$("generalComment").value})}).catch(()=>{}),500);});
-  $("finish").addEventListener("click",async()=>{try{const r=await json(api("/complete"),{method:"POST",body:"{}"});setStatus(`Completed. Saved ${r.features} reviewed annotations to “${r.annotationFile}”.`);$("status").classList.add("complete");$("finish").disabled=true;$("accept").disabled=true;$("defer").disabled=true;}catch(e){setStatus(e.message);}});
-  window.addEventListener("keydown",e=>{if(e.target?.matches("textarea,input"))return;if(/^[1-3]$/.test(e.key)){const n=Number(e.key)-1;if(n<(current()?.candidates?.length||0)){state.selected=n;renderControls();}}else if(e.key==="Enter")saveDecision({advance:true}).catch(err=>setStatus(err.message));});
+
+  // REVIEW_V2_FULL_REVIEWER_RESTORE_V1
+
+  const $ = id =>
+    document.getElementById(id);
+
+  const token =
+    decodeURIComponent(
+      location.pathname
+        .split("/")
+        .filter(Boolean)
+        .pop() || ""
+    );
+
+  const api = path =>
+    `/api/review-v2/share/${encodeURIComponent(token)}${path}`;
+
+  const state = {
+    payload: null,
+    item: null,
+    itemIndex: 0,
+
+    selectedIndex: null,
+    decisionGeometry: null,
+    edited: false,
+
+    viewMode: "split",
+    preEditViewMode: "split",
+
+    editMode: false,
+    editOperation: "add",
+    freehandDrawing: false,
+    freehandPoints: [],
+    freehandLastClient: null,
+
+    visibility: {},
+
+    viewers: [],
+    overlayViewer: null,
+    syncGuard: false,
+
+    imageInfo: null,
+    tileSource: null,
+    display: null,
+
+    saveTimer: null,
+    generalTimer: null,
+
+    finalizeTimer: null,
+    finalizeInterval: null,
+    finalizing: false,
+  };
+
+
+  function clone(value) {
+    if (value == null) return value;
+
+    return JSON.parse(
+      JSON.stringify(value)
+    );
+  }
+
+
+  function esc(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+  }
+
+
+  function clamp(value, min, max, fallback) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+      return fallback;
+    }
+
+    return Math.min(
+      max,
+      Math.max(min, number)
+    );
+  }
+
+
+  function compactNumber(value) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+      return "0";
+    }
+
+    return String(
+      Number(number.toFixed(6))
+    );
+  }
+
+
+  async function json(url, options = {}) {
+    const response = await fetch(
+      url,
+      {
+        cache: "no-store",
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      }
+    );
+
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+
+      try {
+        const payload =
+          await response.json();
+
+        detail =
+          payload.detail || detail;
+      } catch {}
+
+      throw new Error(detail);
+    }
+
+    return response.json();
+  }
+
+
+  function setAutosave(text, error = false) {
+    $("autosaveState").textContent =
+      text;
+
+    $("autosaveState").style.color =
+      error
+        ? "var(--danger)"
+        : "";
+  }
+
+
+  function candidates() {
+    return state.item?.candidates || [];
+  }
+
+
+  function candidate(index) {
+    if (!Number.isInteger(index)) {
+      return null;
+    }
+
+    return candidates()[index] || null;
+  }
+
+
+  function currentStatus() {
+    const decision =
+      state.item?.decision || {};
+
+    if (
+      decision.status === "accepted" ||
+      decision.status === "deferred" ||
+      decision.status === "pending"
+    ) {
+      return decision.status;
+    }
+
+    if (decision.deferred) {
+      return "deferred";
+    }
+
+    if (
+      Number.isInteger(
+        decision.decisionCandidate
+      )
+    ) {
+      return "accepted";
+    }
+
+    return "pending";
+  }
+
+
+  function groupStatus(group) {
+    const decision =
+      group?.decision || {};
+
+    if (
+      decision.status === "accepted" ||
+      decision.status === "deferred" ||
+      decision.status === "pending"
+    ) {
+      return decision.status;
+    }
+
+    if (decision.deferred) {
+      return "deferred";
+    }
+
+    if (
+      Number.isInteger(
+        decision.decisionCandidate
+      )
+    ) {
+      return "accepted";
+    }
+
+    return "pending";
+  }
+
+
+  function updateHeader() {
+    if (!state.payload) return;
+
+    const progress =
+      state.payload.progress || {};
+
+    $("progressText").textContent =
+      `${progress.accepted || 0}/${progress.total || 0} accepted` +
+      ` · ${progress.deferred || 0} deferred` +
+      ` · ${progress.pending || 0} pending`;
+
+    if (!state.item) return;
+
+    const status = currentStatus();
+
+    $("itemStatus").textContent =
+      `${state.itemIndex + 1} / ${state.payload.groups.length} · ${status}`;
+
+    $("itemStatus").className =
+      `status-pill status-${status}`;
+
+    $("finishBtn").disabled =
+      !(
+        (progress.total || 0) > 0 &&
+        (progress.pending || 0) === 0 &&
+        (progress.deferred || 0) === 0
+      ) ||
+      state.finalizing;
+  }
+
+
+  function updateItemControls() {
+    if (!state.item) return;
+
+    const list = candidates();
+
+    $("preferredButtons").innerHTML =
+      list.map(
+        (item, index) => {
+          const selected =
+            state.selectedIndex === index;
+
+          return `
+            <button
+              class="candidate-button ${selected ? "selected primary" : ""}"
+              data-prefer="${index}"
+              title="Keyboard shortcut ${index + 1}"
+              ${state.editMode ? "disabled" : ""}
+            >
+              <span class="kbd">${index + 1}</span>
+              <span class="dot"
+                    style="background:${esc(item.color)}"></span>
+              ${esc(item.label)}
+              ${item.empty ? " · no mask" : ""}
+            </button>
+          `;
+        }
+      ).join("");
+
+    document
+      .querySelectorAll(
+        "[data-prefer]"
+      )
+      .forEach(button => {
+        button.addEventListener(
+          "click",
+          () => {
+            selectPreferred(
+              Number(button.dataset.prefer)
+            );
+          }
+        );
+      });
+
+
+    $("visibilityControls").innerHTML =
+      list.map(
+        (item, index) => `
+          <label>
+            <input
+              type="checkbox"
+              data-visible="${index}"
+              ${state.visibility[index] !== false ? "checked" : ""}
+            >
+            <span class="dot"
+                  style="background:${esc(item.color)}"></span>
+            ${esc(item.label)}
+          </label>
+        `
+      ).join("");
+
+    document
+      .querySelectorAll(
+        "[data-visible]"
+      )
+      .forEach(input => {
+        input.addEventListener(
+          "change",
+          () => {
+            state.visibility[
+              Number(input.dataset.visible)
+            ] = input.checked;
+
+            drawAllOverlays();
+          }
+        );
+      });
+
+
+    const selected =
+      candidate(state.selectedIndex);
+
+    if (selected) {
+      $("selectedSummary").innerHTML =
+        `<span class="dot" style="background:${esc(selected.color)}"></span> ` +
+        `${esc(selected.label)}` +
+        `${selected.empty ? " · No annotation" : ""}` +
+        `${state.edited ? " · edited" : ""}`;
+    } else {
+      $("selectedSummary").textContent =
+        "None selected";
+    }
+
+
+    $("editBtn").disabled =
+      !Number.isInteger(
+        state.selectedIndex
+      ) ||
+      !state.decisionGeometry ||
+      state.editMode;
+
+    $("resetEditBtn").disabled =
+      !Number.isInteger(
+        state.selectedIndex
+      ) ||
+      !state.edited;
+
+    $("resetEditInlineBtn").disabled =
+      !Number.isInteger(
+        state.selectedIndex
+      );
+
+    $("acceptBtn").disabled =
+      !Number.isInteger(
+        state.selectedIndex
+      );
+
+    const progress =
+      state.payload?.progress || {};
+
+    $("undoLastBtn").disabled =
+      state.editMode ||
+      (
+        (progress.accepted || 0) === 0 &&
+        (progress.deferred || 0) === 0
+      );
+
+    $("deferBtn").disabled =
+      Boolean(
+        state.payload?.status === "completed"
+      );
+
+    $("challenging").checked =
+      Boolean(
+        state.item.decision?.challenging
+      );
+
+    updateHeader();
+  }
+
+
+  async function refreshPayload() {
+    state.payload =
+      await json(
+        api("")
+      );
+
+    return state.payload;
+  }
+
+
+  function outstandingIndexes() {
+    const groups =
+      state.payload?.groups || [];
+
+    const pending = [];
+    const deferred = [];
+
+    groups.forEach(
+      (group, index) => {
+        const status =
+          groupStatus(group);
+
+        if (status === "pending") {
+          pending.push(index);
+        } else if (
+          status === "deferred"
+        ) {
+          deferred.push(index);
+        }
+      }
+    );
+
+    return pending.length
+      ? pending
+      : deferred;
+  }
+
+
+  async function loadItem(index) {
+    if (!state.payload) return;
+
+    const groups =
+      state.payload.groups || [];
+
+    if (!groups.length) {
+      return;
+    }
+
+    state.itemIndex =
+      (
+        index % groups.length +
+        groups.length
+      ) % groups.length;
+
+    state.item =
+      groups[state.itemIndex];
+
+    const decision =
+      state.item.decision || {};
+
+    state.selectedIndex =
+      Number.isInteger(
+        decision.decisionCandidate
+      )
+        ? decision.decisionCandidate
+        : null;
+
+    if (
+      Object.prototype.hasOwnProperty.call(
+        decision,
+        "decisionGeometry"
+      )
+    ) {
+      state.decisionGeometry =
+        clone(
+          decision.decisionGeometry
+        );
+    } else {
+      state.decisionGeometry =
+        clone(
+          candidate(
+            state.selectedIndex
+          )?.geometry || null
+        );
+    }
+
+    state.edited =
+      Boolean(decision.edited);
+
+    state.editMode = false;
+    state.freehandDrawing = false;
+    state.freehandPoints = [];
+
+    state.visibility = {};
+
+    candidates().forEach(
+      (_item, candidateIndex) => {
+        state.visibility[
+          candidateIndex
+        ] = true;
+      }
+    );
+
+    $("comment").value =
+      decision.comment || "";
+
+    setEditUi(false);
+    updateItemControls();
+
+    await renderCurrentView(
+      true
+    );
+  }
+
+
+  async function openNextOutstanding(
+    afterIndex = -1
+  ) {
+    await refreshPayload();
+    updateHeader();
+
+    const outstanding =
+      outstandingIndexes();
+
+    if (!outstanding.length) {
+      state.item = null;
+      destroyViewers();
+      startAutoFinalizeCountdown();
+      return;
+    }
+
+    const forward =
+      outstanding.find(
+        index =>
+          index > afterIndex
+      );
+
+    const nextIndex =
+      forward != null
+        ? forward
+        : outstanding[0];
+
+    await loadItem(
+      nextIndex
+    );
+  }
+
+
+  async function savePatch(patch) {
+    if (!state.item) {
+      throw new Error(
+        "No review case loaded"
+      );
+    }
+
+    const result =
+      await json(
+        api(
+          `/groups/${encodeURIComponent(state.item.id)}`
+        ),
+        {
+          method: "PUT",
+          body: JSON.stringify(
+            patch
+          ),
+        }
+      );
+
+    state.item.decision =
+      result.decision;
+
+    state.payload.groups[
+      state.itemIndex
+    ].decision =
+      result.decision;
+
+    state.payload.progress =
+      result.progress;
+
+    updateItemControls();
+
+    return result;
+  }
+
+
+  async function selectPreferred(index) {
+    if (
+      state.editMode ||
+      !candidate(index)
+    ) {
+      return;
+    }
+
+    state.selectedIndex =
+      index;
+
+    state.decisionGeometry =
+      clone(
+        candidate(index).geometry
+      );
+
+    state.edited = false;
+
+    setAutosave(
+      "Saving selection…"
+    );
+
+    try {
+      await savePatch({
+        status: "pending",
+        decisionCandidate:
+          index,
+        decisionGeometry:
+          state.decisionGeometry,
+        edited: false,
+        challenging:
+          $("challenging").checked,
+        comment:
+          $("comment").value,
+      });
+
+      setAutosave(
+        "Selection saved"
+      );
+
+      drawAllOverlays();
+    } catch (error) {
+      setAutosave(
+        `Save error: ${error.message}`,
+        true
+      );
+    }
+  }
+
+
+  function leaveEditModeForAdvance() {
+    clearTimeout(
+      state.saveTimer
+    );
+
+    state.saveTimer = null;
+    state.freehandDrawing = false;
+    state.freehandPoints = [];
+    state.freehandLastClient = null;
+    state.editMode = false;
+
+    try {
+      state.overlayViewer
+        ?.setMouseNavEnabled(true);
+    } catch {}
+
+    setEditUi(false);
+
+    const restore =
+      state.preEditViewMode === "overlay"
+        ? "overlay"
+        : "split";
+
+    state.viewMode = restore;
+
+    $("splitBtn")
+      .classList.toggle(
+        "primary",
+        restore === "split"
+      );
+
+    $("overlayBtn")
+      .classList.toggle(
+        "primary",
+        restore === "overlay"
+      );
+  }
+
+
+  async function acceptCurrent() {
+    if (
+      !state.item ||
+      !Number.isInteger(
+        state.selectedIndex
+      )
+    ) {
+      return;
+    }
+
+    const currentIndex =
+      state.itemIndex;
+
+    if (state.editMode) {
+      leaveEditModeForAdvance();
+    }
+
+    clearTimeout(
+      state.saveTimer
+    );
+
+    state.saveTimer = null;
+
+    setAutosave(
+      "Accepting…"
+    );
+
+    try {
+      await savePatch({
+        status: "accepted",
+        decisionCandidate:
+          state.selectedIndex,
+        decisionGeometry:
+          state.decisionGeometry,
+        edited:
+          state.edited,
+        challenging:
+          $("challenging").checked,
+        comment:
+          $("comment").value,
+      });
+
+      setAutosave(
+        "Accepted and saved"
+      );
+
+      await openNextOutstanding(
+        currentIndex
+      );
+    } catch (error) {
+      setAutosave(
+        `Accept error: ${error.message}`,
+        true
+      );
+    }
+  }
+
+
+  async function deferCurrent() {
+    if (!state.item) return;
+
+    const currentIndex =
+      state.itemIndex;
+
+    if (state.editMode) {
+      leaveEditModeForAdvance();
+    }
+
+    clearTimeout(
+      state.saveTimer
+    );
+
+    state.saveTimer = null;
+
+    setAutosave(
+      "Leaving for end…"
+    );
+
+    try {
+      await savePatch({
+        status: "deferred",
+        decisionCandidate:
+          Number.isInteger(
+            state.selectedIndex
+          )
+            ? state.selectedIndex
+            : null,
+        decisionGeometry:
+          state.decisionGeometry,
+        edited:
+          state.edited,
+        challenging:
+          $("challenging").checked,
+        comment:
+          $("comment").value,
+      });
+
+      setAutosave(
+        "Left for end"
+      );
+
+      await openNextOutstanding(
+        currentIndex
+      );
+    } catch (error) {
+      setAutosave(
+        `Defer error: ${error.message}`,
+        true
+      );
+    }
+  }
+
+
+  async function undoLastDecision() {
+    if (state.editMode) return;
+
+    cancelFinalizeCountdown();
+
+    $("completionOverlay")
+      .classList.add(
+        "hidden"
+      );
+
+    setAutosave(
+      "Reopening previous decision…"
+    );
+
+    try {
+      const result =
+        await json(
+          api("/undo-last"),
+          {
+            method: "POST",
+            body: "{}",
+          }
+        );
+
+      await refreshPayload();
+
+      const index =
+        state.payload.groups
+          .findIndex(
+            group =>
+              group.id ===
+              result.groupId
+          );
+
+      if (index >= 0) {
+        await loadItem(index);
+      }
+
+      setAutosave(
+        "Previous decision reopened"
+      );
+    } catch (error) {
+      setAutosave(
+        `Undo error: ${error.message}`,
+        true
+      );
+    }
+  }
+
+
+  async function toggleChallenging() {
+    if (!state.item) return;
+
+    setAutosave(
+      "Saving challenging flag…"
+    );
+
+    try {
+      await savePatch({
+        challenging:
+          $("challenging").checked,
+      });
+
+      setAutosave(
+        "Challenging flag saved"
+      );
+    } catch (error) {
+      setAutosave(
+        `Save error: ${error.message}`,
+        true
+      );
+    }
+  }
+
+
+  function scheduleCommentSave() {
+    clearTimeout(
+      state.saveTimer
+    );
+
+    state.saveTimer =
+      setTimeout(
+        async () => {
+          if (!state.item) return;
+
+          try {
+            await savePatch({
+              comment:
+                $("comment").value,
+              challenging:
+                $("challenging").checked,
+            });
+
+            setAutosave(
+              "Comment autosaved"
+            );
+          } catch (error) {
+            setAutosave(
+              `Comment save error: ${error.message}`,
+              true
+            );
+          }
+        },
+        450
+      );
+  }
+
+
+  function scheduleGeneralCommentSave() {
+    clearTimeout(
+      state.generalTimer
+    );
+
+    state.generalTimer =
+      setTimeout(
+        async () => {
+          try {
+            await json(
+              api(
+                "/general-comment"
+              ),
+              {
+                method: "PUT",
+                body:
+                  JSON.stringify({
+                    comment:
+                      $("generalComment").value,
+                  }),
+              }
+            );
+
+            setAutosave(
+              "General comment autosaved"
+            );
+          } catch (error) {
+            setAutosave(
+              `General comment error: ${error.message}`,
+              true
+            );
+          }
+        },
+        500
+      );
+  }
+
+
+  function setEditOperation(operation) {
+    state.editOperation =
+      operation === "subtract"
+        ? "subtract"
+        : "add";
+
+    $("editAddBtn")
+      .classList.toggle(
+        "primary",
+        state.editOperation === "add"
+      );
+
+    $("editSubtractBtn")
+      .classList.toggle(
+        "primary",
+        state.editOperation === "subtract"
+      );
+
+    setAutosave(
+      `Freehand edit · ${
+        state.editOperation === "add"
+          ? "Add"
+          : "Subtract"
+      }`
+    );
+  }
+
+
+  function setEditUi(active) {
+    $("freehandEditControls")
+      .classList.toggle(
+        "hidden",
+        !active
+      );
+
+    $("editBtn")
+      .classList.toggle(
+        "hidden",
+        active
+      );
+
+    $("visibilityControls")
+      .classList.toggle(
+        "hidden",
+        active
+      );
+
+    $("showAllBtn")
+      .classList.toggle(
+        "hidden",
+        active
+      );
+
+    $("showNoneBtn")
+      .classList.toggle(
+        "hidden",
+        active
+      );
+
+    $("splitBtn").disabled =
+      active;
+
+    $("overlayBtn").disabled =
+      active;
+  }
+
+
+  async function enterEdit() {
+    if (
+      !state.decisionGeometry ||
+      !Number.isInteger(
+        state.selectedIndex
+      )
+    ) {
+      return;
+    }
+
+    state.preEditViewMode =
+      state.viewMode === "overlay"
+        ? "overlay"
+        : "split";
+
+    state.viewMode =
+      "overlay";
+
+    state.editMode =
+      true;
+
+    state.freehandDrawing =
+      false;
+
+    state.freehandPoints =
+      [];
+
+    state.editOperation =
+      "add";
+
+    $("splitBtn")
+      .classList.remove(
+        "primary"
+      );
+
+    $("overlayBtn")
+      .classList.add(
+        "primary"
+      );
+
+    setEditUi(true);
+    setEditOperation("add");
+
+    await renderCurrentView(
+      true
+    );
+
+    updateItemControls();
+    drawAllOverlays();
+  }
+
+
+  async function finishEdit() {
+    if (
+      !state.item ||
+      !Number.isInteger(
+        state.selectedIndex
+      )
+    ) {
+      return;
+    }
+
+    await acceptCurrent();
+  }
+
+
+  function resetEdit() {
+    const selected =
+      candidate(
+        state.selectedIndex
+      );
+
+    if (!selected) return;
+
+    state.decisionGeometry =
+      clone(
+        selected.geometry
+      );
+
+    state.edited =
+      false;
+
+    state.freehandPoints =
+      [];
+
+    drawAllOverlays();
+    updateItemControls();
+
+    scheduleGeometrySave();
+  }
+
+
+  function scheduleGeometrySave() {
+    clearTimeout(
+      state.saveTimer
+    );
+
+    const itemId =
+      state.item?.id;
+
+    const selectedIndex =
+      state.selectedIndex;
+
+    const geometry =
+      clone(
+        state.decisionGeometry
+      );
+
+    const edited =
+      state.edited;
+
+    state.saveTimer =
+      setTimeout(
+        async () => {
+          if (
+            !itemId ||
+            !Number.isInteger(
+              selectedIndex
+            ) ||
+            state.item?.id !==
+              itemId
+          ) {
+            return;
+          }
+
+          try {
+            // No status here:
+            // delayed autosave must not reopen
+            // an already accepted decision.
+            await savePatch({
+              decisionCandidate:
+                selectedIndex,
+              decisionGeometry:
+                geometry,
+              edited,
+              challenging:
+                $("challenging").checked,
+              comment:
+                $("comment").value,
+            });
+
+            setAutosave(
+              "Edit autosaved"
+            );
+          } catch (error) {
+            setAutosave(
+              `Autosave error: ${error.message}`,
+              true
+            );
+          }
+        },
+        450
+      );
+  }
+
+
+  function defaultDisplayChannels() {
+    return {
+      he: {
+        hematoxylin: true,
+        eosin: true,
+      },
+      hdab: {
+        hematoxylin: true,
+        dab: true,
+      },
+      fluorescence: {
+        red: true,
+        green: true,
+        blue: true,
+      },
+      rgb: {
+        red: true,
+        green: true,
+        blue: true,
+      },
+    };
+  }
+
+
+  function displayStorageKey(imageId) {
+    return (
+      `histoannotator.display.v1.${imageId}`
+    );
+  }
+
+
+  function ifDisplayStorageKey(imageId) {
+    return (
+      `histoannotator.ifDisplay.v1:${imageId}`
+    );
+  }
+
+
+  function scientificIfMeta() {
+    const meta =
+      state.imageInfo
+        ?.multichannel;
+
+    if (
+      meta?.scientificMultichannel &&
+      Array.isArray(
+        meta.channels
+      ) &&
+      meta.channels.length
+    ) {
+      return meta;
+    }
+
+    return null;
+  }
+
+
+  function defaultScientificSettings(meta) {
+    const colors = [
+      "#ffffff",
+      "#ff0000",
+      "#00ff00",
+      "#0080ff",
+      "#ffff00",
+      "#ff00ff",
+      "#00ffff",
+    ];
+
+    return {
+      channels:
+        meta.channels.map(
+          (channel, index) => {
+            const allowedMin =
+              Number(
+                channel.allowedMin ??
+                channel.min ??
+                0
+              );
+
+            const allowedMax =
+              Number(
+                channel.allowedMax ??
+                channel.max ??
+                channel.maxDisplay ??
+                65535
+              );
+
+            const autoMin =
+              Number(
+                channel.minDisplay ??
+                channel.displayMin ??
+                channel.autoMin ??
+                allowedMin
+              );
+
+            const autoMax =
+              Number(
+                channel.maxDisplay ??
+                channel.displayMax ??
+                channel.autoMax ??
+                allowedMax
+              );
+
+            return {
+              name:
+                String(
+                  channel.name ??
+                  channel.label ??
+                  `Channel ${index + 1}`
+                ),
+              visible:
+                channel.visible !== false,
+              color:
+                String(
+                  channel.color ||
+                  colors[
+                    index %
+                    colors.length
+                  ]
+                ),
+              allowedMin:
+                Number.isFinite(
+                  allowedMin
+                )
+                  ? allowedMin
+                  : 0,
+              allowedMax:
+                Number.isFinite(
+                  allowedMax
+                )
+                  ? allowedMax
+                  : 65535,
+              autoMin:
+                Number.isFinite(
+                  autoMin
+                )
+                  ? autoMin
+                  : 0,
+              autoMax:
+                Number.isFinite(
+                  autoMax
+                )
+                  ? autoMax
+                  : 65535,
+              min:
+                Number.isFinite(
+                  autoMin
+                )
+                  ? autoMin
+                  : 0,
+              max:
+                Number.isFinite(
+                  autoMax
+                )
+                  ? autoMax
+                  : 65535,
+              gamma:
+                Number(
+                  channel.gamma ??
+                  1
+                ),
+              brightness:
+                Number(
+                  channel.brightness ??
+                  100
+                ),
+            };
+          }
+        ),
+    };
+  }
+
+
+  function loadDisplayState(
+    imageId,
+    serverImageType
+  ) {
+    const displayChannels =
+      defaultDisplayChannels();
+
+    let saved = null;
+
+    try {
+      saved =
+        JSON.parse(
+          localStorage.getItem(
+            displayStorageKey(
+              imageId
+            )
+          ) ||
+          "null"
+        );
+    } catch {}
+
+    const imageType =
+      String(
+        saved?.imageType ||
+        serverImageType ||
+        "he"
+      );
+
+    const brightnessPercent =
+      clamp(
+        saved?.brightnessPercent,
+        40,
+        200,
+        100
+      );
+
+    if (
+      saved?.displayChannels &&
+      typeof saved.displayChannels ===
+        "object"
+    ) {
+      Object.assign(
+        displayChannels,
+        saved.displayChannels
+      );
+    }
+
+    state.display = {
+      _imageId: imageId,
+      imageType,
+      brightnessPercent,
+      displayChannels,
+      ifSettings: null,
+    };
+
+    const meta =
+      scientificIfMeta();
+
+    if (meta) {
+      const settings =
+        defaultScientificSettings(
+          meta
+        );
+
+      try {
+        const stored =
+          JSON.parse(
+            localStorage.getItem(
+              ifDisplayStorageKey(
+                imageId
+              )
+            ) ||
+            "null"
+          );
+
+        if (
+          Array.isArray(
+            stored?.channels
+          )
+        ) {
+          stored.channels.forEach(
+            (incoming, index) => {
+              const channel =
+                settings.channels[
+                  index
+                ];
+
+              if (
+                !channel ||
+                !incoming
+              ) {
+                return;
+              }
+
+              channel.visible =
+                incoming.visible !==
+                false;
+
+              if (
+                typeof incoming.color ===
+                "string"
+              ) {
+                channel.color =
+                  incoming.color;
+              }
+
+              channel.min =
+                clamp(
+                  incoming.min,
+                  channel.allowedMin,
+                  channel.allowedMax,
+                  channel.min
+                );
+
+              channel.max =
+                clamp(
+                  incoming.max,
+                  channel.allowedMin,
+                  channel.allowedMax,
+                  channel.max
+                );
+
+              if (
+                channel.max <=
+                channel.min
+              ) {
+                channel.min =
+                  channel.autoMin;
+
+                channel.max =
+                  channel.autoMax;
+              }
+
+              channel.gamma =
+                clamp(
+                  incoming.gamma,
+                  .05,
+                  20,
+                  channel.gamma
+                );
+
+              channel.brightness =
+                clamp(
+                  incoming.brightness,
+                  0,
+                  400,
+                  channel.brightness
+                );
+            }
+          );
+        }
+      } catch {}
+
+      state.display.ifSettings =
+        settings;
+    }
+  }
+
+
+  function saveDisplayState() {
+    if (
+      !state.payload ||
+      !state.display
+    ) {
+      return;
+    }
+
+    const imageId =
+      state.payload.imageId;
+
+    localStorage.setItem(
+      displayStorageKey(
+        imageId
+      ),
+      JSON.stringify({
+        imageType:
+          state.display.imageType,
+        brightnessPercent:
+          state.display
+            .brightnessPercent,
+        displayChannels:
+          state.display
+            .displayChannels,
+      })
+    );
+
+    if (
+      state.display.ifSettings
+    ) {
+      localStorage.setItem(
+        ifDisplayStorageKey(
+          imageId
+        ),
+        JSON.stringify(
+          state.display.ifSettings
+        )
+      );
+    }
+  }
+
+
+  function activeDisplayView() {
+    const type =
+      state.display?.imageType ||
+      "he";
+
+    const channels =
+      state.display
+        ?.displayChannels ||
+      defaultDisplayChannels();
+
+    if (type === "he") {
+      const c =
+        channels.he || {};
+
+      if (
+        c.hematoxylin &&
+        c.eosin
+      ) {
+        return {
+          view: "original",
+        };
+      }
+
+      if (c.hematoxylin) {
+        return {
+          view: "hematoxylin",
+        };
+      }
+
+      if (c.eosin) {
+        return {
+          view: "eosin",
+        };
+      }
+
+      return {
+        view: "none",
+      };
+    }
+
+    if (type === "hdab") {
+      const c =
+        channels.hdab || {};
+
+      if (
+        c.hematoxylin &&
+        c.dab
+      ) {
+        return {
+          view: "original",
+        };
+      }
+
+      if (c.hematoxylin) {
+        return {
+          view: "hematoxylin",
+        };
+      }
+
+      if (c.dab) {
+        return {
+          view: "dab",
+        };
+      }
+
+      return {
+        view: "none",
+      };
+    }
+
+    const c =
+      channels[type] ||
+      channels.rgb ||
+      {};
+
+    const mask =
+      `${c.red ? 1 : 0}` +
+      `${c.green ? 1 : 0}` +
+      `${c.blue ? 1 : 0}`;
+
+    if (mask === "111") {
+      return {
+        view: "original",
+      };
+    }
+
+    return {
+      view: "rgbmask",
+      rgb: mask,
+    };
+  }
+
+
+  function displayQueryString() {
+    const display =
+      activeDisplayView();
+
+    const params =
+      new URLSearchParams();
+
+    params.set(
+      "view",
+      display.view
+    );
+
+    params.set(
+      "image_type",
+      state.display
+        ?.imageType ||
+      "he"
+    );
+
+    const meta =
+      scientificIfMeta();
+
+    const settings =
+      state.display
+        ?.ifSettings;
+
+    if (
+      state.display
+        ?.imageType ===
+        "fluorescence" &&
+      meta &&
+      settings
+    ) {
+      const channels =
+        settings.channels;
+
+      params.set(
+        "if_enabled",
+        channels
+          .map(
+            channel =>
+              channel.visible
+                ? "1"
+                : "0"
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_min",
+        channels
+          .map(
+            channel =>
+              compactNumber(
+                channel.min
+              )
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_max",
+        channels
+          .map(
+            channel =>
+              compactNumber(
+                channel.max
+              )
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_gamma",
+        channels
+          .map(
+            channel =>
+              compactNumber(
+                channel.gamma
+              )
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_brightness",
+        channels
+          .map(
+            channel =>
+              compactNumber(
+                channel.brightness
+              )
+          )
+          .join(",")
+      );
+
+      params.set(
+        "if_colors",
+        channels
+          .map(
+            channel =>
+              String(
+                channel.color ||
+                "#ffffff"
+              ).replace("#", "")
+          )
+          .join(",")
+      );
+    } else if (
+      display.rgb
+    ) {
+      params.set(
+        "rgb",
+        display.rgb
+      );
+    }
+
+    return params.toString();
+  }
+
+
+  function renderDisplayControls() {
+    if (!state.display) return;
+
+    $("displayImageType").value =
+      state.display.imageType;
+
+    $("displayBrightness").value =
+      String(
+        state.display
+          .brightnessPercent
+      );
+
+    $("displayBrightnessValue")
+      .textContent =
+      `${state.display.brightnessPercent}%`;
+
+    const root =
+      $("displayChannels");
+
+    const meta =
+      scientificIfMeta();
+
+    if (
+      state.display.imageType ===
+        "fluorescence" &&
+      meta &&
+      state.display.ifSettings
+    ) {
+      root.innerHTML =
+        '<div class="small muted">Scientific fluorescence channels</div>';
+
+      state.display
+        .ifSettings
+        .channels
+        .forEach(
+          (channel, index) => {
+            const row =
+              document.createElement(
+                "div"
+              );
+
+            row.className =
+              "display-channel";
+
+            row.innerHTML = `
+              <input
+                type="checkbox"
+                data-if-visible="${index}"
+                ${channel.visible ? "checked" : ""}
+              >
+              <span>${esc(channel.name)}</span>
+              <input
+                type="color"
+                data-if-color="${index}"
+                value="${esc(channel.color)}"
+              >
+
+              <div class="display-channel-details">
+                <label>
+                  Min
+                  <input
+                    type="number"
+                    step="any"
+                    data-if-min="${index}"
+                    value="${channel.min}"
+                  >
+                </label>
+
+                <label>
+                  Max
+                  <input
+                    type="number"
+                    step="any"
+                    data-if-max="${index}"
+                    value="${channel.max}"
+                  >
+                </label>
+
+                <label>
+                  Gamma
+                  <input
+                    type="number"
+                    min="0.05"
+                    max="20"
+                    step="0.05"
+                    data-if-gamma="${index}"
+                    value="${channel.gamma}"
+                  >
+                </label>
+
+                <label>
+                  Channel brightness
+                  <input
+                    type="number"
+                    min="0"
+                    max="400"
+                    step="1"
+                    data-if-brightness="${index}"
+                    value="${channel.brightness}"
+                  >
+                </label>
+              </div>
+            `;
+
+            root.appendChild(
+              row
+            );
+          }
+        );
+
+
+      root
+        .querySelectorAll(
+          "[data-if-visible]"
+        )
+        .forEach(
+          element =>
+            element.addEventListener(
+              "change",
+              () => {
+                state.display
+                  .ifSettings
+                  .channels[
+                    Number(
+                      element.dataset
+                        .ifVisible
+                    )
+                  ]
+                  .visible =
+                  element.checked;
+
+                displayChanged();
+              }
+            )
+        );
+
+
+      root
+        .querySelectorAll(
+          "[data-if-color]"
+        )
+        .forEach(
+          element =>
+            element.addEventListener(
+              "change",
+              () => {
+                state.display
+                  .ifSettings
+                  .channels[
+                    Number(
+                      element.dataset
+                        .ifColor
+                    )
+                  ]
+                  .color =
+                  element.value;
+
+                displayChanged();
+              }
+            )
+        );
+
+
+      const numeric = [
+        [
+          "data-if-min",
+          "min",
+          null,
+          null,
+        ],
+        [
+          "data-if-max",
+          "max",
+          null,
+          null,
+        ],
+        [
+          "data-if-gamma",
+          "gamma",
+          .05,
+          20,
+        ],
+        [
+          "data-if-brightness",
+          "brightness",
+          0,
+          400,
+        ],
+      ];
+
+
+      numeric.forEach(
+        ([
+          attribute,
+          key,
+          minimum,
+          maximum,
+        ]) => {
+          root
+            .querySelectorAll(
+              `[${attribute}]`
+            )
+            .forEach(
+              element =>
+                element.addEventListener(
+                  "change",
+                  () => {
+                    const index =
+                      Number(
+                        element.getAttribute(
+                          attribute
+                        )
+                      );
+
+                    const channel =
+                      state.display
+                        .ifSettings
+                        .channels[
+                          index
+                        ];
+
+                    const min =
+                      minimum ??
+                      channel.allowedMin;
+
+                    const max =
+                      maximum ??
+                      channel.allowedMax;
+
+                    channel[key] =
+                      clamp(
+                        element.value,
+                        min,
+                        max,
+                        channel[key]
+                      );
+
+                    if (
+                      channel.max <=
+                      channel.min
+                    ) {
+                      channel.min =
+                        channel.autoMin;
+
+                      channel.max =
+                        channel.autoMax;
+                    }
+
+                    displayChanged();
+                  }
+                )
+            );
+        }
+      );
+
+      return;
+    }
+
+
+    let definitions = [];
+
+    if (
+      state.display.imageType ===
+      "he"
+    ) {
+      definitions = [
+        [
+          "hematoxylin",
+          "Hematoxylin",
+        ],
+        [
+          "eosin",
+          "Eosin",
+        ],
+      ];
+    } else if (
+      state.display.imageType ===
+      "hdab"
+    ) {
+      definitions = [
+        [
+          "hematoxylin",
+          "Hematoxylin",
+        ],
+        [
+          "dab",
+          "DAB",
+        ],
+      ];
+    } else {
+      definitions = [
+        ["red", "Red"],
+        ["green", "Green"],
+        ["blue", "Blue"],
+      ];
+    }
+
+    const channelState =
+      state.display
+        .displayChannels[
+          state.display.imageType
+        ] ||
+      state.display
+        .displayChannels.rgb;
+
+    root.innerHTML =
+      definitions.map(
+        ([key, label]) => `
+          <label
+            style="display:flex;gap:7px;align-items:center;margin:6px 0"
+          >
+            <input
+              type="checkbox"
+              data-simple-channel="${key}"
+              ${channelState[key] ? "checked" : ""}
+            >
+            ${esc(label)}
+          </label>
+        `
+      ).join("");
+
+    root
+      .querySelectorAll(
+        "[data-simple-channel]"
+      )
+      .forEach(
+        element =>
+          element.addEventListener(
+            "change",
+            () => {
+              channelState[
+                element.dataset
+                  .simpleChannel
+              ] =
+                element.checked;
+
+              displayChanged();
+            }
+          )
+      );
+  }
+
+
+  function applyViewerBrightness(viewer) {
+    if (
+      !viewer?.element ||
+      !state.display
+    ) {
+      return;
+    }
+
+    viewer.element.style.filter =
+      `brightness(${state.display.brightnessPercent}%)`;
+  }
+
+
+  async function ensureTileSource(
+    force = false
+  ) {
+    if (
+      state.tileSource &&
+      !force
+    ) {
+      return;
+    }
+
+    const imageId =
+      state.payload.imageId;
+
+    const info =
+      await json(
+        `/api/images/${encodeURIComponent(imageId)}/info`
+      );
+
+    let serverDisplay = {
+      imageType: "he",
+    };
+
+    try {
+      serverDisplay =
+        await json(
+          `/api/images/${encodeURIComponent(imageId)}/display-config`
+        );
+    } catch {}
+
+    const width =
+      Number(
+        info.width ??
+        info.dimensions?.width ??
+        info.size?.width ??
+        0
+      );
+
+    const height =
+      Number(
+        info.height ??
+        info.dimensions?.height ??
+        info.size?.height ??
+        0
+      );
+
+    const tileSize =
+      Number(
+        info.tileSize ??
+        info.tile_size ??
+        512
+      );
+
+    let maxLevel;
+
+    if (
+      Array.isArray(
+        info.levels
+      )
+    ) {
+      maxLevel =
+        info.levels.length - 1;
+    } else if (
+      Number.isFinite(
+        Number(
+          info.levelCount
+        )
+      )
+    ) {
+      maxLevel =
+        Number(
+          info.levelCount
+        ) - 1;
+    } else if (
+      Number.isFinite(
+        Number(
+          info.levels
+        )
+      )
+    ) {
+      maxLevel =
+        Number(
+          info.levels
+        ) - 1;
+    } else if (
+      width &&
+      height
+    ) {
+      maxLevel =
+        Math.ceil(
+          Math.log2(
+            Math.max(
+              width,
+              height
+            )
+          )
+        );
+    }
+
+    state.imageInfo = {
+      ...info,
+      imageId,
+      width,
+      height,
+    };
+
+    if (
+      !state.display ||
+      state.display._imageId !==
+        imageId
+    ) {
+      loadDisplayState(
+        imageId,
+        serverDisplay.imageType ||
+          "he"
+      );
+    }
+
+    renderDisplayControls();
+
+    const query =
+      displayQueryString();
+
+    if (
+      width &&
+      height &&
+      Number.isFinite(
+        maxLevel
+      )
+    ) {
+      state.tileSource = {
+        width,
+        height,
+        tileSize,
+        tileOverlap:
+          Number(
+            info.tileOverlap ||
+            0
+          ),
+        minLevel: 0,
+        maxLevel,
+
+        getTileUrl:
+          (level, x, y) =>
+            `/api/images/${encodeURIComponent(imageId)}` +
+            `/tiles/${level}/${x}_${y}.jpeg?${query}`,
+      };
+    } else {
+      state.tileSource = {
+        type: "image",
+        url:
+          `/api/images/${encodeURIComponent(imageId)}/original`,
+      };
+    }
+  }
+
+
+  async function displayChanged() {
+    saveDisplayState();
+
+    await ensureTileSource(
+      true
+    );
+
+    renderDisplayControls();
+
+    if (state.item) {
+      await renderCurrentView(
+        true
+      );
+    }
+  }
+
+
+  function createViewer(element) {
+    const viewer =
+      OpenSeadragon({
+        element,
+        tileSources:
+          state.tileSource,
+
+        showNavigationControl:
+          false,
+
+        showNavigator:
+          false,
+
+        gestureSettingsMouse: {
+          clickToZoom: false,
+          dblClickToZoom: true,
+          scrollToZoom: true,
+        },
+
+        gestureSettingsTouch: {
+          pinchToZoom: true,
+          flickEnabled: true,
+        },
+      });
+
+    viewer.addHandler(
+      "open",
+      () =>
+        applyViewerBrightness(
+          viewer
+        )
+    );
+
+    return viewer;
+  }
+
+
+  function destroyViewers() {
+    [
+      ...state.viewers,
+      state.overlayViewer,
+    ]
+      .filter(Boolean)
+      .forEach(
+        viewer => {
+          try {
+            viewer.destroy();
+          } catch {}
+        }
+      );
+
+    state.viewers = [];
+    state.overlayViewer = null;
+
+    $("splitGrid").innerHTML =
+      "";
+
+    $("overlayOsd").innerHTML =
+      "";
+
+    $("overlayPanel")
+      .querySelectorAll(
+        ":scope > .overlay-svg"
+      )
+      .forEach(
+        node =>
+          node.remove()
+      );
+  }
+
+
+  function waitOpen(viewer) {
+    return new Promise(
+      resolve => {
+        if (
+          viewer.world
+            .getItemCount()
+        ) {
+          resolve();
+        } else {
+          viewer.addOnceHandler(
+            "open",
+            resolve
+          );
+        }
+      }
+    );
+  }
+
+
+  async function renderCurrentView(
+    fitToItem
+  ) {
+    if (!state.item) return;
+
+    if (
+      state.viewMode ===
+      "split"
+    ) {
+      $("splitGrid")
+        .classList.remove(
+          "hidden"
+        );
+
+      $("overlayPanel")
+        .classList.add(
+          "hidden"
+        );
+
+      await renderSplit(
+        fitToItem
+      );
+    } else {
+      $("splitGrid")
+        .classList.add(
+          "hidden"
+        );
+
+      $("overlayPanel")
+        .classList.remove(
+          "hidden"
+        );
+
+      await renderOverlay(
+        fitToItem
+      );
+    }
+  }
+
+
+  async function renderSplit(
+    fitToItem
+  ) {
+    state.viewers
+      .forEach(
+        viewer => {
+          try {
+            viewer.destroy();
+          } catch {}
+        }
+      );
+
+    state.viewers = [];
+
+    $("splitGrid").innerHTML =
+      "";
+
+    const list =
+      candidates();
+
+    $("splitGrid").className =
+      `split-grid n${Math.min(4,Math.max(2,list.length))}`;
+
+    list.forEach(
+      (item, index) => {
+        const panel =
+          document.createElement(
+            "div"
+          );
+
+        panel.className =
+          "view-panel";
+
+        panel.innerHTML = `
+          <div class="view-title">
+            <span class="dot"
+                  style="background:${esc(item.color)}"></span>
+            ${esc(item.label)}
+          </div>
+
+          <div class="osd"></div>
+
+          ${
+            item.geometry
+              ? ""
+              : '<div class="empty-mask">No annotation in this candidate</div>'
+          }
+        `;
+
+        $("splitGrid")
+          .appendChild(
+            panel
+          );
+
+        const viewer =
+          createViewer(
+            panel.querySelector(
+              ".osd"
+            )
+          );
+
+        viewer._reviewPanel =
+          panel;
+
+        viewer._reviewCandidate =
+          item;
+
+        state.viewers.push(
+          viewer
+        );
+
+        viewer.addHandler(
+          "animation",
+          () =>
+            syncFrom(viewer)
+        );
+
+        viewer.addHandler(
+          "pan",
+          () =>
+            syncFrom(viewer)
+        );
+
+        viewer.addHandler(
+          "zoom",
+          () =>
+            syncFrom(viewer)
+        );
+
+        [
+          "animation",
+          "pan",
+          "zoom",
+          "resize",
+          "open",
+        ].forEach(
+          eventName => {
+            viewer.addHandler(
+              eventName,
+              () =>
+                drawViewerOverlay(
+                  viewer,
+                  item.geometry,
+                  item.color,
+                  false
+                )
+            );
+          }
+        );
+      }
+    );
+
+    await Promise.all(
+      state.viewers.map(
+        waitOpen
+      )
+    );
+
+    if (fitToItem) {
+      fitAllToItem();
+    }
+
+    drawAllOverlays();
+  }
+
+
+  async function renderOverlay(
+    fitToItem = true
+  ) {
+    if (
+      state.overlayViewer
+    ) {
+      try {
+        state.overlayViewer
+          .destroy();
+      } catch {}
+
+      state.overlayViewer =
+        null;
+    }
+
+    $("overlayOsd").innerHTML =
+      "";
+
+    $("overlayPanel")
+      .querySelectorAll(
+        ":scope > .overlay-svg"
+      )
+      .forEach(
+        node =>
+          node.remove()
+      );
+
+    // Critical overlay sizing fix:
+    // wait until the now-visible panel has real layout dimensions.
+    await new Promise(
+      resolve =>
+        requestAnimationFrame(
+          () =>
+            requestAnimationFrame(
+              resolve
+            )
+        )
+    );
+
+    const rect =
+      $("overlayPanel")
+        .getBoundingClientRect();
+
+    if (
+      rect.width < 2 ||
+      rect.height < 2
+    ) {
+      throw new Error(
+        `Overlay viewer has invalid size: ` +
+        `${Math.round(rect.width)}x${Math.round(rect.height)}`
+      );
+    }
+
+    state.overlayViewer =
+      createViewer(
+        $("overlayOsd")
+      );
+
+    [
+      "animation",
+      "pan",
+      "zoom",
+      "resize",
+      "open",
+    ].forEach(
+      eventName =>
+        state.overlayViewer
+          .addHandler(
+            eventName,
+            drawAllOverlays
+          )
+    );
+
+    await waitOpen(
+      state.overlayViewer
+    );
+
+    if (fitToItem) {
+      fitViewerToItem(
+        state.overlayViewer
+      );
+    }
+
+    state.overlayViewer
+      .forceRedraw?.();
+
+    drawAllOverlays();
+  }
+
+
+  function syncFrom(source) {
+    if (
+      state.syncGuard ||
+      state.viewMode !== "split"
+    ) {
+      return;
+    }
+
+    state.syncGuard = true;
+
+    try {
+      const center =
+        source.viewport
+          .getCenter();
+
+      const zoom =
+        source.viewport
+          .getZoom();
+
+      state.viewers.forEach(
+        viewer => {
+          if (viewer === source) {
+            return;
+          }
+
+          viewer.viewport
+            .panTo(
+              center,
+              true
+            );
+
+          viewer.viewport
+            .zoomTo(
+              zoom,
+              null,
+              true
+            );
+        }
+      );
+    } finally {
+      state.syncGuard =
+        false;
+    }
+  }
+
+
+  function fitAllToItem() {
+    state.viewers.forEach(
+      fitViewerToItem
+    );
+  }
+
+
+  function fitViewerToItem(viewer) {
+    const bbox =
+      state.item?.bbox;
+
+    if (
+      !bbox ||
+      !viewer?.viewport
+    ) {
+      return;
+    }
+
+    const [
+      minX,
+      minY,
+      maxX,
+      maxY,
+    ] = bbox;
+
+    const padding =
+      Math.max(
+        maxX - minX,
+        maxY - minY
+      ) * .12 + 8;
+
+    try {
+      const rectangle =
+        viewer.viewport
+          .imageToViewportRectangle(
+            minX - padding,
+            minY - padding,
+            (maxX - minX) +
+              2 * padding,
+            (maxY - minY) +
+              2 * padding
+          );
+
+      viewer.viewport
+        .fitBounds(
+          rectangle,
+          true
+        );
+    } catch {}
+  }
+
+
+  function ensureSvg(viewer) {
+    const panel =
+      viewer._reviewPanel ||
+      $("overlayPanel");
+
+    let svg =
+      panel.querySelector(
+        ":scope > .overlay-svg"
+      );
+
+    if (!svg) {
+      svg =
+        document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "svg"
+        );
+
+      svg.classList.add(
+        "overlay-svg"
+      );
+
+      panel.appendChild(
+        svg
+      );
+    }
+
+    svg.classList.toggle(
+      "editing",
+      state.editMode &&
+      viewer ===
+        state.overlayViewer
+    );
+
+    if (
+      viewer ===
+        state.overlayViewer &&
+      !svg.dataset
+        .freehandBound
+    ) {
+      svg.dataset
+        .freehandBound =
+        "1";
+
+      svg.addEventListener(
+        "pointerdown",
+        event =>
+          beginFreehand(
+            event,
+            viewer
+          )
+      );
+
+      svg.addEventListener(
+        "pointermove",
+        event =>
+          moveFreehand(
+            event,
+            viewer
+          )
+      );
+
+      svg.addEventListener(
+        "pointerup",
+        event =>
+          endFreehand(
+            event,
+            viewer
+          )
+      );
+
+      svg.addEventListener(
+        "pointercancel",
+        event =>
+          cancelFreehand(
+            event,
+            viewer
+          )
+      );
+    }
+
+    return svg;
+  }
+
+
+  function geometryRings(
+    geometry
+  ) {
+    if (!geometry) return [];
+
+    if (
+      geometry.type ===
+      "Polygon"
+    ) {
+      return (
+        geometry.coordinates ||
+        []
+      );
+    }
+
+    if (
+      geometry.type ===
+      "MultiPolygon"
+    ) {
+      return (
+        geometry.coordinates ||
+        []
+      ).flat();
+    }
+
+    if (
+      geometry.type ===
+      "GeometryCollection"
+    ) {
+      return (
+        geometry.geometries ||
+        []
+      ).flatMap(
+        geometryRings
+      );
+    }
+
+    return [];
+  }
+
+
+  function imageToElement(
+    viewer,
+    coordinate
+  ) {
+    return viewer.viewport
+      .imageToViewerElementCoordinates(
+        new OpenSeadragon.Point(
+          Number(
+            coordinate[0]
+          ),
+          Number(
+            coordinate[1]
+          )
+        )
+      );
+  }
+
+
+  function appendGeometry(
+    svg,
+    viewer,
+    geometry,
+    color,
+    selected = false
+  ) {
+    const namespace =
+      "http://www.w3.org/2000/svg";
+
+    geometryRings(
+      geometry
+    ).forEach(
+      ring => {
+        if (
+          !Array.isArray(ring) ||
+          ring.length < 3
+        ) {
+          return;
+        }
+
+        const d =
+          ring.map(
+            (point, index) => {
+              const p =
+                imageToElement(
+                  viewer,
+                  point
+                );
+
+              return (
+                `${index ? "L" : "M"}` +
+                `${p.x.toFixed(2)},` +
+                `${p.y.toFixed(2)}`
+              );
+            }
+          ).join(" ") +
+          " Z";
+
+        const path =
+          document.createElementNS(
+            namespace,
+            "path"
+          );
+
+        path.setAttribute(
+          "d",
+          d
+        );
+
+        path.setAttribute(
+          "fill",
+          selected
+            ? "rgba(255,255,255,.08)"
+            : "none"
+        );
+
+        path.setAttribute(
+          "stroke",
+          color
+        );
+
+        path.setAttribute(
+          "stroke-width",
+          selected
+            ? "4"
+            : "2.4"
+        );
+
+        path.setAttribute(
+          "vector-effect",
+          "non-scaling-stroke"
+        );
+
+        path.setAttribute(
+          "opacity",
+          selected
+            ? ".98"
+            : ".88"
+        );
+
+        svg.appendChild(
+          path
+        );
+      }
+    );
+  }
+
+
+  function drawViewerOverlay(
+    viewer,
+    geometry,
+    color
+  ) {
+    if (
+      !viewer?.viewport
+    ) {
+      return;
+    }
+
+    const svg =
+      ensureSvg(viewer);
+
+    svg.innerHTML = "";
+
+    if (geometry) {
+      appendGeometry(
+        svg,
+        viewer,
+        geometry,
+        color,
+        false
+      );
+    }
+  }
+
+
+  function drawAllOverlays() {
+    if (!state.item) return;
+
+    if (
+      state.viewMode ===
+      "split"
+    ) {
+      state.viewers.forEach(
+        viewer =>
+          drawViewerOverlay(
+            viewer,
+            viewer
+              ._reviewCandidate
+              ?.geometry,
+            viewer
+              ._reviewCandidate
+              ?.color
+          )
+      );
+
+      return;
+    }
+
+    const viewer =
+      state.overlayViewer;
+
+    if (!viewer) return;
+
+    const svg =
+      ensureSvg(viewer);
+
+    svg.innerHTML = "";
+
+    svg.classList.toggle(
+      "editing",
+      state.editMode
+    );
+
+    if (state.editMode) {
+      if (
+        state.decisionGeometry
+      ) {
+        appendGeometry(
+          svg,
+          viewer,
+          state.decisionGeometry,
+          "#ffffff",
+          true
+        );
+      }
+
+      drawFreehandPreview(
+        svg,
+        viewer
+      );
+
+      return;
+    }
+
+    candidates().forEach(
+      (item, index) => {
+        if (
+          state.visibility[
+            index
+          ] !== false &&
+          item.geometry
+        ) {
+          appendGeometry(
+            svg,
+            viewer,
+            item.geometry,
+            item.color,
+            false
+          );
+        }
+      }
+    );
+
+    if (
+      Number.isInteger(
+        state.selectedIndex
+      ) &&
+      state.decisionGeometry
+    ) {
+      appendGeometry(
+        svg,
+        viewer,
+        state.decisionGeometry,
+        "#ffffff",
+        true
+      );
+    }
+  }
+
+
+  function pointerImagePoint(
+    event,
+    viewer
+  ) {
+    const rectangle =
+      viewer.element
+        .getBoundingClientRect();
+
+    return viewer.viewport
+      .viewerElementToImageCoordinates(
+        new OpenSeadragon.Point(
+          event.clientX -
+            rectangle.left,
+          event.clientY -
+            rectangle.top
+        )
+      );
+  }
+
+
+  function drawFreehandPreview(
+    svg,
+    viewer
+  ) {
+    if (
+      !state.editMode ||
+      !state.freehandPoints
+        ?.length
+    ) {
+      return;
+    }
+
+    const points =
+      state.freehandPoints
+        .map(
+          point =>
+            imageToElement(
+              viewer,
+              point
+            )
+        );
+
+    if (
+      points.length < 2
+    ) {
+      return;
+    }
+
+    const path =
+      document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path"
+      );
+
+    path.id =
+      "review-freehand-preview";
+
+    path.classList.add(
+      "freehand-preview"
+    );
+
+    const d =
+      points.map(
+        (point, index) =>
+          `${index ? "L" : "M"}` +
+          `${point.x.toFixed(2)},` +
+          `${point.y.toFixed(2)}`
+      ).join(" ") +
+      (
+        points.length > 2
+          ? " Z"
+          : ""
+      );
+
+    path.setAttribute(
+      "d",
+      d
+    );
+
+    svg.appendChild(
+      path
+    );
+  }
+
+
+  function beginFreehand(
+    event,
+    viewer
+  ) {
+    if (
+      !state.editMode ||
+      event.button !== 0 ||
+      viewer !==
+        state.overlayViewer
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    state.freehandDrawing =
+      true;
+
+    const point =
+      pointerImagePoint(
+        event,
+        viewer
+      );
+
+    state.freehandPoints = [
+      [
+        point.x,
+        point.y,
+      ],
+    ];
+
+    state.freehandLastClient = [
+      event.clientX,
+      event.clientY,
+    ];
+
+    try {
+      viewer.setMouseNavEnabled(
+        false
+      );
+    } catch {}
+
+    try {
+      event.currentTarget
+        .setPointerCapture(
+          event.pointerId
+        );
+    } catch {}
+
+    drawAllOverlays();
+  }
+
+
+  function moveFreehand(
+    event,
+    viewer
+  ) {
+    if (
+      !state.editMode ||
+      !state.freehandDrawing ||
+      viewer !==
+        state.overlayViewer
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const last =
+      state.freehandLastClient;
+
+    if (
+      last &&
+      Math.hypot(
+        event.clientX -
+          last[0],
+        event.clientY -
+          last[1]
+      ) < 2.5
+    ) {
+      return;
+    }
+
+    const point =
+      pointerImagePoint(
+        event,
+        viewer
+      );
+
+    state.freehandPoints.push(
+      [
+        point.x,
+        point.y,
+      ]
+    );
+
+    state.freehandLastClient = [
+      event.clientX,
+      event.clientY,
+    ];
+
+    const svg =
+      ensureSvg(viewer);
+
+    const old =
+      svg.querySelector(
+        "#review-freehand-preview"
+      );
+
+    if (old) {
+      old.remove();
+    }
+
+    drawFreehandPreview(
+      svg,
+      viewer
+    );
+  }
+
+
+  function cancelFreehand(
+    _event,
+    viewer
+  ) {
+    if (
+      !state.freehandDrawing
+    ) {
+      return;
+    }
+
+    state.freehandDrawing =
+      false;
+
+    state.freehandPoints =
+      [];
+
+    state.freehandLastClient =
+      null;
+
+    try {
+      viewer.setMouseNavEnabled(
+        true
+      );
+    } catch {}
+
+    drawAllOverlays();
+  }
+
+
+  async function endFreehand(
+    event,
+    viewer
+  ) {
+    if (
+      !state.editMode ||
+      !state.freehandDrawing ||
+      viewer !==
+        state.overlayViewer
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    state.freehandDrawing =
+      false;
+
+    try {
+      viewer.setMouseNavEnabled(
+        true
+      );
+    } catch {}
+
+    const points =
+      state.freehandPoints.slice();
+
+    state.freehandPoints =
+      [];
+
+    state.freehandLastClient =
+      null;
+
+    if (
+      points.length < 3
+    ) {
+      drawAllOverlays();
+      return;
+    }
+
+    const first =
+      points[0];
+
+    const last =
+      points[
+        points.length - 1
+      ];
+
+    if (
+      first[0] !== last[0] ||
+      first[1] !== last[1]
+    ) {
+      points.push([
+        ...first,
+      ]);
+    }
+
+    const stroke = {
+      type: "Polygon",
+      coordinates: [
+        points,
+      ],
+    };
+
+    setAutosave(
+      `${
+        state.editOperation === "add"
+          ? "Adding"
+          : "Subtracting"
+      } freehand area…`
+    );
+
+    try {
+      const result =
+        await json(
+          api(
+            "/geometry/freehand"
+          ),
+          {
+            method: "POST",
+            body:
+              JSON.stringify({
+                geometry:
+                  state.decisionGeometry,
+                stroke,
+                operation:
+                  state.editOperation,
+              }),
+          }
+        );
+
+      state.decisionGeometry =
+        result.geometry;
+
+      state.edited = true;
+
+      drawAllOverlays();
+      updateItemControls();
+
+      scheduleGeometrySave();
+    } catch (error) {
+      setAutosave(
+        `Edit error: ${error.message}`,
+        true
+      );
+
+      drawAllOverlays();
+    }
+  }
+
+
+  async function setView(mode) {
+    if (
+      state.editMode
+    ) {
+      return;
+    }
+
+    state.viewMode =
+      mode === "overlay"
+        ? "overlay"
+        : "split";
+
+    $("splitBtn")
+      .classList.toggle(
+        "primary",
+        state.viewMode ===
+          "split"
+      );
+
+    $("overlayBtn")
+      .classList.toggle(
+        "primary",
+        state.viewMode ===
+          "overlay"
+      );
+
+    await renderCurrentView(
+      true
+    );
+  }
+
+
+  function setAllVisibility(
+    value
+  ) {
+    candidates().forEach(
+      (_candidate, index) => {
+        state.visibility[
+          index
+        ] = value;
+      }
+    );
+
+    document
+      .querySelectorAll(
+        "[data-visible]"
+      )
+      .forEach(
+        checkbox => {
+          checkbox.checked =
+            value;
+        }
+      );
+
+    drawAllOverlays();
+  }
+
+
+  function cancelFinalizeCountdown() {
+    if (
+      state.finalizeTimer
+    ) {
+      clearTimeout(
+        state.finalizeTimer
+      );
+
+      state.finalizeTimer =
+        null;
+    }
+
+    if (
+      state.finalizeInterval
+    ) {
+      clearInterval(
+        state.finalizeInterval
+      );
+
+      state.finalizeInterval =
+        null;
+    }
+  }
+
+
+  function startAutoFinalizeCountdown() {
+    if (
+      state.finalizing ||
+      state.payload?.status ===
+        "completed"
+    ) {
+      return;
+    }
+
+    cancelFinalizeCountdown();
+
+    $("completionOverlay")
+      .classList.remove(
+        "hidden"
+      );
+
+    let remaining = 10;
+
+    const update = () => {
+      $("completionText")
+        .innerHTML =
+        `All review cases are accepted. ` +
+        `<span class="final-countdown">` +
+        `Finalizing automatically in ${remaining} ` +
+        `second${remaining === 1 ? "" : "s"}…` +
+        `</span><br>` +
+        `<span class="small muted">` +
+        `Use Undo last decision now if you want to reopen the previous case.` +
+        `</span>`;
+    };
+
+    update();
+
+    state.finalizeInterval =
+      setInterval(
+        () => {
+          remaining -= 1;
+
+          if (
+            remaining > 0
+          ) {
+            update();
+          }
+        },
+        1000
+      );
+
+    state.finalizeTimer =
+      setTimeout(
+        () => {
+          cancelFinalizeCountdown();
+          void finishReview();
+        },
+        10000
+      );
+  }
+
+
+  async function finishReview() {
+    if (
+      state.finalizing
+    ) {
+      return;
+    }
+
+    cancelFinalizeCountdown();
+
+    state.finalizing = true;
+    updateHeader();
+
+    setAutosave(
+      "Finalizing review…"
+    );
+
+    try {
+      const result =
+        await json(
+          api("/complete"),
+          {
+            method: "POST",
+            body: "{}",
+          }
+        );
+
+      await refreshPayload();
+
+      $("completionOverlay")
+        .classList.remove(
+          "hidden"
+        );
+
+      $("completionText")
+        .innerHTML =
+        `<span class="good-text">Review completed.</span><br>` +
+        `${result.features} reviewed annotation(s) saved to ` +
+        `<strong>${esc(result.annotationFile)}</strong>.`;
+
+      $("completionFinishBtn")
+        .classList.add(
+          "hidden"
+        );
+
+      setAutosave(
+        "Review completed"
+      );
+
+      $("acceptBtn").disabled =
+        true;
+
+      $("deferBtn").disabled =
+        true;
+
+      $("finishBtn").disabled =
+        true;
+    } catch (error) {
+      state.finalizing =
+        false;
+
+      setAutosave(
+        `Finalize error: ${error.message}`,
+        true
+      );
+
+      updateHeader();
+    }
+  }
+
+
+  async function previousCase() {
+    if (
+      !state.payload ||
+      !state.payload.groups
+        ?.length
+    ) {
+      return;
+    }
+
+    cancelFinalizeCountdown();
+
+    $("completionOverlay")
+      .classList.add(
+        "hidden"
+      );
+
+    if (
+      state.editMode
+    ) {
+      leaveEditModeForAdvance();
+    }
+
+    const previous =
+      (
+        state.itemIndex -
+        1 +
+        state.payload.groups.length
+      ) %
+      state.payload.groups.length;
+
+    await loadItem(
+      previous
+    );
+  }
+
+
+  async function load() {
+    try {
+      await refreshPayload();
+
+      $("generalComment").value =
+        state.payload
+          .generalComment ||
+        "";
+
+      await ensureTileSource();
+
+      if (
+        state.payload.status ===
+        "completed"
+      ) {
+        const groups =
+          state.payload.groups ||
+          [];
+
+        if (groups.length) {
+          await loadItem(0);
+        }
+
+        $("completionOverlay")
+          .classList.remove(
+            "hidden"
+          );
+
+        $("completionText")
+          .innerHTML =
+          `<span class="good-text">Review already completed.</span>` +
+          (
+            state.payload
+              .finalAnnotationFile
+              ? `<br>Saved as <strong>${esc(state.payload.finalAnnotationFile)}</strong>.`
+              : ""
+          );
+
+        $("completionFinishBtn")
+          .classList.add(
+            "hidden"
+          );
+
+        setAutosave(
+          "Completed"
+        );
+
+        return;
+      }
+
+      const outstanding =
+        outstandingIndexes();
+
+      const first =
+        outstanding.length
+          ? outstanding[0]
+          : 0;
+
+      await loadItem(
+        first
+      );
+
+      setAutosave(
+        "Reviewer mode · source identities are hidden"
+      );
+    } catch (error) {
+      setAutosave(
+        error.message,
+        true
+      );
+    }
+  }
+
+
+  $("splitBtn")
+    .addEventListener(
+      "click",
+      () => setView("split")
+    );
+
+  $("overlayBtn")
+    .addEventListener(
+      "click",
+      () => setView("overlay")
+    );
+
+  $("displayBtn")
+    .addEventListener(
+      "click",
+      () => {
+        $("displayPanel")
+          .classList.toggle(
+            "hidden"
+          );
+      }
+    );
+
+  $("closeDisplayBtn")
+    .addEventListener(
+      "click",
+      () => {
+        $("displayPanel")
+          .classList.add(
+            "hidden"
+          );
+      }
+    );
+
+  $("displayBrightness")
+    .addEventListener(
+      "input",
+      () => {
+        if (!state.display) {
+          return;
+        }
+
+        state.display
+          .brightnessPercent =
+          clamp(
+            $("displayBrightness").value,
+            40,
+            200,
+            100
+          );
+
+        $("displayBrightnessValue")
+          .textContent =
+          `${state.display.brightnessPercent}%`;
+
+        saveDisplayState();
+
+        [
+          ...state.viewers,
+          state.overlayViewer,
+        ]
+          .filter(Boolean)
+          .forEach(
+            applyViewerBrightness
+          );
+      }
+    );
+
+  $("displayImageType")
+    .addEventListener(
+      "change",
+      async () => {
+        if (
+          !state.display ||
+          !state.payload
+        ) {
+          return;
+        }
+
+        state.display.imageType =
+          $("displayImageType").value;
+
+        const meta =
+          scientificIfMeta();
+
+        if (
+          state.display.imageType ===
+            "fluorescence" &&
+          meta &&
+          !state.display.ifSettings
+        ) {
+          state.display.ifSettings =
+            defaultScientificSettings(
+              meta
+            );
+        }
+
+        saveDisplayState();
+
+        try {
+          await fetch(
+            `/api/images/${encodeURIComponent(state.payload.imageId)}/display-config`,
+            {
+              method: "PUT",
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+              body:
+                JSON.stringify({
+                  imageType:
+                    state.display
+                      .imageType,
+                }),
+            }
+          );
+        } catch {}
+
+        await displayChanged();
+      }
+    );
+
+  $("showAllBtn")
+    .addEventListener(
+      "click",
+      () =>
+        setAllVisibility(
+          true
+        )
+    );
+
+  $("showNoneBtn")
+    .addEventListener(
+      "click",
+      () =>
+        setAllVisibility(
+          false
+        )
+    );
+
+  $("challenging")
+    .addEventListener(
+      "change",
+      toggleChallenging
+    );
+
+  $("comment")
+    .addEventListener(
+      "input",
+      scheduleCommentSave
+    );
+
+  $("generalComment")
+    .addEventListener(
+      "input",
+      scheduleGeneralCommentSave
+    );
+
+  $("editBtn")
+    .addEventListener(
+      "click",
+      enterEdit
+    );
+
+  $("editAddBtn")
+    .addEventListener(
+      "click",
+      () =>
+        setEditOperation(
+          "add"
+        )
+    );
+
+  $("editSubtractBtn")
+    .addEventListener(
+      "click",
+      () =>
+        setEditOperation(
+          "subtract"
+        )
+    );
+
+  $("resetEditBtn")
+    .addEventListener(
+      "click",
+      resetEdit
+    );
+
+  $("resetEditInlineBtn")
+    .addEventListener(
+      "click",
+      resetEdit
+    );
+
+  $("finishEditBtn")
+    .addEventListener(
+      "click",
+      finishEdit
+    );
+
+  $("prevBtn")
+    .addEventListener(
+      "click",
+      previousCase
+    );
+
+  $("undoLastBtn")
+    .addEventListener(
+      "click",
+      undoLastDecision
+    );
+
+  $("completionUndoBtn")
+    .addEventListener(
+      "click",
+      undoLastDecision
+    );
+
+  $("deferBtn")
+    .addEventListener(
+      "click",
+      deferCurrent
+    );
+
+  $("acceptBtn")
+    .addEventListener(
+      "click",
+      acceptCurrent
+    );
+
+  $("finishBtn")
+    .addEventListener(
+      "click",
+      finishReview
+    );
+
+  $("completionFinishBtn")
+    .addEventListener(
+      "click",
+      finishReview
+    );
+
+
+  window.addEventListener(
+    "keydown",
+    event => {
+      if (
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.repeat
+      ) {
+        return;
+      }
+
+      const active =
+        document.activeElement;
+
+      if (
+        active &&
+        (
+          /^(INPUT|SELECT|TEXTAREA)$/
+            .test(
+              active.tagName
+            ) ||
+          active.isContentEditable
+        )
+      ) {
+        return;
+      }
+
+      if (!state.item) {
+        return;
+      }
+
+      // Enter accepts and advances,
+      // including during Freehand Edit.
+      if (
+        event.key === "Enter"
+      ) {
+        if (
+          !Number.isInteger(
+            state.selectedIndex
+          ) ||
+          $("acceptBtn").disabled
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+
+        void acceptCurrent();
+
+        return;
+      }
+
+      // Candidate shortcuts are disabled
+      // while editing the selected mask.
+      if (state.editMode) {
+        return;
+      }
+
+      if (
+        !/^[1-4]$/
+          .test(
+            event.key
+          )
+      ) {
+        return;
+      }
+
+      const index =
+        Number(event.key) - 1;
+
+      if (
+        !candidate(index)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+
+      void selectPreferred(
+        index
+      );
+    }
+  );
+
+
+  window.addEventListener(
+    "resize",
+    drawAllOverlays
+  );
+
+
   load();
 })();
 </script>
+
 </body>
 </html>

@@ -577,60 +577,337 @@ def _find_by_token(annotation_root: Path, token: str) -> tuple[Path, dict[str, A
     raise HTTPException(status_code=404, detail="Reviewer link not found")
 
 
-def _reviewer_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    decisions = payload.get("decisions") or {}
-    redacted_groups = []
-    palette = ["#ff6b6b", "#4dabf7", "#69db7c"]
 
-    for group_index, group in enumerate(payload.get("groups") or []):
+# REVIEW_V2_FULL_REVIEW_RESTORE_V1
+_REVIEW_V2_CANDIDATE_COLORS = [
+    "#ff6b6b",
+    "#4dabf7",
+    "#69db7c",
+    "#7C3AED",
+]
+
+
+def _review_polygonal_shape(value):
+    geometry = _geometry_or_none(value)
+    if geometry is None:
+        return None
+
+    try:
+        geom = shape(geometry)
+    except Exception:
+        return None
+
+    if geom.is_empty:
+        return None
+
+    if not geom.is_valid:
+        try:
+            geom = geom.buffer(0)
+        except Exception:
+            return None
+
+    if geom.is_empty:
+        return None
+
+    if geom.geom_type not in ("Polygon", "MultiPolygon"):
+        parts = [
+            part
+            for part in getattr(geom, "geoms", [])
+            if (
+                part is not None
+                and not part.is_empty
+                and part.geom_type in ("Polygon", "MultiPolygon")
+            )
+        ]
+
+        if not parts:
+            return None
+
+        geom = unary_union(parts)
+
+    if geom is None or geom.is_empty:
+        return None
+
+    if not geom.is_valid:
+        geom = geom.buffer(0)
+
+    if geom.is_empty:
+        return None
+
+    return geom
+
+
+def _review_geom_json(geom):
+    if geom is None or geom.is_empty:
+        return None
+
+    if not geom.is_valid:
+        geom = geom.buffer(0)
+
+    if geom.is_empty:
+        return None
+
+    return _geometry_or_none(
+        mapping(geom)
+    )
+
+
+def _review_consensus_json(
+    source_candidates: list[dict[str, Any]],
+):
+    geometries = [
+        _review_polygonal_shape(
+            candidate.get("geometry")
+        )
+        for candidate in source_candidates
+    ]
+
+    # Two annotators:
+    # agreement/intersection only.
+    if len(geometries) == 2:
+        if any(
+            geom is None
+            for geom in geometries
+        ):
+            return None
+
+        result = geometries[0].intersection(
+            geometries[1]
+        )
+
+        return _review_geom_json(result)
+
+    # Three annotators:
+    # all pixels supported by at least 2 / 3.
+    if len(geometries) == 3:
+        pair_votes = []
+
+        for i in range(3):
+            for j in range(
+                i + 1,
+                3,
+            ):
+                a = geometries[i]
+                b = geometries[j]
+
+                if a is None or b is None:
+                    continue
+
+                intersection = a.intersection(b)
+
+                if not intersection.is_empty:
+                    pair_votes.append(
+                        intersection
+                    )
+
+        if not pair_votes:
+            return None
+
+        return _review_geom_json(
+            unary_union(pair_votes)
+        )
+
+    return None
+
+
+def _build_blinded_review_candidates(
+    group: dict[str, Any],
+    *,
+    shuffle: bool,
+) -> list[dict[str, Any]]:
+    source_candidates = list(
+        group.get("candidates") or []
+    )
+
+    candidates: list[dict[str, Any]] = []
+
+    for source_index, candidate in enumerate(
+        source_candidates
+    ):
+        candidates.append(
+            {
+                # Internal mapping only.
+                # Never emitted by _reviewer_payload().
+                "kind": "source",
+                "sourceCandidateIndex": source_index,
+                "geometry": _geometry_or_none(
+                    candidate.get("geometry")
+                ),
+            }
+        )
+
+    # Consensus is recalculated from the PREPARED geometries,
+    # not copied from the original v1.8 session.
+    candidates.append(
+        {
+            "kind": "consensus",
+            "sourceCandidateIndex": None,
+            "geometry": _review_consensus_json(
+                source_candidates
+            ),
+        }
+    )
+
+    if shuffle:
+        secrets.SystemRandom().shuffle(
+            candidates
+        )
+
+    return candidates
+
+
+def _review_candidates(
+    group: dict[str, Any],
+) -> list[dict[str, Any]]:
+    derived = group.get(
+        "reviewCandidates"
+    )
+
+    if isinstance(derived, list) and derived:
+        return derived
+
+    # Backward-compatible fallback for an old link created
+    # before the full-review restoration. Such a link will
+    # not gain a new shuffled consensus automatically because
+    # that could invalidate existing candidate indexes.
+    return list(
+        group.get("candidates") or []
+    )
+
+
+def _decision_status(
+    decision: dict[str, Any],
+) -> str:
+    status = str(
+        decision.get("status") or ""
+    ).strip().lower()
+
+    if status in {
+        "pending",
+        "accepted",
+        "deferred",
+    }:
+        return status
+
+    # Compatibility with the first Review v2 format.
+    if decision.get("deferred"):
+        return "deferred"
+
+    if isinstance(
+        decision.get("decisionCandidate"),
+        int,
+    ):
+        return "accepted"
+
+    return "pending"
+
+
+def _reviewer_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    decisions = payload.get(
+        "decisions"
+    ) or {}
+
+    redacted_groups = []
+
+    accepted = 0
+    deferred = 0
+    pending = 0
+
+    for group_index, group in enumerate(
+        payload.get("groups") or []
+    ):
         redacted_candidates = []
-        for candidate_index, candidate in enumerate(group.get("candidates") or []):
-            geometry = _geometry_or_none(candidate.get("geometry"))
+
+        for candidate_index, candidate in enumerate(
+            _review_candidates(group)
+        ):
+            geometry = _geometry_or_none(
+                candidate.get("geometry")
+            )
+
+            # CRITICAL:
+            # no kind/source index/source filename/source name
+            # is emitted to the reviewer.
             redacted_candidates.append(
                 {
                     "index": candidate_index,
-                    "label": f"Candidate {candidate_index + 1}",
-                    "color": palette[candidate_index % len(palette)],
+                    "label": (
+                        f"Candidate "
+                        f"{candidate_index + 1}"
+                    ),
+                    "color": (
+                        _REVIEW_V2_CANDIDATE_COLORS[
+                            candidate_index
+                            % len(
+                                _REVIEW_V2_CANDIDATE_COLORS
+                            )
+                        ]
+                    ),
                     "geometry": geometry,
                     "empty": geometry is None,
                 }
             )
 
-        group_id = str(group.get("id"))
+        group_id = str(
+            group.get("id")
+        )
+
+        decision = copy.deepcopy(
+            decisions.get(group_id) or {}
+        )
+
+        status = _decision_status(
+            decision
+        )
+
+        decision["status"] = status
+        decision["deferred"] = (
+            status == "deferred"
+        )
+
+        if status == "accepted":
+            accepted += 1
+        elif status == "deferred":
+            deferred += 1
+        else:
+            pending += 1
+
         redacted_groups.append(
             {
                 "id": group_id,
                 "index": group_index,
                 "bbox": group.get("bbox"),
                 "candidates": redacted_candidates,
-                "decision": copy.deepcopy(decisions.get(group_id) or {}),
+                "decision": decision,
             }
         )
 
-    accepted = 0
-    deferred = 0
-    for group in redacted_groups:
-        decision = group.get("decision") or {}
-        if decision.get("deferred"):
-            deferred += 1
-        elif isinstance(decision.get("decisionCandidate"), int):
-            accepted += 1
-
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "imageId": payload.get("imageId"),
-        "selectedClass": payload.get("selectedClass"),
+        "selectedClass": payload.get(
+            "selectedClass"
+        ),
         "status": payload.get("status"),
         "groups": redacted_groups,
-        "generalComment": payload.get("generalComment") or "",
+        "generalComment": (
+            payload.get("generalComment") or ""
+        ),
         "progress": {
             "total": len(redacted_groups),
             "accepted": accepted,
+            "pending": pending,
             "deferred": deferred,
-            "remaining": max(0, len(redacted_groups) - accepted),
+            "remaining": pending + deferred,
         },
-        "completedAt": payload.get("completedAt"),
-        "finalAnnotationFile": payload.get("finalAnnotationFile"),
+        "completedAt": payload.get(
+            "completedAt"
+        ),
+        "finalAnnotationFile": payload.get(
+            "finalAnnotationFile"
+        ),
     }
 
 
@@ -846,6 +1123,16 @@ def install_review_v2(
                     detail=f"{len(unprepared)} group(s) are not marked prepared",
                 )
 
+            for group in groups:
+                group["reviewCandidates"] = (
+                    _build_blinded_review_candidates(
+                        group,
+                        shuffle=True,
+                    )
+                )
+
+            payload["reviewSchemaVersion"] = 3
+
             token = secrets.token_urlsafe(24)
             payload["reviewerToken"] = token
             payload["reviewerCreatedAt"] = _now_iso()
@@ -873,6 +1160,17 @@ def install_review_v2(
 
         with _REVIEW_V2_LOCK:
             payload = _read_json(path)
+
+            for group in payload.get("groups") or []:
+                group.pop(
+                    "reviewCandidates",
+                    None,
+                )
+
+            payload.pop(
+                "reviewSchemaVersion",
+                None,
+            )
             payload["status"] = "preparation"
             payload["reviewerToken"] = None
             payload["reviewerCreatedAt"] = None
@@ -896,51 +1194,481 @@ def install_review_v2(
         group_id: str,
         incoming: dict[str, Any] = Body(...),
     ) -> dict[str, Any]:
-        path, payload = _find_by_token(annotation_root, token)
-
-        group = next(
-            (
-                item
-                for item in (payload.get("groups") or [])
-                if str(item.get("id")) == str(group_id)
-            ),
-            None,
+        path, _existing = _find_by_token(
+            annotation_root,
+            token,
         )
-        if group is None:
-            raise HTTPException(status_code=404, detail="Review group not found")
-
-        decision_candidate = incoming.get("decisionCandidate")
-        if decision_candidate is not None:
-            try:
-                decision_candidate = int(decision_candidate)
-            except (TypeError, ValueError) as exc:
-                raise HTTPException(status_code=422, detail="Invalid candidate") from exc
-            if not (0 <= decision_candidate < len(group.get("candidates") or [])):
-                raise HTTPException(status_code=422, detail="Invalid candidate")
-
-        decision = {
-            "decisionCandidate": decision_candidate,
-            "challenging": bool(incoming.get("challenging")),
-            "deferred": bool(incoming.get("deferred")),
-            "comment": str(incoming.get("comment") or "")[:12000],
-            "updatedAt": _now_iso(),
-        }
-        if decision["deferred"]:
-            decision["decisionCandidate"] = None
 
         with _REVIEW_V2_LOCK:
             payload = _read_json(path)
-            payload.setdefault("decisions", {})[str(group_id)] = decision
-            if payload.get("status") == "ready":
-                payload["status"] = "reviewing"
-            payload["updatedAt"] = _now_iso()
-            _atomic_json(path, payload)
+
+            group = next(
+                (
+                    item
+                    for item in (
+                        payload.get("groups") or []
+                    )
+                    if str(item.get("id"))
+                    == str(group_id)
+                ),
+                None,
+            )
+
+            if group is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Review group not found",
+                )
+
+            candidates = _review_candidates(
+                group
+            )
+
+            previous = copy.deepcopy(
+                (
+                    payload.get("decisions")
+                    or {}
+                ).get(
+                    str(group_id)
+                )
+                or {}
+            )
+
+            previous_status = (
+                _decision_status(previous)
+            )
+
+            candidate_was_supplied = (
+                "decisionCandidate"
+                in incoming
+            )
+
+            if candidate_was_supplied:
+                decision_candidate = (
+                    incoming.get(
+                        "decisionCandidate"
+                    )
+                )
+
+                if decision_candidate is not None:
+                    try:
+                        decision_candidate = int(
+                            decision_candidate
+                        )
+                    except (
+                        TypeError,
+                        ValueError,
+                    ) as exc:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Invalid candidate"
+                            ),
+                        ) from exc
+
+                    if not (
+                        0
+                        <= decision_candidate
+                        < len(candidates)
+                    ):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Invalid candidate"
+                            ),
+                        )
+            else:
+                decision_candidate = (
+                    previous.get(
+                        "decisionCandidate"
+                    )
+                )
+
+            if "status" in incoming:
+                status = str(
+                    incoming.get("status")
+                    or ""
+                ).strip().lower()
+
+                if status not in {
+                    "pending",
+                    "accepted",
+                    "deferred",
+                }:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "Invalid review status"
+                        ),
+                    )
+
+            elif "deferred" in incoming:
+                # Compatibility with original Review v2.
+                if bool(
+                    incoming.get("deferred")
+                ):
+                    status = "deferred"
+                elif isinstance(
+                    decision_candidate,
+                    int,
+                ):
+                    status = "accepted"
+                else:
+                    status = "pending"
+
+            else:
+                status = previous_status
+
+            geometry_supplied = (
+                "decisionGeometry"
+                in incoming
+                or "geometry" in incoming
+            )
+
+            if geometry_supplied:
+                raw_geometry = (
+                    incoming.get(
+                        "decisionGeometry"
+                    )
+                    if "decisionGeometry"
+                    in incoming
+                    else incoming.get(
+                        "geometry"
+                    )
+                )
+
+                if raw_geometry is None:
+                    decision_geometry = None
+                else:
+                    decision_geometry = (
+                        _geometry_or_none(
+                            raw_geometry
+                        )
+                    )
+
+                    if decision_geometry is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "Invalid edited "
+                                "geometry"
+                            ),
+                        )
+
+            elif (
+                candidate_was_supplied
+                and isinstance(
+                    decision_candidate,
+                    int,
+                )
+            ):
+                decision_geometry = (
+                    copy.deepcopy(
+                        candidates[
+                            decision_candidate
+                        ].get("geometry")
+                    )
+                )
+
+            elif candidate_was_supplied:
+                decision_geometry = None
+
+            else:
+                decision_geometry = (
+                    copy.deepcopy(
+                        previous.get(
+                            "decisionGeometry"
+                        )
+                    )
+                )
+
+            if (
+                status == "accepted"
+                and not isinstance(
+                    decision_candidate,
+                    int,
+                )
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Choose a candidate "
+                        "before accepting"
+                    ),
+                )
+
+            if "edited" in incoming:
+                edited = bool(
+                    incoming.get("edited")
+                )
+            elif candidate_was_supplied:
+                edited = False
+            else:
+                edited = bool(
+                    previous.get("edited")
+                )
+
+            now = _now_iso()
+
+            decision = {
+                "status": status,
+                "decisionCandidate": (
+                    decision_candidate
+                ),
+                "decisionGeometry": (
+                    decision_geometry
+                ),
+                "edited": edited,
+                "challenging": bool(
+                    incoming.get(
+                        "challenging",
+                        previous.get(
+                            "challenging",
+                            False,
+                        ),
+                    )
+                ),
+                "deferred": (
+                    status == "deferred"
+                ),
+                "comment": str(
+                    incoming.get(
+                        "comment",
+                        previous.get(
+                            "comment",
+                            "",
+                        ),
+                    )
+                    or ""
+                )[:12000],
+                "updatedAt": now,
+                "reviewedAt": (
+                    now
+                    if status
+                    in {
+                        "accepted",
+                        "deferred",
+                    }
+                    else None
+                ),
+            }
+
+            payload.setdefault(
+                "decisions",
+                {},
+            )[str(group_id)] = decision
+
+            if payload.get(
+                "status"
+            ) == "ready":
+                payload["status"] = (
+                    "reviewing"
+                )
+
+            payload["updatedAt"] = now
+
+            _atomic_json(
+                path,
+                payload,
+            )
+
+            progress = _reviewer_payload(
+                payload
+            )["progress"]
 
         return {
             "saved": True,
             "decision": decision,
-            "progress": _reviewer_payload(payload)["progress"],
+            "progress": progress,
         }
+
+
+    @router.post("/api/review-v2/share/{token}/geometry/freehand")
+    def review_v2_freehand_geometry(
+        token: str,
+        incoming: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        # Token validation only. The geometry operation itself
+        # never exposes source metadata.
+        _find_by_token(
+            annotation_root,
+            token,
+        )
+
+        operation = str(
+            incoming.get("operation")
+            or ""
+        ).strip().lower()
+
+        if operation not in {
+            "add",
+            "subtract",
+        }:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "operation must be "
+                    "add or subtract"
+                ),
+            )
+
+        base = _review_polygonal_shape(
+            incoming.get("geometry")
+        )
+
+        stroke = _review_polygonal_shape(
+            incoming.get("stroke")
+        )
+
+        if base is None or stroke is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Freehand edit geometry "
+                    "is invalid"
+                ),
+            )
+
+        result = (
+            base.union(stroke)
+            if operation == "add"
+            else base.difference(stroke)
+        )
+
+        result_json = _review_geom_json(
+            result
+        )
+
+        if result_json is None:
+            if operation == "subtract":
+                detail = (
+                    "This edit would remove "
+                    "the entire selected mask"
+                )
+            else:
+                detail = (
+                    "Freehand edit did not "
+                    "produce a polygonal mask"
+                )
+
+            raise HTTPException(
+                status_code=422,
+                detail=detail,
+            )
+
+        return {
+            "geometry": result_json,
+            "operation": operation,
+        }
+
+
+    @router.post("/api/review-v2/share/{token}/undo-last")
+    def review_v2_undo_last(
+        token: str,
+    ) -> dict[str, Any]:
+        path, _existing = _find_by_token(
+            annotation_root,
+            token,
+        )
+
+        with _REVIEW_V2_LOCK:
+            payload = _read_json(path)
+
+            decisions = payload.setdefault(
+                "decisions",
+                {},
+            )
+
+            completed = []
+
+            for group in (
+                payload.get("groups")
+                or []
+            ):
+                group_id = str(
+                    group.get("id")
+                )
+
+                decision = decisions.get(
+                    group_id
+                ) or {}
+
+                if _decision_status(
+                    decision
+                ) not in {
+                    "accepted",
+                    "deferred",
+                }:
+                    continue
+
+                stamp = str(
+                    decision.get(
+                        "reviewedAt"
+                    )
+                    or decision.get(
+                        "updatedAt"
+                    )
+                    or ""
+                )
+
+                completed.append(
+                    (
+                        stamp,
+                        group_id,
+                        decision,
+                    )
+                )
+
+            if not completed:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "There is no completed "
+                        "review decision to undo"
+                    ),
+                )
+
+            _stamp, group_id, decision = max(
+                completed,
+                key=lambda item: item[0],
+            )
+
+            reopened = copy.deepcopy(
+                decision
+            )
+
+            reopened["status"] = "pending"
+            reopened["deferred"] = False
+            reopened["reviewedAt"] = None
+            reopened["updatedAt"] = (
+                _now_iso()
+            )
+
+            decisions[group_id] = reopened
+
+            payload["status"] = "reviewing"
+            payload["completedAt"] = None
+            payload["finalAnnotationFile"] = None
+            payload["updatedAt"] = (
+                _now_iso()
+            )
+
+            _atomic_json(
+                path,
+                payload,
+            )
+
+            progress = _reviewer_payload(
+                payload
+            )["progress"]
+
+        return {
+            "ok": True,
+            "groupId": group_id,
+            "decision": reopened,
+            "progress": progress,
+        }
+
 
     @router.put("/api/review-v2/share/{token}/general-comment")
     def review_v2_general_comment(
@@ -957,33 +1685,81 @@ def install_review_v2(
         return {"saved": True, "comment": comment}
 
     @router.post("/api/review-v2/share/{token}/complete")
-    def review_v2_complete(token: str) -> dict[str, Any]:
-        path, payload = _find_by_token(annotation_root, token)
+    def review_v2_complete(
+        token: str,
+    ) -> dict[str, Any]:
+        path, payload = _find_by_token(
+            annotation_root,
+            token,
+        )
+
         groups = payload.get("groups") or []
-        decisions = payload.get("decisions") or {}
+        decisions = (
+            payload.get("decisions") or {}
+        )
 
         unresolved: list[str] = []
         features: list[dict[str, Any]] = []
 
         for group in groups:
-            group_id = str(group.get("id"))
-            decision = decisions.get(group_id) or {}
-            selected = decision.get("decisionCandidate")
+            group_id = str(
+                group.get("id")
+            )
 
-            if decision.get("deferred") or not isinstance(selected, int):
-                unresolved.append(group_id)
+            decision = decisions.get(
+                group_id
+            ) or {}
+
+            if _decision_status(
+                decision
+            ) != "accepted":
+                unresolved.append(
+                    group_id
+                )
                 continue
 
-            candidates = group.get("candidates") or []
-            if not (0 <= selected < len(candidates)):
-                unresolved.append(group_id)
+            selected = decision.get(
+                "decisionCandidate"
+            )
+
+            candidates = _review_candidates(
+                group
+            )
+
+            if (
+                not isinstance(selected, int)
+                or not (
+                    0
+                    <= selected
+                    < len(candidates)
+                )
+            ):
+                unresolved.append(
+                    group_id
+                )
                 continue
 
-            geometry = _geometry_or_none(candidates[selected].get("geometry"))
-            # No annotation is a valid accepted candidate and contributes no
-            # geometry to the final output.
+            if "decisionGeometry" in decision:
+                geometry = _geometry_or_none(
+                    decision.get(
+                        "decisionGeometry"
+                    )
+                )
+            else:
+                geometry = _geometry_or_none(
+                    candidates[
+                        selected
+                    ].get("geometry")
+                )
+
+            # No annotation is a valid accepted candidate
+            # and contributes no feature.
             if geometry is None:
                 continue
+
+            internal_candidate = (
+                candidates[selected]
+            )
 
             features.append(
                 {
@@ -991,16 +1767,50 @@ def install_review_v2(
                     "geometry": geometry,
                     "properties": {
                         "classification": {
-                            "name": payload.get("selectedClass") or "Reviewed",
+                            "name": (
+                                payload.get(
+                                    "selectedClass"
+                                )
+                                or "Reviewed"
+                            ),
                         },
                         "histoannotator": {
                             "role": "annotation",
                             "reviewV2": {
                                 "groupId": group_id,
-                                "chosenCandidate": selected + 1,
-                                "challenging": bool(decision.get("challenging")),
-                                "comment": str(decision.get("comment") or ""),
-                                "reviewedAt": decision.get("updatedAt"),
+                                "chosenCandidate": (
+                                    selected + 1
+                                ),
+                                "edited": bool(
+                                    decision.get(
+                                        "edited"
+                                    )
+                                ),
+                                "consensusUsed": (
+                                    internal_candidate.get(
+                                        "kind"
+                                    )
+                                    == "consensus"
+                                ),
+                                "challenging": bool(
+                                    decision.get(
+                                        "challenging"
+                                    )
+                                ),
+                                "comment": str(
+                                    decision.get(
+                                        "comment"
+                                    )
+                                    or ""
+                                ),
+                                "reviewedAt": (
+                                    decision.get(
+                                        "reviewedAt"
+                                    )
+                                    or decision.get(
+                                        "updatedAt"
+                                    )
+                                ),
                             },
                         },
                     },
@@ -1010,12 +1820,22 @@ def install_review_v2(
         if unresolved:
             raise HTTPException(
                 status_code=409,
-                detail=f"{len(unresolved)} group(s) are still unresolved or deferred",
+                detail=(
+                    f"{len(unresolved)} "
+                    "group(s) are still "
+                    "unresolved or deferred"
+                ),
             )
 
         output_name = str(
-            payload.get("outputAnnotationFile")
-            or f"Reviewed {payload.get('selectedClass') or 'Annotations'} v2"
+            payload.get(
+                "outputAnnotationFile"
+            )
+            or (
+                "Reviewed "
+                f"{payload.get('selectedClass') or 'Annotations'} "
+                "v2"
+            )
         ).strip()
 
         feature_collection = {
@@ -1024,34 +1844,70 @@ def install_review_v2(
             "properties": {
                 "histoannotator": {
                     "reviewV2": {
-                        "sourceSessionId": payload.get("sessionId"),
-                        "selectedClass": payload.get("selectedClass"),
-                        "generalComment": payload.get("generalComment") or "",
-                        "completedAt": _now_iso(),
+                        "sourceSessionId": (
+                            payload.get(
+                                "sessionId"
+                            )
+                        ),
+                        "selectedClass": (
+                            payload.get(
+                                "selectedClass"
+                            )
+                        ),
+                        "generalComment": (
+                            payload.get(
+                                "generalComment"
+                            )
+                            or ""
+                        ),
+                        "completedAt": (
+                            _now_iso()
+                        ),
                     }
                 }
             },
         }
 
         saved = put_annotations(
-            str(payload.get("imageId")),
+            str(
+                payload.get("imageId")
+            ),
             feature_collection,
             file=output_name,
         )
 
         with _REVIEW_V2_LOCK:
             payload = _read_json(path)
+
             payload["status"] = "completed"
-            payload["completedAt"] = _now_iso()
-            payload["updatedAt"] = _now_iso()
-            payload["finalAnnotationFile"] = saved.get("annotationFile") or output_name
-            _atomic_json(path, payload)
+            payload["completedAt"] = (
+                _now_iso()
+            )
+            payload["updatedAt"] = (
+                _now_iso()
+            )
+            payload["finalAnnotationFile"] = (
+                saved.get(
+                    "annotationFile"
+                )
+                or output_name
+            )
+
+            _atomic_json(
+                path,
+                payload,
+            )
 
         return {
             "completed": True,
             "features": len(features),
-            "annotationFile": payload["finalAnnotationFile"],
+            "annotationFile": (
+                payload[
+                    "finalAnnotationFile"
+                ]
+            ),
         }
+
 
     @router.get("/review-preparation-v2")
     def review_v2_preparation_page() -> FileResponse:
