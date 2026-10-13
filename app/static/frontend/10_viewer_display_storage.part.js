@@ -4861,6 +4861,130 @@
     return Number.isInteger(index) ? pathologistDraft.holes[index] : null;
   }
 
+  // PATHOLOGIST_UNDO_LAST_STROKE_V1
+  function undoLastPathologistStroke() {
+    if (
+      !pathologistDraft
+      || geometryBusy
+    ) {
+      return;
+    }
+
+    const history =
+      Array.isArray(
+        pathologistDraft.strokeHistory
+      )
+        ? pathologistDraft.strokeHistory
+        : [];
+
+    const entry =
+      history.pop();
+
+    if (!entry) {
+      return;
+    }
+
+    let ring = null;
+
+    if (entry.target === "outer") {
+      ring =
+        pathologistDraft.outer;
+
+      pathologistDraft.current =
+        "outer";
+
+      pathologistDraft.currentHoleIndex =
+        null;
+
+    } else {
+      const holeIndex =
+        Number(entry.holeIndex);
+
+      if (
+        Number.isInteger(holeIndex)
+        && holeIndex >= 0
+        && holeIndex
+          < pathologistDraft.holes.length
+      ) {
+        ring =
+          pathologistDraft.holes[
+            holeIndex
+          ];
+
+        pathologistDraft.current =
+          "hole";
+
+        pathologistDraft.currentHoleIndex =
+          holeIndex;
+      }
+    }
+
+    if (Array.isArray(ring)) {
+      const start =
+        Math.max(
+          0,
+          Math.min(
+            ring.length,
+            Number(entry.startLength)
+              || 0
+          )
+        );
+
+      ring.splice(start);
+    }
+
+    // If Undo removed the first stroke of the newest
+    // inner contour, remove that now-empty contour too.
+    if (
+      entry.target === "hole"
+      && Number(entry.holeIndex)
+        === pathologistDraft.holes.length - 1
+      && pathologistDraft.holes[
+        pathologistDraft.holes.length - 1
+      ]?.length === 0
+    ) {
+      pathologistDraft.holes.pop();
+
+      if (
+        pathologistDraft.holes.length
+      ) {
+        pathologistDraft.current =
+          "hole";
+
+        pathologistDraft.currentHoleIndex =
+          pathologistDraft.holes.length - 1;
+
+      } else {
+        pathologistDraft.current =
+          "outer";
+
+        pathologistDraft.currentHoleIndex =
+          null;
+      }
+    }
+
+    updateControls();
+    updatePathologistActions();
+    drawAnnotations();
+
+    setStatus(
+      "Last Pathologist stroke removed — "
+      + "continue drawing or complete the annotation",
+      "local"
+    );
+  }
+
+
+  document
+    .getElementById(
+      "undoPathologistStroke"
+    )
+    ?.addEventListener(
+      "click",
+      undoLastPathologistStroke
+    );
+
+
   function updatePathologistActions() {
     if (!els.pathologistActions) return;
 
@@ -4917,6 +5041,18 @@
 
     els.cancelPathologistContour.disabled =
       geometryBusy;
+    const undoStrokeButton =
+      document.getElementById(
+        "undoPathologistStroke"
+      );
+    if (undoStrokeButton) {
+      undoStrokeButton.disabled =
+        geometryBusy
+        || !Array.isArray(
+          pathologistDraft.strokeHistory
+        )
+        || pathologistDraft.strokeHistory.length === 0;
+    }
 
     els.addPathologistHole.textContent =
       pathologistDraft.current === "hole"
@@ -5147,7 +5283,7 @@
     if (!requireSelectedForOperation(operation)) return;
     pointerState = { id: event.pointerId, type: event.pointerType, start: point };
     if (mode === "freehand" && drawingProfile === "pathologist") {
-      if (!pathologistDraft) pathologistDraft = { outer: [], holes: [], current: "outer", currentHoleIndex: null, operation };
+      if (!pathologistDraft) pathologistDraft = { outer: [], holes: [], current: "outer", currentHoleIndex: null, operation, strokeHistory: [] };
       activeDraft = { type: "freehand-pathologist", points: [point], operation };
       // Hide Complete / Inner contour / Cancel during the active pen stroke.
       updatePathologistActions();
@@ -5230,7 +5366,35 @@
         const preparedSegment = prepareOpenStroke(draft.points, Math.max(0.08, screenToleranceToImage(0.12)));
         if (preparedSegment.length) {
           if (ring.length && preparedSegment.length && Math.hypot(ring[ring.length - 1][0] - preparedSegment[0][0], ring[ring.length - 1][1] - preparedSegment[0][1]) < screenToleranceToImage(5)) preparedSegment.shift();
-          ring.push(...preparedSegment);
+          if (preparedSegment.length) {
+            const strokeStartLength =
+              ring.length;
+
+            ring.push(
+              ...preparedSegment
+            );
+
+            if (
+              !Array.isArray(
+                pathologistDraft.strokeHistory
+              )
+            ) {
+              pathologistDraft.strokeHistory =
+                [];
+            }
+
+            pathologistDraft.strokeHistory.push({
+              target:
+                pathologistDraft.current,
+
+              holeIndex:
+                pathologistDraft
+                  .currentHoleIndex,
+
+              startLength:
+                strokeStartLength,
+            });
+          }
         }
       }
       setStatus("Paused — pan/zoom with fingers, then continue with the stylus or complete the annotation", "saved");
