@@ -739,6 +739,16 @@
         Undo edit
       </button>
 
+      <button id="editZoomOutBtn"
+              title="Zoom out while editing">
+        Zoom −
+      </button>
+
+      <button id="editZoomInBtn"
+              title="Zoom in while editing">
+        Zoom +
+      </button>
+
       <button id="backToCandidatesBtn">
         ← Back to candidates
       </button>
@@ -2220,6 +2230,148 @@
   }
 
 
+
+
+  function editZoom(
+    direction,
+    clientX = null,
+    clientY = null
+  ) {
+    if (
+      !state.editMode ||
+      !state.overlayViewer?.viewport
+    ) {
+      return;
+    }
+
+    const viewer =
+      state.overlayViewer;
+
+    const factor =
+      direction === "out"
+        ? 1 / 1.35
+        : 1.35;
+
+    let referencePoint =
+      null;
+
+    /*
+     * Mouse-wheel zoom is centered on the cursor.
+     * Button/keyboard zoom remains centered on the
+     * current viewport.
+     */
+    if (
+      Number.isFinite(clientX) &&
+      Number.isFinite(clientY)
+    ) {
+      try {
+        const rect =
+          viewer.element
+            .getBoundingClientRect();
+
+        const pixel =
+          new OpenSeadragon.Point(
+            clientX - rect.left,
+            clientY - rect.top
+          );
+
+        referencePoint =
+          viewer.viewport
+            .viewerElementToViewportCoordinates(
+              pixel
+            );
+
+      } catch {
+        referencePoint =
+          null;
+      }
+    }
+
+    try {
+      viewer.viewport.zoomBy(
+        factor,
+        referencePoint,
+        false
+      );
+
+      viewer.viewport
+        .applyConstraints();
+
+      drawAllOverlays();
+
+    } catch (error) {
+      setAutosave(
+        `Zoom error: ${error.message}`,
+        true
+      );
+    }
+  }
+
+
+
+  function bindEditWheelZoom() {
+    const viewer =
+      state.overlayViewer;
+
+    if (!viewer?.element) {
+      return;
+    }
+
+    if (
+      viewer.element.dataset
+        .reviewEditWheelZoom === "1"
+    ) {
+      return;
+    }
+
+    viewer.element.dataset
+      .reviewEditWheelZoom = "1";
+
+    /*
+     * The editable SVG sits over OpenSeadragon.
+     * Capture phase makes wheel/trackpad zoom work
+     * even when the pointer is over that drawing layer.
+     */
+    viewer.element.addEventListener(
+      "wheel",
+      event => {
+        if (
+          !state.editMode ||
+          viewer !==
+            state.overlayViewer
+        ) {
+          return;
+        }
+
+        /*
+         * Never change viewport halfway through
+         * a freehand stroke.
+         */
+        if (
+          state.freehandDrawing
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        editZoom(
+          event.deltaY < 0
+            ? "in"
+            : "out",
+          event.clientX,
+          event.clientY
+        );
+      },
+      {
+        passive: false,
+        capture: true,
+      }
+    );
+  }
+
+
   function setEditUi(active) {
     $("freehandEditControls")
       .classList.toggle(
@@ -2337,6 +2489,8 @@
     await renderCurrentView(
       true
     );
+
+    bindEditWheelZoom();
 
     updateItemControls();
     drawAllOverlays();
@@ -5284,6 +5438,18 @@
       undoEdit
     );
 
+  $("editZoomOutBtn")
+    .addEventListener(
+      "click",
+      () => editZoom("out")
+    );
+
+  $("editZoomInBtn")
+    .addEventListener(
+      "click",
+      () => editZoom("in")
+    );
+
   $("backToCandidatesBtn")
     .addEventListener(
       "click",
@@ -5371,6 +5537,28 @@
       if (!state.item) {
         return;
       }
+      // Zoom shortcuts remain available during Edit.
+      if (
+        state.editMode &&
+        (
+          event.key === "+" ||
+          event.key === "="
+        )
+      ) {
+        event.preventDefault();
+        editZoom("in");
+        return;
+      }
+
+      if (
+        state.editMode &&
+        event.key === "-"
+      ) {
+        event.preventDefault();
+        editZoom("out");
+        return;
+      }
+
       // Enter applies Edit while editing.
       // Outside Edit it keeps Accept & next.
       if (
