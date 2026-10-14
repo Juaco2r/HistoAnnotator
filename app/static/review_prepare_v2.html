@@ -66,6 +66,26 @@
       <div id="groupsCard" class="card" hidden>
         <div class="row" style="justify-content:space-between"><div class="title">Groups</div><button id="newGroup">＋ New</button></div>
         <div id="groups" class="groups" style="margin-top:8px"></div>
+
+        <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+          <div class="row" style="justify-content:space-between">
+            <div>
+              <div class="title">Unassigned annotations</div>
+              <div id="unassignedCount" class="small muted">
+                Not audited yet.
+              </div>
+            </div>
+
+            <button id="auditUnassigned">
+              Audit unassigned
+            </button>
+          </div>
+
+          <div id="unassignedList"
+               class="feature-list"
+               style="margin-top:8px;max-height:280px;overflow:auto">
+          </div>
+        </div>
       </div>
     </aside>
     <main class="viewer-wrap"><div id="viewer" class="viewer"></div><svg id="overlay" class="overlay"></svg></main>
@@ -90,7 +110,7 @@
 (() => {
   "use strict";
   const $=id=>document.getElementById(id), palette=["#ff6b6b","#4dabf7","#69db7c"];
-  const state={sessions:[],session:null,prep:null,groupIndex:-1,sourceIndex:0,catalog:[],sourceFeatures:new Map(),viewer:null,tileSource:null,editingSource:false,imageInfo:null,display:null};
+  const state={sessions:[],session:null,prep:null,groupIndex:-1,sourceIndex:0,catalog:[],sourceFeatures:new Map(),viewer:null,tileSource:null,editingSource:false,imageInfo:null,display:null,unassignedAudit:null};
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   function setStatus(text,kind=""){const el=$("status");el.textContent=text;el.className="status "+kind;}
   async function json(url,options={}){const r=await fetch(url,{cache:"no-store",headers:{"Content-Type":"application/json",...(options.headers||{})},...options});if(!r.ok){let d=`HTTP ${r.status}`;try{const p=await r.json();d=p.detail||d;}catch{}throw new Error(d);}return r.json();}
@@ -1239,6 +1259,504 @@
         ?"Manual membership"
         :"Automatic candidate"}`;
   }
+
+  async function effectiveFeatureIndexes(
+    group,
+    sourceIndex
+  ){
+    if(!group)return[];
+
+    const member=(group.members||[])
+      .find(
+        m=>
+          Number(m.sourceIndex)===
+          Number(sourceIndex)
+      );
+
+    const candidate=(group.candidates||[])
+      .find(
+        c=>
+          Number(c.sourceIndex)===
+          Number(sourceIndex)
+      );
+
+    if(!member)return[];
+
+    /*
+     * Manual membership is authoritative.
+     * edited=true + [] also represents
+     * explicit No annotation.
+     */
+    if(
+      member.edited ||
+      (member.featureIndexes||[]).length
+    ){
+      return [
+        ...(member.featureIndexes||[])
+      ];
+    }
+
+    if(!candidate?.geometry){
+      return[];
+    }
+
+    /*
+     * Automatic candidate:
+     * identify the original source annotation by
+     * exact geometry, not by a broad bounding-box
+     * intersection.
+     */
+    const features=
+      await sourceFeatureData(
+        sourceIndex
+      );
+
+    const target=
+      JSON.stringify(
+        candidate.autoGeometry ||
+        candidate.geometry
+      );
+
+    return features
+      .filter(
+        item=>
+          JSON.stringify(
+            item.geometry
+          )===target
+      )
+      .map(
+        item=>item.index
+      );
+  }
+
+
+  async function sourceOwnership(
+    sourceIndex,
+    excludeGroup=-1
+  ){
+    const owners=
+      new Map();
+
+    for(
+      let groupIndex=0;
+      groupIndex<
+        (state.prep?.groups||[]).length;
+      groupIndex++
+    ){
+      if(
+        groupIndex===excludeGroup
+      ){
+        continue;
+      }
+
+      const indexes=
+        await effectiveFeatureIndexes(
+          state.prep.groups[
+            groupIndex
+          ],
+          sourceIndex
+        );
+
+      for(const index of indexes){
+        if(!owners.has(index)){
+          owners.set(
+            index,
+            []
+          );
+        }
+
+        owners
+          .get(index)
+          .push(groupIndex);
+      }
+    }
+
+    return owners;
+  }
+
+
+  async function rebuildGroupSourceCandidate(
+    group,
+    sourceIndex
+  ){
+    if(!group)return;
+
+    const member=(group.members||[])
+      .find(
+        m=>
+          Number(m.sourceIndex)===
+          Number(sourceIndex)
+      );
+
+    const candidate=(group.candidates||[])
+      .find(
+        c=>
+          Number(c.sourceIndex)===
+          Number(sourceIndex)
+      );
+
+    if(!member||!candidate)return;
+
+    const features=
+      await sourceFeatureData(
+        sourceIndex
+      );
+
+    const selected=
+      new Set(
+        member.featureIndexes||[]
+      );
+
+    candidate.geometry=
+      combine(
+        features
+          .filter(
+            item=>
+              selected.has(
+                item.index
+              )
+          )
+          .map(
+            item=>item.geometry
+          )
+      );
+
+    const boxes=
+      (group.candidates||[])
+        .map(
+          c=>bbox(c.geometry)
+        )
+        .filter(Boolean);
+
+    group.bbox=
+      boxes.length
+        ? [
+            Math.min(
+              ...boxes.map(b=>b[0])
+            ),
+            Math.min(
+              ...boxes.map(b=>b[1])
+            ),
+            Math.max(
+              ...boxes.map(b=>b[2])
+            ),
+            Math.max(
+              ...boxes.map(b=>b[3])
+            ),
+          ]
+        : null;
+  }
+
+
+  async function collectUnassigned(){
+    const sources=[];
+    let total=0;
+
+    for(
+      let sourceIndex=0;
+      sourceIndex<
+        state.prep.sourceFiles.length;
+      sourceIndex++
+    ){
+      const features=
+        await sourceFeatureData(
+          sourceIndex
+        );
+
+      const owners=
+        await sourceOwnership(
+          sourceIndex
+        );
+
+      const unassigned=
+        features.filter(
+          item=>
+            !owners.has(
+              item.index
+            )
+        );
+
+      total+=
+        unassigned.length;
+
+      sources.push({
+        sourceIndex,
+        total:
+          features.length,
+        assigned:
+          features.length-
+          unassigned.length,
+        unassigned,
+      });
+    }
+
+    return {
+      total,
+      sources,
+    };
+  }
+
+
+  async function renderUnassignedAudit(){
+    const root=
+      $("unassignedList");
+
+    const count=
+      $("unassignedCount");
+
+    if(!state.prep){
+      root.innerHTML="";
+      count.textContent=
+        "No preparation loaded.";
+      return;
+    }
+
+    count.textContent=
+      "Auditing…";
+
+    root.innerHTML=
+      '<div class="small muted">'+
+      'Checking memberships…'+
+      '</div>';
+
+    try{
+      const audit=
+        await collectUnassigned();
+
+      state.unassignedAudit=
+        audit;
+
+      count.textContent=
+        audit.total
+          ? `${audit.total} unassigned annotation${
+              audit.total===1
+                ? ""
+                : "s"
+            }`
+          : "0 unassigned annotations · all accounted for";
+
+      if(!audit.total){
+        root.innerHTML=
+          '<div class="small" style="color:var(--good)">'+
+          '✓ All class-matching annotations are assigned to a group.'+
+          '</div>';
+
+        return;
+      }
+
+      const html=[];
+
+      for(
+        const source of
+        audit.sources
+      ){
+        if(
+          !source.unassigned.length
+        ){
+          continue;
+        }
+
+        html.push(
+          `<div class="small" style="margin:8px 0 4px">`+
+          `<strong>Source ${source.sourceIndex+1}</strong>`+
+          ` · ${source.unassigned.length} unassigned`+
+          ` / ${source.total}`+
+          `</div>`
+        );
+
+        for(
+          const item of
+          source.unassigned.slice(
+            0,
+            250
+          )
+        ){
+          html.push(
+            `<div class="feature-row">`+
+              `<span>Annotation ${item.index+1}</span>`+
+              `<button `+
+                `data-new-group-source="${source.sourceIndex}" `+
+                `data-new-group-feature="${item.index}">`+
+                `New group`+
+              `</button>`+
+            `</div>`
+          );
+        }
+
+        if(
+          source.unassigned.length>250
+        ){
+          html.push(
+            `<div class="small muted">`+
+            `Showing first 250 of `+
+            `${source.unassigned.length}.`+
+            `</div>`
+          );
+        }
+      }
+
+      root.innerHTML=
+        html.join("");
+
+      root
+        .querySelectorAll(
+          "[data-new-group-feature]"
+        )
+        .forEach(
+          button=>
+            button.addEventListener(
+              "click",
+              ()=>
+                createGroupFromFeature(
+                  Number(
+                    button.dataset
+                      .newGroupSource
+                  ),
+                  Number(
+                    button.dataset
+                      .newGroupFeature
+                  )
+                ).catch(
+                  error=>
+                    setStatus(
+                      error.message,
+                      "error"
+                    )
+                )
+            )
+        );
+
+    }catch(error){
+      count.textContent=
+        "Audit failed";
+
+      root.innerHTML=
+        `<div class="small">`+
+        `${esc(error.message)}`+
+        `</div>`;
+    }
+  }
+
+
+  async function createGroupFromFeature(
+    sourceIndex,
+    featureIndex
+  ){
+    const owners=
+      await sourceOwnership(
+        sourceIndex
+      );
+
+    if(
+      owners.has(featureIndex)
+    ){
+      setStatus(
+        `Annotation ${featureIndex+1} is already assigned.`,
+        "error"
+      );
+
+      return;
+    }
+
+    const features=
+      await sourceFeatureData(
+        sourceIndex
+      );
+
+    const item=
+      features.find(
+        feature=>
+          feature.index===
+          featureIndex
+      );
+
+    if(!item){
+      throw new Error(
+        "Annotation was not found."
+      );
+    }
+
+    const sourceCount=
+      state.prep.sourceFiles.length;
+
+    const geometry=
+      JSON.parse(
+        JSON.stringify(
+          item.geometry
+        )
+      );
+
+    state.prep.groups.push({
+      id:
+        `manual-${Date.now()}-${state.prep.groups.length+1}`,
+      sourceItemId:null,
+      prepared:false,
+      bbox:
+        item.bbox ||
+        bbox(item.geometry),
+
+      candidates:
+        Array.from(
+          {length:sourceCount},
+          (_,i)=>({
+            sourceIndex:i,
+            geometry:
+              i===sourceIndex
+                ? geometry
+                : null,
+            autoGeometry:null,
+          })
+        ),
+
+      members:
+        Array.from(
+          {length:sourceCount},
+          (_,i)=>({
+            sourceIndex:i,
+            featureIndexes:
+              i===sourceIndex
+                ? [featureIndex]
+                : [],
+            edited:true,
+          })
+        ),
+
+      note:"",
+    });
+
+    state.groupIndex=
+      state.prep.groups.length-1;
+
+    state.sourceIndex=
+      sourceIndex;
+
+    renderGroups();
+
+    await showGroup(
+      state.groupIndex
+    );
+
+    state.sourceIndex=
+      sourceIndex;
+
+    state.editingSource=
+      true;
+
+    renderSourceTabs();
+
+    await renderFeatureList();
+    await drawOverlay();
+    await renderUnassignedAudit();
+
+    setStatus(
+      `Created Group ${state.groupIndex+1} from `+
+      `Source ${sourceIndex+1}, `+
+      `Annotation ${featureIndex+1}.`,
+      "good"
+    );
+  }
+
+
   async function startEdit(){
     state.editingSource=true;
 
@@ -1293,17 +1811,136 @@
     );
   }
   async function rebuildCurrentManualCandidate(){const member=currentMember(),candidate=currentCandidate();if(!member||!candidate)return;const features=await sourceFeatureData(state.sourceIndex),selected=new Set(member.featureIndexes||[]);candidate.geometry=combine(features.filter(item=>selected.has(item.index)).map(item=>item.geometry));const boxes=(currentGroup().candidates||[]).map(c=>bbox(c.geometry)).filter(Boolean);if(boxes.length)currentGroup().bbox=[Math.min(...boxes.map(b=>b[0])),Math.min(...boxes.map(b=>b[1])),Math.max(...boxes.map(b=>b[2])),Math.max(...boxes.map(b=>b[3]))];}
-  async function toggleFeature(index){const member=currentMember();if(!member)return;member.edited=true;currentGroup().prepared=false;const set=new Set(member.featureIndexes||[]);set.has(index)?set.delete(index):set.add(index);member.featureIndexes=[...set].sort((a,b)=>a-b);await rebuildCurrentManualCandidate();renderSourceTabs();renderFeatureList();renderGroups();drawOverlay();}
+
+  async function toggleFeature(index){
+    const member=
+      currentMember();
+
+    if(!member)return;
+
+    const ownership=
+      await sourceOwnership(
+        state.sourceIndex,
+        state.groupIndex
+      );
+
+    const selected=
+      new Set(
+        member.featureIndexes||[]
+      );
+
+    const adding=
+      !selected.has(index);
+
+    if(adding){
+      const owners=
+        ownership.get(index)||[];
+
+      if(owners.length){
+        const labels=
+          owners
+            .map(
+              i=>`Group ${i+1}`
+            )
+            .join(", ");
+
+        const move=
+          confirm(
+            `Annotation ${index+1} is already assigned to ${labels}.\n\n`+
+            `Move it to the current group?\n\n`+
+            `OK = move here\n`+
+            `Cancel = keep current assignment`
+          );
+
+        if(!move){
+          await renderFeatureList();
+          return;
+        }
+
+        for(
+          const ownerIndex of
+          owners
+        ){
+          const group=
+            state.prep.groups[
+              ownerIndex
+            ];
+
+          const other=
+            (group.members||[])
+              .find(
+                m=>
+                  Number(
+                    m.sourceIndex
+                  )===
+                  Number(
+                    state.sourceIndex
+                  )
+              );
+
+          if(!other)continue;
+
+          const indexes=
+            await effectiveFeatureIndexes(
+              group,
+              state.sourceIndex
+            );
+
+          other.featureIndexes=
+            indexes.filter(
+              value=>
+                value!==index
+            );
+
+          other.edited=true;
+          group.prepared=false;
+
+          await rebuildGroupSourceCandidate(
+            group,
+            state.sourceIndex
+          );
+        }
+      }
+
+      selected.add(index);
+
+    }else{
+      selected.delete(index);
+    }
+
+    member.edited=true;
+
+    member.featureIndexes=
+      [...selected].sort(
+        (a,b)=>a-b
+      );
+
+    currentGroup().prepared=
+      false;
+
+    await rebuildCurrentManualCandidate();
+
+    renderSourceTabs();
+    await renderFeatureList();
+    renderGroups();
+    await drawOverlay();
+
+    if(state.unassignedAudit){
+      await renderUnassignedAudit();
+    }
+  }
+
+
   async function renderFeatureList(){
-    const root=$("featureList");
+    const root=
+      $("featureList");
 
     root.innerHTML="";
 
     if(!state.editingSource){
       root.innerHTML=
         '<div class="muted small">'+
-        'Select a Source to highlight it, then click '+
-        '“Edit this source” to show nearby annotations.'+
+        'Click “Edit this source” to select individual annotations for this group.'+
         '</div>';
 
       return;
@@ -1315,91 +1952,158 @@
 
       const selected=
         new Set(
-          currentMember()?.featureIndexes||
-          []
+          currentMember()
+            ?.featureIndexes||[]
         );
 
-      const selectedCount=
-        features.filter(
-          item=>
-            selected.has(item.index)
-        ).length;
+      const ownership=
+        await sourceOwnership(
+          state.sourceIndex,
+          state.groupIndex
+        );
 
       root.innerHTML=
-        `<div class="small muted">`+
-        `${features.length} nearby · `+
-        `${selectedCount} selected`+
-        `</div>`+
-        (
-          features.length
-            ?features.map(
-                item=>{
-                  const on=
-                    selected.has(
-                      item.index
-                    );
+        features.length
+          ? features.map(
+              item=>{
+                const owners=
+                  ownership.get(
+                    item.index
+                  )||[];
 
-                  return`
-                    <label
-                      class="feature-row ${on?"selected":""}"
-                    >
-                      <input
-                        type="checkbox"
-                        data-feature="${item.index}"
-                        ${on?"checked":""}
-                      >
-                      <span
-                        class="source-dot"
-                        style="background:${
-                          palette[
-                            state.sourceIndex%
-                            palette.length
-                          ]
-                        }"
-                      ></span>
-                      <span>
-                        Annotation ${item.index+1}
-                        <span class="small muted">
-                          · ${on?"Selected":"Available"}
-                        </span>
-                      </span>
-                    </label>
-                  `;
-                }
-              ).join("")
-            :'<div class="muted small">'+
-             'No class-matching annotations near this group.'+
-             '</div>'
-        );
+                const ownerText=
+                  owners.length
+                    ? ` <span class="small muted">`+
+                      `· assigned to `+
+                      `${owners.map(
+                        i=>`Group ${i+1}`
+                      ).join(", ")}`+
+                      `</span>`
+                    : "";
+
+                return (
+                  `<label class="feature-row">`+
+                  `<input type="checkbox" `+
+                    `data-feature="${item.index}" `+
+                    `${
+                      selected.has(
+                        item.index
+                      )
+                        ? "checked"
+                        : ""
+                    }>`+
+                  `<span>`+
+                    `Annotation ${item.index+1}`+
+                    `${ownerText}`+
+                  `</span>`+
+                  `</label>`
+                );
+              }
+            ).join("")
+          : '<div class="muted small">'+
+            'No class-matching annotations near this group.'+
+            '</div>';
 
       root
         .querySelectorAll(
           "[data-feature]"
         )
         .forEach(
-          element=>
-            element.addEventListener(
+          el=>
+            el.addEventListener(
               "change",
               ()=>
                 toggleFeature(
                   Number(
-                    element.dataset.feature
+                    el.dataset.feature
                   )
                 )
             )
         );
+
     }catch(error){
       root.innerHTML=
-        `<div class="small">${esc(error.message)}</div>`;
+        `<div class="small">`+
+        `${esc(error.message)}`+
+        `</div>`;
     }
   }
+
   async function useAutomatic(){const member=currentMember(),candidate=currentCandidate();if(!member||!candidate)return;member.edited=false;member.featureIndexes=[];candidate.geometry=candidate.autoGeometry||null;currentGroup().prepared=false;state.editingSource=false;renderSourceTabs();renderFeatureList();renderGroups();drawOverlay();setStatus("Automatic candidate restored. Re-check this group.");}
   async function noAnnotation(){const member=currentMember(),candidate=currentCandidate();if(!member||!candidate)return;member.edited=true;member.featureIndexes=[];candidate.geometry=null;currentGroup().prepared=false;state.editingSource=true;renderSourceTabs();renderFeatureList();renderGroups();drawOverlay();setStatus("This source is set to No annotation for the current group.");}
   async function savePreparation(){if(!state.prep)return;state.prep.outputAnnotationFile=$("outputFile").value.trim()||state.prep.outputAnnotationFile;const payload=structuredClone(state.prep);for(const g of payload.groups)for(const m of g.members||[]){if(!m.edited)continue;const features=await sourceFeatureData(Number(m.sourceIndex)),selected=new Set(m.featureIndexes||[]);m.geometries=features.filter(item=>selected.has(item.index)).map(item=>item.geometry);}const saved=await json(`/api/review-v2/preparations/${encodeURIComponent(state.prep.sessionId)}`,{method:"PUT",body:JSON.stringify(payload)});state.prep=saved;renderSetup();renderGroups();renderSourceTabs();setStatus("Preparation saved.","good");return saved;}
   async function markPrepared(){const g=currentGroup();if(!g)return;g.note=$("groupNote").value;g.prepared=true;try{await savePreparation();renderGroups();setStatus(`Group ${state.groupIndex+1} marked prepared.`,"good");if(state.groupIndex<state.prep.groups.length-1)showGroup(state.groupIndex+1);}catch(error){g.prepared=false;setStatus(error.message,"error");}}
-  function addGroup(){const count=state.prep.sourceFiles.length,n=state.prep.groups.length+1;state.prep.groups.push({id:`manual-${Date.now()}-${n}`,sourceItemId:null,prepared:false,bbox:currentGroup()?.bbox||null,candidates:Array.from({length:count},(_,i)=>({sourceIndex:i,geometry:null,autoGeometry:null})),members:Array.from({length:count},(_,i)=>({sourceIndex:i,featureIndexes:[],edited:true})),note:""});renderGroups();showGroup(state.prep.groups.length-1);setStatus("Blank manual group added. Select annotations from each source.");}
-  function deleteGroup(){if(!currentGroup()||!confirm("Delete this preparation group? Original GeoJSON files are not modified."))return;state.prep.groups.splice(state.groupIndex,1);state.groupIndex=Math.min(state.groupIndex,state.prep.groups.length-1);renderGroups();if(state.groupIndex>=0)showGroup(state.groupIndex);else $("groupTitle").textContent="No groups";setStatus("Group removed from preparation. Original annotations are unchanged.");}
-  async function publish(){try{await savePreparation();const p=await json(`/api/review-v2/preparations/${encodeURIComponent(state.prep.sessionId)}/publish`,{method:"POST",body:"{}"}),link=location.origin+p.reviewerPath;$("shareLink").textContent=link;$("shareBox").hidden=false;setStatus("Reviewer link generated. Reviewer payload contains no annotation-file identities.","good");}catch(error){setStatus(error.message,"error");}}
+  function addGroup(){const count=state.prep.sourceFiles.length,n=state.prep.groups.length+1;state.prep.groups.push({id:`manual-${Date.now()}-${n}`,sourceItemId:null,prepared:false,bbox:currentGroup()?.bbox||null,candidates:Array.from({length:count},(_,i)=>({sourceIndex:i,geometry:null,autoGeometry:null})),members:Array.from({length:count},(_,i)=>({sourceIndex:i,featureIndexes:[],edited:true})),note:""});renderGroups();showGroup(state.prep.groups.length-1);if(state.unassignedAudit)renderUnassignedAudit();setStatus("Blank manual group added. Select annotations from each source.");}
+  function deleteGroup(){if(!currentGroup()||!confirm("Delete this preparation group? Original GeoJSON files are not modified."))return;state.prep.groups.splice(state.groupIndex,1);state.groupIndex=Math.min(state.groupIndex,state.prep.groups.length-1);renderGroups();if(state.groupIndex>=0)showGroup(state.groupIndex);else $("groupTitle").textContent="No groups";if(state.unassignedAudit)renderUnassignedAudit();setStatus("Group removed from preparation. Original annotations are unchanged.");}
+  async function publish(){
+    try{
+      const audit=
+        await collectUnassigned();
+
+      if(audit.total>0){
+        const proceed=
+          confirm(
+            `${audit.total} class-matching annotation${
+              audit.total===1
+                ? ""
+                : "s"
+            } remain unassigned.\n\n`+
+            `They will not appear in Review.\n\n`+
+            `Generate the reviewer link anyway?`
+          );
+
+        if(!proceed){
+          state.unassignedAudit=
+            audit;
+
+          await renderUnassignedAudit();
+
+          setStatus(
+            "Publication cancelled. Review unassigned annotations first.",
+            "error"
+          );
+
+          return;
+        }
+      }
+
+      await savePreparation();
+
+      const result=
+        await json(
+          `/api/review-v2/preparations/${
+            encodeURIComponent(
+              state.prep.sessionId
+            )
+          }/publish`,
+          {
+            method:"POST",
+            body:"{}"
+          }
+        );
+
+      const link=
+        location.origin+
+        result.reviewerPath;
+
+      $("shareLink").textContent=
+        link;
+
+      $("shareBox").hidden=
+        false;
+
+      setStatus(
+        "Reviewer link generated. Reviewer payload contains no annotation-file identities.",
+        "good"
+      );
+
+    }catch(error){
+      setStatus(
+        error.message,
+        "error"
+      );
+    }
+  }
 
 
   $("displayBrightness").addEventListener(
@@ -1435,7 +2139,7 @@
     }
   );
 
-  $("sourceCount").addEventListener("change",()=>resizeSources($("sourceCount").value));$("saveSetup").addEventListener("click",async()=>{try{await savePreparation();}catch(e){setStatus(e.message,"error");}});$("editSource").addEventListener("click",()=>startEdit().catch(e=>setStatus(e.message,"error")));$("useAutomatic").addEventListener("click",()=>useAutomatic().catch(e=>setStatus(e.message,"error")));$("noAnnotation").addEventListener("click",()=>noAnnotation().catch(e=>setStatus(e.message,"error")));$("markPrepared").addEventListener("click",markPrepared);$("prevGroup").addEventListener("click",()=>showGroup(state.groupIndex-1));$("nextGroup").addEventListener("click",()=>showGroup(state.groupIndex+1));$("newGroup").addEventListener("click",addGroup);$("deleteGroup").addEventListener("click",deleteGroup);$("publish").addEventListener("click",publish);$("groupNote").addEventListener("input",()=>{const g=currentGroup();if(g){g.note=$("groupNote").value;g.prepared=false;renderGroups();}});$("copyLink").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("shareLink").textContent);setStatus("Reviewer link copied.","good");}catch{setStatus("Could not copy automatically; select the link manually.");}});
+  $("sourceCount").addEventListener("change",()=>resizeSources($("sourceCount").value));$("saveSetup").addEventListener("click",async()=>{try{await savePreparation();}catch(e){setStatus(e.message,"error");}});$("editSource").addEventListener("click",()=>startEdit().catch(e=>setStatus(e.message,"error")));$("useAutomatic").addEventListener("click",()=>useAutomatic().catch(e=>setStatus(e.message,"error")));$("noAnnotation").addEventListener("click",()=>noAnnotation().catch(e=>setStatus(e.message,"error")));$("markPrepared").addEventListener("click",markPrepared);$("prevGroup").addEventListener("click",()=>showGroup(state.groupIndex-1));$("nextGroup").addEventListener("click",()=>showGroup(state.groupIndex+1));$("newGroup").addEventListener("click",addGroup);$("auditUnassigned").addEventListener("click",()=>renderUnassignedAudit().catch(e=>setStatus(e.message,"error")));$("deleteGroup").addEventListener("click",deleteGroup);$("publish").addEventListener("click",publish);$("groupNote").addEventListener("input",()=>{const g=currentGroup();if(g){g.note=$("groupNote").value;g.prepared=false;renderGroups();}});$("copyLink").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("shareLink").textContent);setStatus("Reviewer link copied.","good");}catch{setStatus("Could not copy automatically; select the link manually.");}});
   loadSessions().catch(error=>setStatus(error.message,"error"));
 })();
 </script>

@@ -699,8 +699,22 @@
          class="edit-toolbar hidden">
 
       <span class="edit-banner">
-        Freehand edit
+        Edit geometry
       </span>
+
+      <label class="row">
+        <span>Draw mode</span>
+
+        <select id="editDrawMode">
+          <option value="freehand">
+            Freehand
+          </option>
+
+          <option value="polygon">
+            Polygon points
+          </option>
+        </select>
+      </label>
 
       <button id="editAddBtn"
               class="primary">
@@ -715,9 +729,23 @@
         Reset
       </button>
 
+      <button id="finishPolygonBtn"
+              class="hidden">
+        Finish polygon
+      </button>
+
+      <button id="undoEditBtn"
+              disabled>
+        Undo edit
+      </button>
+
+      <button id="backToCandidatesBtn">
+        ← Back to candidates
+      </button>
+
       <button id="finishEditBtn"
               class="good">
-        Done editing &amp; next
+        Apply edit
       </button>
 
     </div>
@@ -782,6 +810,13 @@
 
     editMode: false,
     editOperation: "add",
+    editDrawMode: "freehand",
+
+    editHistory: [],
+    editBaselineIndex: null,
+    editBaselineGeometry: null,
+    editBaselineEdited: false,
+
     freehandDrawing: false,
     freehandPoints: [],
     freehandLastClient: null,
@@ -1009,7 +1044,7 @@
               class="candidate-button ${selected ? "selected primary" : ""}"
               data-prefer="${index}"
               title="Keyboard shortcut ${index + 1}"
-              ${state.editMode ? "disabled" : ""}
+
             >
               <span class="kbd">${index + 1}</span>
               <span class="dot"
@@ -1318,12 +1353,40 @@
   }
 
 
+
   async function selectPreferred(index) {
-    if (
-      state.editMode ||
-      !candidate(index)
-    ) {
+    const selected =
+      candidate(index);
+
+    if (!selected) {
       return;
+    }
+
+    /*
+     * Switching candidates during Edit is allowed.
+     * If the current candidate has geometry edits,
+     * ask before discarding them.
+     */
+    if (
+      state.editMode &&
+      index !==
+        state.selectedIndex &&
+      (
+        state.edited ||
+        state.editHistory.length ||
+        state.freehandPoints.length
+      )
+    ) {
+      const change =
+        confirm(
+          "This candidate has geometry edits or an unfinished drawing.\n\n"+
+          "Changing candidate will discard those edits.\n\n"+
+          "Continue?"
+        );
+
+      if (!change) {
+        return;
+      }
     }
 
     state.selectedIndex =
@@ -1331,10 +1394,45 @@
 
     state.decisionGeometry =
       clone(
-        candidate(index).geometry
+        selected.geometry
       );
 
-    state.edited = false;
+    state.edited =
+      false;
+
+    if (state.editMode) {
+      /*
+       * Candidate switching establishes a new
+       * Edit baseline. Back to candidates will
+       * discard edits to THIS candidate, not jump
+       * back to an older candidate.
+       */
+      state.editBaselineIndex =
+        index;
+
+      state.editBaselineGeometry =
+        clone(
+          selected.geometry
+        );
+
+      state.editBaselineEdited =
+        false;
+
+      state.editHistory =
+        [];
+
+      state.freehandDrawing =
+        false;
+
+      state.freehandPoints =
+        [];
+
+      state.freehandLastClient =
+        null;
+
+      $("undoEditBtn").disabled =
+        true;
+    }
 
     setAutosave(
       "Saving selection…"
@@ -1343,22 +1441,32 @@
     try {
       await savePatch({
         status: "pending",
+
         decisionCandidate:
           index,
+
         decisionGeometry:
           state.decisionGeometry,
-        edited: false,
+
+        edited:
+          false,
+
         challenging:
           $("challenging").checked,
+
         comment:
           $("comment").value,
       });
 
       setAutosave(
-        "Selection saved"
+        state.editMode
+          ? "Candidate selected for editing"
+          : "Selection saved"
       );
 
+      updateItemControls();
       drawAllOverlays();
+
     } catch (error) {
       setAutosave(
         `Save error: ${error.message}`,
@@ -1666,6 +1774,7 @@
   }
 
 
+
   function setEditOperation(operation) {
     state.editOperation =
       operation === "subtract"
@@ -1685,11 +1794,428 @@
       );
 
     setAutosave(
-      `Freehand edit · ${
+      `${
+        state.editDrawMode === "polygon"
+          ? "Polygon"
+          : "Freehand"
+      } edit · ${
         state.editOperation === "add"
           ? "Add"
           : "Subtract"
       }`
+    );
+  }
+
+
+
+  function setEditDrawMode(mode) {
+    const nextMode =
+      mode === "polygon"
+        ? "polygon"
+        : "freehand";
+
+    if (
+      nextMode !==
+        state.editDrawMode &&
+      state.freehandPoints.length
+    ) {
+      const discard =
+        confirm(
+          "Discard the unfinished drawing?"
+        );
+
+      if (!discard) {
+        $("editDrawMode").value =
+          state.editDrawMode;
+
+        return;
+      }
+    }
+
+    state.editDrawMode =
+      nextMode;
+
+    state.freehandDrawing =
+      false;
+
+    state.freehandPoints =
+      [];
+
+    state.freehandLastClient =
+      null;
+
+    $("editDrawMode").value =
+      state.editDrawMode;
+
+    $("finishPolygonBtn")
+      .classList.toggle(
+        "hidden",
+        state.editDrawMode !==
+          "polygon"
+      );
+
+    try {
+      state.overlayViewer
+        ?.setMouseNavEnabled(true);
+    } catch {}
+
+    setEditOperation(
+      state.editOperation
+    );
+
+    drawAllOverlays();
+  }
+
+
+  function pushEditHistory() {
+    state.editHistory.push({
+      geometry:
+        clone(
+          state.decisionGeometry
+        ),
+
+      edited:
+        state.edited,
+    });
+
+    /*
+     * Enough for practical cell-mask editing
+     * without keeping an unbounded history.
+     */
+    if (
+      state.editHistory.length > 50
+    ) {
+      state.editHistory.shift();
+    }
+
+    $("undoEditBtn").disabled =
+      state.editHistory.length === 0;
+  }
+
+
+  async function saveCurrentEditNow(
+    message = "Edit saved"
+  ) {
+    clearTimeout(
+      state.saveTimer
+    );
+
+    state.saveTimer =
+      null;
+
+    if (
+      !state.item ||
+      !Number.isInteger(
+        state.selectedIndex
+      )
+    ) {
+      return false;
+    }
+
+    try {
+      await savePatch({
+        decisionCandidate:
+          state.selectedIndex,
+
+        decisionGeometry:
+          clone(
+            state.decisionGeometry
+          ),
+
+        edited:
+          state.edited,
+
+        challenging:
+          $("challenging").checked,
+
+        comment:
+          $("comment").value,
+      });
+
+      setAutosave(message);
+
+      return true;
+
+    } catch (error) {
+      setAutosave(
+        `Save error: ${error.message}`,
+        true
+      );
+
+      return false;
+    }
+  }
+
+
+  async function undoEdit() {
+    if (
+      !state.editMode ||
+      !state.editHistory.length
+    ) {
+      return;
+    }
+
+    const previous =
+      state.editHistory.pop();
+
+    state.decisionGeometry =
+      clone(
+        previous.geometry
+      );
+
+    state.edited =
+      previous.edited;
+
+    state.freehandDrawing =
+      false;
+
+    state.freehandPoints =
+      [];
+
+    state.freehandLastClient =
+      null;
+
+    $("undoEditBtn").disabled =
+      state.editHistory.length === 0;
+
+    drawAllOverlays();
+    updateItemControls();
+
+    await saveCurrentEditNow(
+      "Edit undone and saved"
+    );
+  }
+
+
+  async function applyEditPolygon(
+    rawPoints,
+    label
+  ) {
+    const points =
+      (rawPoints || [])
+        .map(
+          point=>[
+            Number(point[0]),
+            Number(point[1]),
+          ]
+        );
+
+    if (points.length < 3) {
+      setAutosave(
+        "Polygon needs at least 3 points.",
+        true
+      );
+
+      return false;
+    }
+
+    const first =
+      points[0];
+
+    const last =
+      points[
+        points.length - 1
+      ];
+
+    if (
+      first[0] !== last[0] ||
+      first[1] !== last[1]
+    ) {
+      points.push([
+        ...first,
+      ]);
+    }
+
+    const stroke = {
+      type: "Polygon",
+
+      coordinates: [
+        points,
+      ],
+    };
+
+    pushEditHistory();
+
+    setAutosave(
+      `${
+        state.editOperation === "add"
+          ? "Adding"
+          : "Subtracting"
+      } ${label}…`
+    );
+
+    try {
+      const result =
+        await json(
+          api(
+            "/geometry/freehand"
+          ),
+          {
+            method: "POST",
+
+            body:
+              JSON.stringify({
+                geometry:
+                  state.decisionGeometry,
+
+                stroke,
+
+                operation:
+                  state.editOperation,
+              }),
+          }
+        );
+
+      state.decisionGeometry =
+        result.geometry;
+
+      state.edited =
+        true;
+
+      drawAllOverlays();
+      updateItemControls();
+
+      scheduleGeometrySave();
+
+      return true;
+
+    } catch (error) {
+      /*
+       * Operation failed, therefore this should
+       * not consume one Undo step.
+       */
+      state.editHistory.pop();
+
+      $("undoEditBtn").disabled =
+        state.editHistory.length === 0;
+
+      setAutosave(
+        `Edit error: ${error.message}`,
+        true
+      );
+
+      drawAllOverlays();
+
+      return false;
+    }
+  }
+
+
+  async function finishPolygon() {
+    if (
+      !state.editMode ||
+      state.editDrawMode !==
+        "polygon"
+    ) {
+      return false;
+    }
+
+    const points =
+      state.freehandPoints.slice();
+
+    if (points.length < 3) {
+      setAutosave(
+        "Polygon needs at least 3 points.",
+        true
+      );
+
+      return false;
+    }
+
+    state.freehandPoints =
+      [];
+
+    state.freehandDrawing =
+      false;
+
+    state.freehandLastClient =
+      null;
+
+    const applied =
+      await applyEditPolygon(
+        points,
+        "polygon"
+      );
+
+    drawAllOverlays();
+
+    return applied;
+  }
+
+
+  async function backToCandidates() {
+    if (!state.editMode) {
+      return;
+    }
+
+    const changed =
+      state.edited !==
+        state.editBaselineEdited ||
+      JSON.stringify(
+        state.decisionGeometry
+      ) !==
+        JSON.stringify(
+          state.editBaselineGeometry
+        ) ||
+      state.freehandPoints.length > 0;
+
+    if (changed) {
+      const discard =
+        confirm(
+          "You have geometry edits in Edit mode.\n\n"+
+          "Returning to candidate selection will discard these edits.\n\n"+
+          "Continue?"
+        );
+
+      if (!discard) {
+        return;
+      }
+
+      state.selectedIndex =
+        state.editBaselineIndex;
+
+      state.decisionGeometry =
+        clone(
+          state.editBaselineGeometry
+        );
+
+      state.edited =
+        state.editBaselineEdited;
+
+      state.freehandDrawing =
+        false;
+
+      state.freehandPoints =
+        [];
+
+      state.freehandLastClient =
+        null;
+
+      const saved =
+        await saveCurrentEditNow(
+          "Edit changes discarded"
+        );
+
+      if (!saved) {
+        return;
+      }
+    }
+
+    state.editHistory =
+      [];
+
+    leaveEditModeForAdvance();
+
+    updateItemControls();
+
+    await renderCurrentView(
+      false
+    );
+
+    drawAllOverlays();
+
+    setAutosave(
+      "Returned to candidate selection"
     );
   }
 
@@ -1733,6 +2259,7 @@
   }
 
 
+
   async function enterEdit() {
     if (
       !state.decisionGeometry ||
@@ -1748,6 +2275,23 @@
         ? "overlay"
         : "split";
 
+    state.editBaselineIndex =
+      state.selectedIndex;
+
+    state.editBaselineGeometry =
+      clone(
+        state.decisionGeometry
+      );
+
+    state.editBaselineEdited =
+      state.edited;
+
+    state.editHistory =
+      [];
+
+    state.editDrawMode =
+      "freehand";
+
     state.viewMode =
       "overlay";
 
@@ -1760,8 +2304,22 @@
     state.freehandPoints =
       [];
 
+    state.freehandLastClient =
+      null;
+
     state.editOperation =
       "add";
+
+    $("undoEditBtn").disabled =
+      true;
+
+    $("editDrawMode").value =
+      "freehand";
+
+    $("finishPolygonBtn")
+      .classList.add(
+        "hidden"
+      );
 
     $("splitBtn")
       .classList.remove(
@@ -1785,6 +2343,7 @@
   }
 
 
+
   async function finishEdit() {
     if (
       !state.item ||
@@ -1795,8 +2354,50 @@
       return;
     }
 
-    await acceptCurrent();
+    /*
+     * If Polygon mode contains unfinished points,
+     * Apply edit first closes/applies that polygon.
+     */
+    if (
+      state.editDrawMode ===
+        "polygon" &&
+      state.freehandPoints.length
+    ) {
+      const applied =
+        await finishPolygon();
+
+      if (!applied) {
+        return;
+      }
+    }
+
+    const saved =
+      await saveCurrentEditNow(
+        "Edit applied"
+      );
+
+    if (!saved) {
+      return;
+    }
+
+    state.editHistory =
+      [];
+
+    leaveEditModeForAdvance();
+
+    updateItemControls();
+
+    await renderCurrentView(
+      false
+    );
+
+    drawAllOverlays();
+
+    setAutosave(
+      "Edit applied. Review the result, then Accept."
+    );
   }
+
 
 
   function resetEdit() {
@@ -1805,7 +2406,11 @@
         state.selectedIndex
       );
 
-    if (!selected) return;
+    if (!selected) {
+      return;
+    }
+
+    pushEditHistory();
 
     state.decisionGeometry =
       clone(
@@ -1815,8 +2420,14 @@
     state.edited =
       false;
 
+    state.freehandDrawing =
+      false;
+
     state.freehandPoints =
       [];
+
+    state.freehandLastClient =
+      null;
 
     drawAllOverlays();
     updateItemControls();
@@ -3825,69 +4436,77 @@
   }
 
 
+
   function drawFreehandPreview(
     svg,
     viewer
   ) {
     if (
       !state.editMode ||
-      !state.freehandPoints
-        ?.length
+      !state.freehandPoints?.length
     ) {
       return;
     }
 
     const points =
-      state.freehandPoints
-        .map(
-          point =>
-            imageToElement(
-              viewer,
-              point
-            )
-        );
+      state.freehandPoints.map(
+        point=>
+          imageToElement(
+            viewer,
+            point
+          )
+      );
 
-    if (
-      points.length < 2
-    ) {
+    if (points.length < 2) {
       return;
     }
 
+    const ns =
+      "http://www.w3.org/2000/svg";
+
     const path =
       document.createElementNS(
-        "http://www.w3.org/2000/svg",
+        ns,
         "path"
       );
 
     path.id =
-      "review-freehand-preview";
+      "mr-freehand-preview";
 
     path.classList.add(
       "freehand-preview"
     );
 
+    const close =
+      state.editDrawMode ===
+        "freehand" &&
+      points.length > 2
+        ? " Z"
+        : "";
+
     const d =
-      points.map(
-        (point, index) =>
-          `${index ? "L" : "M"}` +
-          `${point.x.toFixed(2)},` +
-          `${point.y.toFixed(2)}`
-      ).join(" ") +
-      (
-        points.length > 2
-          ? " Z"
-          : ""
-      );
+      points
+        .map(
+          (point,index)=>
+            `${
+              index ? "L" : "M"
+            }${
+              point.x.toFixed(2)
+            },${
+              point.y.toFixed(2)
+            }`
+        )
+        .join(" ") +
+      close;
 
     path.setAttribute(
       "d",
       d
     );
 
-    svg.appendChild(
-      path
-    );
+    svg.appendChild(path);
   }
+
 
 
   function beginFreehand(
@@ -3906,21 +4525,49 @@
     event.preventDefault();
     event.stopPropagation();
 
-    state.freehandDrawing =
-      true;
-
     const point =
       pointerImagePoint(
         event,
         viewer
       );
 
-    state.freehandPoints = [
-      [
+    if (
+      state.editDrawMode ===
+        "polygon"
+    ) {
+      state.freehandDrawing =
+        false;
+
+      state.freehandPoints.push([
         point.x,
         point.y,
-      ],
-    ];
+      ]);
+
+      state.freehandLastClient =
+        null;
+
+      setAutosave(
+        `Polygon · ${
+          state.freehandPoints.length
+        } point${
+          state.freehandPoints.length === 1
+            ? ""
+            : "s"
+        }`
+      );
+
+      drawAllOverlays();
+
+      return;
+    }
+
+    state.freehandDrawing =
+      true;
+
+    state.freehandPoints = [[
+      point.x,
+      point.y,
+    ]];
 
     state.freehandLastClient = [
       event.clientX,
@@ -3944,10 +4591,18 @@
   }
 
 
+
   function moveFreehand(
     event,
     viewer
   ) {
+    if (
+      state.editDrawMode ===
+        "polygon"
+    ) {
+      return;
+    }
+
     if (
       !state.editMode ||
       !state.freehandDrawing ||
@@ -3981,12 +4636,10 @@
         viewer
       );
 
-    state.freehandPoints.push(
-      [
-        point.x,
-        point.y,
-      ]
-    );
+    state.freehandPoints.push([
+      point.x,
+      point.y,
+    ]);
 
     state.freehandLastClient = [
       event.clientX,
@@ -3998,7 +4651,7 @@
 
     const old =
       svg.querySelector(
-        "#review-freehand-preview"
+        "#mr-freehand-preview"
       );
 
     if (old) {
@@ -4041,10 +4694,18 @@
   }
 
 
+
   async function endFreehand(
     event,
     viewer
   ) {
+    if (
+      state.editDrawMode ===
+        "polygon"
+    ) {
+      return;
+    }
+
     if (
       !state.editMode ||
       !state.freehandDrawing ||
@@ -4075,81 +4736,15 @@
     state.freehandLastClient =
       null;
 
-    if (
-      points.length < 3
-    ) {
+    if (points.length < 3) {
       drawAllOverlays();
       return;
     }
 
-    const first =
-      points[0];
-
-    const last =
-      points[
-        points.length - 1
-      ];
-
-    if (
-      first[0] !== last[0] ||
-      first[1] !== last[1]
-    ) {
-      points.push([
-        ...first,
-      ]);
-    }
-
-    const stroke = {
-      type: "Polygon",
-      coordinates: [
-        points,
-      ],
-    };
-
-    setAutosave(
-      `${
-        state.editOperation === "add"
-          ? "Adding"
-          : "Subtracting"
-      } freehand area…`
+    await applyEditPolygon(
+      points,
+      "freehand area"
     );
-
-    try {
-      const result =
-        await json(
-          api(
-            "/geometry/freehand"
-          ),
-          {
-            method: "POST",
-            body:
-              JSON.stringify({
-                geometry:
-                  state.decisionGeometry,
-                stroke,
-                operation:
-                  state.editOperation,
-              }),
-          }
-        );
-
-      state.decisionGeometry =
-        result.geometry;
-
-      state.edited = true;
-
-      drawAllOverlays();
-      updateItemControls();
-
-      scheduleGeometrySave();
-    } catch (error) {
-      setAutosave(
-        `Edit error: ${error.message}`,
-        true
-      );
-
-      drawAllOverlays();
-    }
   }
 
 
@@ -4668,6 +5263,34 @@
       resetEdit
     );
 
+  $("editDrawMode")
+    .addEventListener(
+      "change",
+      ()=>
+        setEditDrawMode(
+          $("editDrawMode").value
+        )
+    );
+
+  $("finishPolygonBtn")
+    .addEventListener(
+      "click",
+      finishPolygon
+    );
+
+  $("undoEditBtn")
+    .addEventListener(
+      "click",
+      undoEdit
+    );
+
+  $("backToCandidatesBtn")
+    .addEventListener(
+      "click",
+      backToCandidates
+    );
+
+
   $("finishEditBtn")
     .addEventListener(
       "click",
@@ -4748,33 +5371,33 @@
       if (!state.item) {
         return;
       }
-
-      // Enter accepts and advances,
-      // including during Freehand Edit.
+      // Enter applies Edit while editing.
+      // Outside Edit it keeps Accept & next.
       if (
         event.key === "Enter"
       ) {
         if (
           !Number.isInteger(
             state.selectedIndex
-          ) ||
-          $("acceptBtn").disabled
+          )
         ) {
           return;
         }
 
         event.preventDefault();
 
-        void acceptCurrent();
+        if (state.editMode) {
+          void finishEdit();
+        } else {
+          void acceptCurrent();
+        }
 
         return;
       }
 
-      // Candidate shortcuts are disabled
-      // while editing the selected mask.
-      if (state.editMode) {
-        return;
-      }
+      // Candidate shortcuts remain available
+      // while Edit mode is active.
+
 
       if (
         !/^[1-4]$/
