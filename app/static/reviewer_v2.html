@@ -455,7 +455,45 @@
         grid-template-columns:1fr 1fr
       }
     }
-  </style>
+
+
+    /* Compact zoom controls over the image while editing. */
+    .edit-zoom-float{
+      position:absolute;
+      top:42px;
+      right:12px;
+      z-index:100;
+      display:none;
+      flex-direction:column;
+      gap:6px;
+      pointer-events:auto;
+    }
+
+    .edit-zoom-float.active{
+      display:flex;
+    }
+
+    .edit-zoom-float button{
+      width:38px;
+      height:38px;
+      padding:0;
+      display:grid;
+      place-items:center;
+      border-radius:8px;
+      font-size:22px;
+      font-weight:700;
+      line-height:1;
+      background:rgba(13,17,23,.92);
+      border:1px solid #59636f;
+      box-shadow:0 2px 8px rgba(0,0,0,.35);
+    }
+
+    .edit-zoom-float button:hover{
+      background:#1b2633;
+      border-color:#8b949e;
+    }
+
+</style>
 </head>
 
 <body>
@@ -574,6 +612,25 @@
         </div>
 
         <div id="overlayOsd"></div>
+
+        <div id="editZoomFloat"
+             class="edit-zoom-float"
+             aria-label="Edit zoom controls">
+
+          <button id="editZoomInBtn"
+                  type="button"
+                  title="Zoom in (+)">
+            +
+          </button>
+
+          <button id="editZoomOutBtn"
+                  type="button"
+                  title="Zoom out (-)">
+            −
+          </button>
+
+        </div>
+
       </div>
 
 
@@ -739,15 +796,6 @@
         Undo edit
       </button>
 
-      <button id="editZoomOutBtn"
-              title="Zoom out while editing">
-        Zoom −
-      </button>
-
-      <button id="editZoomInBtn"
-              title="Zoom in while editing">
-        Zoom +
-      </button>
 
       <button id="backToCandidatesBtn">
         ← Back to candidates
@@ -2232,10 +2280,12 @@
 
 
 
+
   function editZoom(
     direction,
     clientX = null,
-    clientY = null
+    clientY = null,
+    step = null
   ) {
     if (
       !state.editMode ||
@@ -2247,18 +2297,115 @@
     const viewer =
       state.overlayViewer;
 
-    const factor =
-      direction === "out"
-        ? 1 / 1.35
+    const viewport =
+      viewer.viewport;
+
+    /*
+     * Smaller step for mouse wheel,
+     * larger step for buttons/keyboard.
+     */
+    const scale =
+      Number.isFinite(step)
+        ? Math.max(
+            1.01,
+            Number(step)
+          )
         : 1.35;
+
+    const currentZoom =
+      Number(
+        viewport.getZoom(true)
+      );
+
+    const homeZoom =
+      Number(
+        viewport.getHomeZoom()
+      );
+
+    if (
+      !Number.isFinite(currentZoom) ||
+      !Number.isFinite(homeZoom) ||
+      homeZoom <= 0
+    ) {
+      return;
+    }
+
+    let maxZoom = NaN;
+
+    try {
+      if (
+        typeof viewport.getMaxZoom ===
+        "function"
+      ) {
+        maxZoom =
+          Number(
+            viewport.getMaxZoom()
+          );
+      }
+    } catch {}
+
+    /*
+     * Fallback if this OpenSeadragon build does not
+     * expose a useful maximum.
+     */
+    if (
+      !Number.isFinite(maxZoom) ||
+      maxZoom <= homeZoom
+    ) {
+      maxZoom =
+        homeZoom * 128;
+    }
+
+    /*
+     * Never make an existing zoom level invalid.
+     * This also prevents Zoom In from accidentally
+     * moving outward if currentZoom is already high.
+     */
+    maxZoom =
+      Math.max(
+        maxZoom,
+        currentZoom
+      );
+
+    /*
+     * Do not zoom out beyond the normal full-image view.
+     */
+    const minZoom =
+      homeZoom;
+
+    let targetZoom =
+      direction === "out"
+        ? currentZoom / scale
+        : currentZoom * scale;
+
+    targetZoom =
+      Math.max(
+        minZoom,
+        Math.min(
+          maxZoom,
+          targetZoom
+        )
+      );
+
+    if (
+      Math.abs(
+        targetZoom -
+        currentZoom
+      ) <=
+      Math.max(
+        1e-9,
+        currentZoom * 0.0001
+      )
+    ) {
+      return;
+    }
 
     let referencePoint =
       null;
 
     /*
-     * Mouse-wheel zoom is centered on the cursor.
-     * Button/keyboard zoom remains centered on the
-     * current viewport.
+     * Mouse wheel / trackpad:
+     * keep the location beneath the cursor stable.
      */
     if (
       Number.isFinite(clientX) &&
@@ -2276,7 +2423,7 @@
           );
 
         referencePoint =
-          viewer.viewport
+          viewport
             .viewerElementToViewportCoordinates(
               pixel
             );
@@ -2288,14 +2435,19 @@
     }
 
     try {
-      viewer.viewport.zoomBy(
-        factor,
+      /*
+       * Immediate zoom avoids a queue of competing
+       * zoom animations when wheel direction changes.
+       */
+      viewport.zoomTo(
+        targetZoom,
         referencePoint,
-        false
+        true
       );
 
-      viewer.viewport
-        .applyConstraints();
+      viewport.applyConstraints(
+        true
+      );
 
       drawAllOverlays();
 
@@ -2310,45 +2462,57 @@
 
 
   function bindEditWheelZoom() {
-    const viewer =
-      state.overlayViewer;
+    const panel =
+      $("overlayPanel");
 
-    if (!viewer?.element) {
+    if (!panel) {
       return;
     }
 
     if (
-      viewer.element.dataset
+      panel.dataset
         .reviewEditWheelZoom === "1"
     ) {
       return;
     }
 
-    viewer.element.dataset
+    panel.dataset
       .reviewEditWheelZoom = "1";
 
-    /*
-     * The editable SVG sits over OpenSeadragon.
-     * Capture phase makes wheel/trackpad zoom work
-     * even when the pointer is over that drawing layer.
-     */
-    viewer.element.addEventListener(
+    panel.addEventListener(
       "wheel",
       event => {
+        /*
+         * Always resolve the CURRENT viewer.
+         * Do not retain a viewer that may later be destroyed.
+         */
+        const viewer =
+          state.overlayViewer;
+
         if (
           !state.editMode ||
-          viewer !==
-            state.overlayViewer
+          !viewer?.viewport
         ) {
           return;
         }
 
         /*
-         * Never change viewport halfway through
+         * Prevent viewport movement halfway through
          * a freehand stroke.
          */
         if (
           state.freehandDrawing
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+
+        /*
+         * Ignore purely horizontal trackpad movement.
+         */
+        if (
+          Math.abs(event.deltaY) < 0.01
         ) {
           return;
         }
@@ -2361,7 +2525,8 @@
             ? "in"
             : "out",
           event.clientX,
-          event.clientY
+          event.clientY,
+          1.22
         );
       },
       {
@@ -2373,6 +2538,13 @@
 
 
   function setEditUi(active) {
+
+    $("editZoomFloat")
+      .classList.toggle(
+        "active",
+        Boolean(active)
+      );
+
     $("freehandEditControls")
       .classList.toggle(
         "hidden",
